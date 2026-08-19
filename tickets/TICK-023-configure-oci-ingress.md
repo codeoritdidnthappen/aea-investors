@@ -8,10 +8,10 @@ estimate: M
 depends_on: [TICK-022]
 labels: [local, caddy]
 source: [NFR-9, NFR-16, NFR-17, NFR-34]
-status: todo
+status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/24
+builder_commit: 44cccc3
 ---
-
 ## Context
 
 Caddy is the local ingress for OpenEMR and chat hostnames in the disposable Docker topology; it has no public or cloud exposure.
