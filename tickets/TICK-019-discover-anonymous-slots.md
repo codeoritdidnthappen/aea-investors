@@ -8,10 +8,10 @@ estimate: M
 depends_on: [TICK-009, TICK-010, TICK-018]
 labels: [scheduling, privacy, llm]
 source: [FR-10, FR-11, FR-20, NFR-5, NFR-12]
-status: todo
+status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/20
+builder_commit: 7aef40e
 ---
-
 ## Context
 
 The model may select an available option but never receives real OpenEMR identifiers; short-lived anonymous slot tokens bridge that boundary.
