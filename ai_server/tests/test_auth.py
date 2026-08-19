@@ -1,0 +1,319 @@
+"""Synthetic integration tests for the OAuth callback and durable session store."""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import json
+import sqlite3
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+
+import httpx
+import pytest
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
+from fastapi import FastAPI
+
+from ai_server.app.auth import (
+    AuthError,
+    AuthorizationService,
+    AuthSettings,
+    OAuthTokens,
+    OpenEmrOAuthClient,
+    SessionStore,
+    utc_now,
+)
+from ai_server.app.main import create_app
+
+NOW = datetime(2026, 8, 18, tzinfo=timezone.utc)
+
+
+class SyntheticOAuthClient:
+    """A deterministic token endpoint used only for callback integration tests."""
+
+    def __init__(self, nonce: str) -> None:
+        self.nonce = nonce
+        self.verifiers: list[str] = []
+
+    async def exchange(self, code: str, verifier: str) -> OAuthTokens:
+        assert code == "synthetic-code"
+        self.verifiers.append(verifier)
+        return OAuthTokens("synthetic-access-token", "synthetic-refresh-token", self.nonce)
+
+
+def settings(tmp_path: Path) -> AuthSettings:
+    return AuthSettings(
+        database_path=tmp_path / "sessions.sqlite3",
+        encryption_key=b"k" * 32,
+        authorize_url="https://openemr.test/oauth2/default/authorize",
+        token_url="https://openemr.test/oauth2/default/token",
+        jwks_url="https://openemr.test/oauth2/default/jwks",
+        issuer="https://openemr.test",
+        client_id="synthetic-client",
+        client_secret="synthetic-secret",
+        redirect_uri="https://chat.test/oauth/callback",
+        success_redirect_uri="https://chat.test/",
+        session_ttl=timedelta(minutes=30),
+        state_ttl=timedelta(minutes=5),
+    )
+
+
+def database_row(database_path: Path, query: str) -> tuple[object, ...] | None:
+    connection = sqlite3.connect(database_path)
+    try:
+        return connection.execute(query).fetchone()
+    finally:
+        connection.close()
+
+
+def test_ac1_environment_settings_require_a_32_byte_key(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    environment = {
+        "AI_SESSION_DATABASE_PATH": str(tmp_path / "sessions.sqlite3"),
+        "AI_SESSION_ENCRYPTION_KEY": base64.urlsafe_b64encode(b"k" * 32).decode("ascii"),
+        "OPENEMR_OAUTH_AUTHORIZE_URL": "https://openemr.test/authorize",
+        "OPENEMR_OAUTH_TOKEN_URL": "https://openemr.test/token",
+        "OPENEMR_OAUTH_JWKS_URL": "https://openemr.test/jwks",
+        "OPENEMR_OAUTH_ISSUER": "https://openemr.test",
+        "OPENEMR_OAUTH_CLIENT_ID": "synthetic-client",
+        "OPENEMR_OAUTH_CLIENT_SECRET": "synthetic-secret",
+        "OPENEMR_OAUTH_REDIRECT_URI": "https://chat.test/oauth/callback",
+        "AI_SESSION_SUCCESS_REDIRECT_URI": "https://chat.test/",
+    }
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+    assert AuthSettings.from_environment().encryption_key == b"k" * 32
+
+
+def signed_id_token(
+    settings: AuthSettings, nonce: str, expires_at: int
+) -> tuple[str, dict[str, object]]:
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public_numbers = private_key.public_key().public_numbers()
+    header = base64.urlsafe_b64encode(
+        json.dumps({"alg": "RS256", "kid": "test-key"}).encode()
+    ).rstrip(b"=")
+    claims = base64.urlsafe_b64encode(
+        json.dumps(
+            {"iss": settings.issuer, "aud": settings.client_id, "exp": expires_at, "nonce": nonce}
+        ).encode()
+    ).rstrip(b"=")
+    signed_data = b".".join((header, claims))
+    signature = private_key.sign(signed_data, padding.PKCS1v15(), hashes.SHA256())
+    modulus = (
+        base64.urlsafe_b64encode(
+            public_numbers.n.to_bytes((public_numbers.n.bit_length() + 7) // 8, "big")
+        )
+        .rstrip(b"=")
+        .decode("ascii")
+    )
+    exponent = (
+        base64.urlsafe_b64encode(
+            public_numbers.e.to_bytes((public_numbers.e.bit_length() + 7) // 8, "big")
+        )
+        .rstrip(b"=")
+        .decode("ascii")
+    )
+    return (
+        f"{signed_data.decode('ascii')}.{base64.urlsafe_b64encode(signature).rstrip(b'=').decode('ascii')}",
+        {"keys": [{"kty": "RSA", "kid": "test-key", "n": modulus, "e": exponent}]},
+    )
+
+
+def test_ac1_code_exchange_validates_signed_id_token(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        configured = settings(tmp_path)
+        id_token, jwks = signed_id_token(configured, "expected", int(utc_now().timestamp()) + 60)
+
+        async def token_response(request: httpx.Request) -> httpx.Response:
+            if request.url == httpx.URL(configured.jwks_url):
+                return httpx.Response(200, json=jwks)
+            assert request.url == httpx.URL(configured.token_url)
+            assert b"code_verifier=verifier" in request.content
+            return httpx.Response(
+                200,
+                json={
+                    "access_token": "synthetic-access-token",
+                    "refresh_token": "synthetic-refresh-token",
+                    "id_token": id_token,
+                },
+            )
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(token_response)) as client:
+            tokens = await OpenEmrOAuthClient(configured, client).exchange("code", "verifier")
+        assert tokens.id_token_nonce == "expected"
+
+    asyncio.run(scenario())
+
+
+def test_ac1_forged_or_expired_id_token_fails_closed(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        configured = settings(tmp_path)
+        token, jwks = signed_id_token(configured, "expected", int(utc_now().timestamp()) + 60)
+        header, claims, signature = token.split(".")
+        forged_signature = f"{'A' if signature[0] != 'A' else 'B'}{signature[1:]}"
+        forged_token = f"{header}.{claims}.{forged_signature}"
+
+        async def token_response(request: httpx.Request) -> httpx.Response:
+            if request.url == httpx.URL(configured.jwks_url):
+                return httpx.Response(200, json=jwks)
+            return httpx.Response(
+                200,
+                json={
+                    "access_token": "synthetic-access-token",
+                    "refresh_token": "synthetic-refresh-token",
+                    "id_token": forged_token,
+                },
+            )
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(token_response)) as client:
+            try:
+                await OpenEmrOAuthClient(configured, client).exchange("code", "verifier")
+            except AuthError as exc:
+                assert exc.status_code == 401
+            else:
+                raise AssertionError("forged ID token was accepted")
+
+    asyncio.run(scenario())
+
+
+async def request(app: FastAPI, path: str) -> httpx.Response:
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="https://chat.test",
+            follow_redirects=False,
+        ) as client:
+            return await client.get(path)
+
+
+def test_ac1_launch_uses_pkce_state_nonce_and_proven_scopes(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        configured = settings(tmp_path)
+        store = SessionStore(configured.database_path, configured.encryption_key)
+        store.initialize()
+        oauth = SyntheticOAuthClient("unused")
+        app = create_app(configured, AuthorizationService(configured, store, oauth), lambda: NOW)
+        response = await request(app, "/oauth/launch")
+        query = parse_qs(urlparse(response.headers["location"]).query)
+        assert response.status_code == 302
+        assert query["response_type"] == ["code"]
+        assert query["code_challenge_method"] == ["S256"]
+        assert len(query["state"][0]) >= 32
+        assert len(query["nonce"][0]) >= 32
+        assert set(query["scope"][0].split()) == set(configured.scopes)
+
+    asyncio.run(scenario())
+
+
+def test_ac2_replay_and_stale_state_fail_closed(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        configured = settings(tmp_path)
+        store = SessionStore(configured.database_path, configured.encryption_key)
+        store.initialize()
+        oauth = SyntheticOAuthClient("placeholder")
+        service = AuthorizationService(configured, store, oauth)
+        location = await service.launch_url(NOW)
+        state = parse_qs(urlparse(location).query)["state"][0]
+        nonce = parse_qs(urlparse(location).query)["nonce"][0]
+        oauth.nonce = nonce
+        await service.callback("synthetic-code", state, NOW)
+        try:
+            await service.callback("synthetic-code", state, NOW)
+        except AuthError as exc:
+            assert exc.status_code == 400
+        else:
+            raise AssertionError("replayed state was accepted")
+        stale_location = await service.launch_url(NOW)
+        stale_state = parse_qs(urlparse(stale_location).query)["state"][0]
+        try:
+            await service.callback("synthetic-code", stale_state, NOW + timedelta(minutes=6))
+        except AuthError as exc:
+            assert exc.status_code == 400
+        else:
+            raise AssertionError("stale state was accepted")
+
+    asyncio.run(scenario())
+
+
+def test_ac2_nonce_mismatch_fails_without_creating_a_session(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        configured = settings(tmp_path)
+        store = SessionStore(configured.database_path, configured.encryption_key)
+        store.initialize()
+        service = AuthorizationService(configured, store, SyntheticOAuthClient("wrong-nonce"))
+        location = await service.launch_url(NOW)
+        state = parse_qs(urlparse(location).query)["state"][0]
+        try:
+            await service.callback("synthetic-code", state, NOW)
+        except AuthError as exc:
+            assert exc.status_code == 401
+        else:
+            raise AssertionError("nonce mismatch was accepted")
+        assert database_row(configured.database_path, "SELECT count(*) FROM sessions") == (0,)
+
+    asyncio.run(scenario())
+
+
+def test_ac3_callback_sets_only_secure_httponly_ai_session_cookie(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        configured = settings(tmp_path)
+        store = SessionStore(configured.database_path, configured.encryption_key)
+        store.initialize()
+        oauth = SyntheticOAuthClient("placeholder")
+        service = AuthorizationService(configured, store, oauth)
+        app = create_app(configured, service, lambda: NOW)
+        launch = await request(app, "/oauth/launch")
+        query = parse_qs(urlparse(launch.headers["location"]).query)
+        oauth.nonce = query["nonce"][0]
+        callback = await request(
+            app, f"/oauth/callback?code=synthetic-code&state={query['state'][0]}"
+        )
+        cookie = callback.headers["set-cookie"].lower()
+        assert callback.status_code == 303
+        assert callback.headers["location"] == configured.success_redirect_uri
+        assert "httponly" in cookie
+        assert "secure" in cookie
+        assert "synthetic-access-token" not in cookie
+        assert "synthetic-refresh-token" not in cookie
+
+    asyncio.run(scenario())
+
+
+def test_ac4_encrypted_session_survives_restart_without_plaintext_tokens(tmp_path: Path) -> None:
+    configured = settings(tmp_path)
+    first_store = SessionStore(configured.database_path, configured.encryption_key)
+    first_store.initialize()
+    handle = first_store.create_session(
+        OAuthTokens("synthetic-access-token", "synthetic-refresh-token", "nonce"),
+        NOW,
+        timedelta(minutes=30),
+    )
+    row = database_row(
+        configured.database_path,
+        "SELECT handle_hash, cursor, access_nonce, access_ciphertext, "
+        "refresh_nonce, refresh_ciphertext FROM sessions",
+    )
+    assert row is not None
+    assert row[2] != row[4]
+    assert b"synthetic-access-token" not in row[3]
+    assert b"synthetic-refresh-token" not in row[5]
+    restarted_store = SessionStore(configured.database_path, configured.encryption_key)
+    restarted_store.initialize()
+    assert restarted_store.active_session(handle, NOW + timedelta(minutes=1))
+
+
+def test_ac5_expiry_deletes_session_and_encrypted_tokens(tmp_path: Path) -> None:
+    configured = settings(tmp_path)
+    store = SessionStore(configured.database_path, configured.encryption_key)
+    store.initialize()
+    handle = store.create_session(
+        OAuthTokens("synthetic-access-token", "synthetic-refresh-token", "nonce"),
+        NOW,
+        timedelta(seconds=1),
+    )
+    assert not store.active_session(handle, NOW + timedelta(seconds=2))
+    assert database_row(configured.database_path, "SELECT count(*) FROM sessions") == (0,)
