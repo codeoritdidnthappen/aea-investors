@@ -5,8 +5,10 @@ description = "Local AI-server foundation for the Intake demo"
 requires-python = ">=3.9,<3.14"
 dependencies = [
   "cryptography==45.0.7",
+  "en-core-web-lg",
   "fastapi==0.116.1",
   "langgraph==0.6.7",
+  "presidio-analyzer==2.2.360",
   "uvicorn==0.35.0",
 ]
 
@@ -32,3 +34,6 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]
+
+[tool.uv.sources]
+en-core-web-lg = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.8.0/en_core_web_lg-3.8.0-py3-none-any.whl" }
