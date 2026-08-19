@@ -8,10 +8,10 @@ estimate: L
 depends_on: [TICK-005, TICK-011]
 labels: [local, docker]
 source: [NFR-9, NFR-15, NFR-16, NFR-20, NFR-31]
-status: todo
+status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/23
+builder_commit: 651f48a
 ---
-
 ## Context
 
 The demo runs only as a local, reproducible Docker topology with separate OpenEMR/MariaDB and AI-server services and persistent local state.
