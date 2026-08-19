@@ -8,10 +8,10 @@ estimate: L
 depends_on: [TICK-018, TICK-019]
 labels: [scheduling, openemr]
 source: [FR-12, FR-13, FR-14, FR-16, FR-20, FR-28, NFR-11]
-status: todo
+status: blocked
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/21
+blocked_reason: "TICK-020 requires reschedule and cancel-by-OpenEMR-status, but evidence/TICK-001/ENDPOINT_MATRIX.md documents no such endpoint exists on the pinned OpenEMR v8.3.0 release and explicitly names TICK-018\u2013TICK-020 as forbidden from implementing these gap rows (no delete/recreate or DELETE-based emulatio"
 ---
-
 ## Context
 
 Appointment writes occur only after a deterministic OpenEMR call; the assistant may not claim success before that response.
