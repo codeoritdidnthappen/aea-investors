@@ -5,10 +5,10 @@ type: spike
 epic: EPIC-01
 priority: P1
 estimate: M
-depends_on: []
+depends_on: [TICK-005]
 labels: [product, onboarding, discovery]
 source: [FR-5, FR-8, FR-27]
-status: done
+status: todo
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/4
 ---
 
@@ -30,8 +30,8 @@ Review the artifact against FR-5, FR-8, and FR-27; create fixture cases for ever
 ## Verification
 
 `ONBOARDING_CONTRACT.md` contains the field and trigger fixture cases and was approved
-by the product owner on 2026-08-18. This repository has no automated test suite or CI
-workflow yet; no CI result is claimed.
+by the product owner on 2026-08-18. TICK-003 runs after TICK-005 establishes the
+required CI gate.
 
 ## Out of Scope
 
