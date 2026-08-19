@@ -5,7 +5,7 @@ An AI-assisted behavioral-health onboarding demo embedded inside
 OpenEMR, completes the guided intake flow, and can view, book, reschedule, or cancel
 appointments through conversation.
 
-**Status:** architecture updated, pre-implementation. No application code exists yet.
+**Status:** foundation established; feature implementation has not started.
 
 ---
 
@@ -101,11 +101,17 @@ the iframe receives only a secure, HttpOnly AI-session cookie.
 
 ## Quickstart
 
-> Placeholder: implementation has not started.
+The local AI-server foundation uses Python and uv. From a clean checkout:
 
-The eventual quickstart must pin the OpenEMR version, start both OCI-equivalent local
-containers, seed synthetic demo data, install the OpenEMR module, and print demo login
-credentials.
+```sh
+uv run --locked --group dev ruff format --check .
+uv run --locked --group dev ruff check .
+uv run --locked --group dev pytest
+uv run uvicorn ai_server.app.main:app --host 127.0.0.1 --port 8000
+```
+
+`GET /health` returns a non-sensitive liveness response. OpenEMR containers, synthetic
+seed data, and the portal module are added by their dedicated tickets.
 
 ---
 

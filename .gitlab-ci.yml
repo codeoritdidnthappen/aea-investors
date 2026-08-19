@@ -1,0 +1,7 @@
+image: ghcr.io/astral-sh/uv:0.11.33-python3.13-bookworm-slim
+
+test:
+  script:
+    - uv run --locked --group dev ruff format --check .
+    - uv run --locked --group dev ruff check .
+    - uv run --locked --group dev pytest
