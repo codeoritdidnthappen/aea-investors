@@ -8,7 +8,8 @@ estimate: S
 depends_on: [TICK-005, TICK-006]
 labels: [ci, privacy, governance]
 source: [NFR-21, NFR-24]
-status: todo
+status: done
+builder_commit: 5d5e6dd
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/8
 ---
 
