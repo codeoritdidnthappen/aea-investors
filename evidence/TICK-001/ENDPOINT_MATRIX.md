@@ -1,7 +1,20 @@
 # TICK-001 — OpenEMR v8.3.0 endpoint matrix
 
 **Recorded:** 2026-08-18
-**Decision:** `BLOCKED` — do not begin an OpenEMR adapter or use a database workaround.
+**Decision:** local foundation and documented Standard-API integration may proceed with
+synthetic data. Do not use a database workaround or implement an operation until its
+route and behavior are verified.
+
+## Local-development scope correction
+
+This matrix originally treated production patient-scoped authorization as a block on
+all implementation. That was too broad. Local development uses OpenEMR's documented
+Standard REST API, a locally registered OAuth client, and synthetic test users. The
+`user/*` Standard-API scopes are acceptable only in that isolated local environment;
+they do not establish the eventual patient-scoped production authorization boundary.
+
+TICK-005 may therefore build the local FastAPI/LangGraph foundation and test harness.
+The rows below remain gates only for the scheduling or assessment operation they name.
 
 ## Pinned upstream inputs
 
@@ -22,7 +35,7 @@ it is not an acceptable substitute for the logged-in-patient constraint in NFR-2
 |---|---|---|---|---|
 | OAuth/SMART EHR launch (FR-3) | `GET /oauth2/default/authorize` with `launch`; `POST /oauth2/default/token` | `openid launch launch/patient` plus API resource scopes; `offline_access` for refresh | Tagged [authentication guide](https://github.com/openemr/openemr/blob/v8_3_0/Documentation/api/AUTHENTICATION.md#ehr-launch-flow) shows `iss`, `[REDACTED_LAUNCH]`, authorization-code exchange, and token response with `patient: "[REDACTED_UUID]"`. | **Supported.** Register a confidential client and prove PKCE/state/nonce behavior in the deployed probe. |
 | Read current appointments (FR-9) | `GET /fhir/Appointment` and `GET /fhir/Appointment/{uuid}` | `api:fhir patient/Appointment.rs` | [Route source](https://github.com/openemr/openemr/blob/v8_3_0/apis/routes/_rest_routes_fhir_r4_us_core_3_1_0.inc.php#L96-L117) passes the bound patient UUID for patient requests. Redacted response surface: `{ "resourceType":"Bundle", "entry":[{"resource":{"resourceType":"Appointment","id":"[REDACTED_UUID]","status":"booked"}}] }`. | **Supported for reads.** Filter cancelled statuses in the AI server before presenting results. |
-| Create appointment / book (FR-12) | `POST /api/patient/{pid}/appointment` | `api:oemr user/appointment.cruds`; OpenEMR ACL `patients/appt` | [Route source](https://github.com/openemr/openemr/blob/v8_3_0/apis/routes/_rest_routes_standard.inc.php#L403-L408) accepts the appointment body; [Swagger scopes](https://github.com/openemr/openemr/blob/v8_3_0/swagger/openemr-api.yaml#L10326-L10329) advertise `user/appointment.cruds`. Redacted request shape: `{ "pc_eventDate":"[DATE]", "pc_startTime":"[TIME]", "pc_aid":"[PROVIDER_ID]", "pc_facility":"[FACILITY_ID]" }`. | **Implementation-blocking authorization gap.** No patient-context write route exists; using `user/appointment.cruds` exceeds NFR-25 and must not be substituted. |
+| Create appointment / book (FR-12) | `POST /api/patient/{pid}/appointment` | `api:oemr user/appointment.cruds`; OpenEMR ACL `patients/appt` | [Route source](https://github.com/openemr/openemr/blob/v8_3_0/apis/routes/_rest_routes_standard.inc.php#L403-L408) accepts the appointment body; [Swagger scopes](https://github.com/openemr/openemr/blob/v8_3_0/swagger/openemr-api.yaml#L10326-L10329) advertise `user/appointment.cruds`. Redacted request shape: `{ "pc_eventDate":"[DATE]", "pc_startTime":"[TIME]", "pc_aid":"[PROVIDER_ID]", "pc_facility":"[FACILITY_ID]" }`. | **Locally supported pending a synthetic probe.** Production patient-scoped authorization remains unproven. |
 | Provider availability (FR-10) | None found | — | Tagged route inventory has no `Schedule` or `Slot` resource/route. | **Implementation-blocking API gap.** Appointment reads cannot establish genuinely open slots. No database query/workaround is permitted. |
 | Regular office hours (FR-10) | None found | — | Tagged Standard/FHIR route inventory has no office-hours/calendar-hours endpoint. | **Implementation-blocking API gap.** No database query/workaround is permitted. |
 | Holiday or exceptional closures (FR-10) | None found | — | Tagged Standard/FHIR route inventory has no closure/holiday endpoint. | **Implementation-blocking API gap.** No database query/workaround is permitted. |
@@ -44,10 +57,11 @@ This is source evidence, not a claim that an unauthenticated route returns 404. 
 release source defines the shipped API surface; the unperformed authenticated probe is
 tracked separately in `PROBE_EVIDENCE.md`.
 
-## Required decision before adapter work
+## Deferred operation decisions
 
-TICK-018, TICK-019, TICK-020, and all features relying on the blocked operations must
-remain blocked. A future release, an upstream-supported API extension, or an approved
-product-scope change is required. Direct MariaDB access, direct `pc_event` updates,
-native form-table writes, a parallel scheduler, and delete/recreate emulation are all
-explicitly rejected by FR-17 and ARCHITECTURE.md §4.
+TICK-005 and local implementation that uses documented Standard REST operations may
+proceed. TICK-018 through TICK-020 and TICK-017 must not implement any row marked as a
+gap until a future release, upstream-supported API extension, or approved product-scope
+change resolves it. Direct MariaDB access, direct `pc_event` updates, native form-table
+writes, a parallel scheduler, and delete/recreate emulation remain explicitly rejected
+by FR-17 and ARCHITECTURE.md §4.

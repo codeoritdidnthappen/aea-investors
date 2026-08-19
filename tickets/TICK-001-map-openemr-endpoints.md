@@ -5,17 +5,19 @@ type: spike
 epic: EPIC-01
 priority: P1
 estimate: L
-depends_on: []
+depends_on: [TICK-005]
 labels: [openemr, discovery]
 source: [FR-3, FR-9, FR-10, FR-12, FR-13, FR-14, FR-17, FR-26, FR-27, FR-30, NFR-15, NFR-25]
-status: blocked
-blocked_reason: "OpenEMR v8.3.0 lacks required API surfaces and patient-scoped write proof; no authenticated synthetic probe environment exists."
+status: todo
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/2
 ---
 
 ## Context
 
-The API-only architecture requires an exact, release-specific endpoint map before application code. Missing coverage is a documented blocker, never permission for direct database access.
+The API-only architecture requires an exact, release-specific endpoint map before the
+affected adapter operation is implemented. Local foundation work may use documented
+Standard REST APIs with synthetic data; missing coverage remains a documented blocker
+for the affected operation and never permission for direct database access.
 
 ## Acceptance Criteria
 
