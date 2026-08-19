@@ -13,13 +13,15 @@ conversation. The selected project still includes conversational assessment, loc
 document extraction, appointment scheduling, and supportive content.
 
 The demo will now run inside the current stable
-[OpenEMR](https://github.com/openemr/openemr) frontend. A user must log in to OpenEMR
+[OpenEMR](https://github.com/openemr/openemr) patient portal. A patient must log in to OpenEMR
 before opening the embedded chat. OpenEMR remains the identity provider and source of
-truth for appointments; a separate AI server orchestrates the conversation and uses
-existing OpenEMR APIs for all scheduling reads and writes.
+truth for appointments, demographics, and structured assessments; a separate AI server
+orchestrates the conversation and uses existing OpenEMR APIs for all patient-record reads
+and writes.
 
-Only synthetic data will be used. An external LLM is allowed, but patient and provider
-information may never cross that boundary.
+Only synthetic data will be used. Groq's `openai/gpt-oss-120b` is the hosted external
+LLM, with Zero Data Retention enabled; patient and provider information may never cross
+that boundary.
 
 ---
 
@@ -87,9 +89,10 @@ information may never cross that boundary.
   remain available to authorized provider, office, and admin users in OpenEMR.
 - **FR-16 [must]** A booking conflict or stale slot is reported clearly; the assistant
   never claims success unless OpenEMR confirms the write.
-- **FR-17 [must]** Every appointment read or write uses an existing OpenEMR REST or FHIR
-  endpoint. If the current stable release lacks a required endpoint, implementation
-  stops at a documented integration gap rather than accessing the database directly.
+- **FR-17 [must]** Every OpenEMR read or write, including appointment, demographics, and
+  assessment operations, uses an existing OpenEMR REST or FHIR endpoint. If the current
+  stable release lacks a required endpoint, implementation stops at a documented
+  integration gap rather than accessing the database directly.
 
 ### Chat behavior and failure
 
@@ -108,6 +111,37 @@ information may never cross that boundary.
   upload before OCR and returns a clear user-facing error.
 - **FR-23 [must]** Consent revocation or a deletion request stops document processing
   and purges the source image and extracted identity values in a verifiable way.
+- **FR-24 [must]** The fixture generator creates a unique synthetic identity for each
+  demo patient and uses the same source identity to seed OpenEMR and render that
+  patient's synthetic ID image.
+- **FR-25 [must]** Runtime extraction derives identity fields only from the uploaded
+  image and explicit patient corrections; it does not query OpenEMR demographics, seed
+  fixtures, or expected OCR labels to produce an answer.
+- **FR-26 [must]** Only after the patient confirms or corrects the extracted name, date
+  of birth, and address, the AI server writes those confirmed values to the logged-in
+  patient's OpenEMR demographics through an existing OpenEMR endpoint. Unconfirmed
+  values are never written to OpenEMR.
+- **FR-27 [must]** When the onboarding assessment is completed, the AI server persists
+  the structured assessment in the logged-in patient's native OpenEMR record through an
+  existing OpenEMR endpoint and retains no separate durable patient record.
+
+### Scheduling policy
+
+- **FR-28 [must]** Appointment actions use the booking, rescheduling, cancellation,
+  notice, and eligibility rules already enforced by OpenEMR; the AI server defines no
+  separate scheduling policy or default.
+
+### Runtime model
+
+- **FR-29 [must]** For prompts accepted by the outbound privacy gate, the AI server
+  obtains language-model output from Groq using the pinned model ID
+  `openai/gpt-oss-120b` rather than running a language model on the Oracle AI VM.
+
+### Session persistence
+
+- **FR-30 [must]** During onboarding, patient answers and assessment-draft changes are
+  checkpointed through an existing OpenEMR endpoint so an active flow can resume after
+  an AI-server restart without persisting patient content in the AI session store.
 
 ---
 
@@ -164,6 +198,43 @@ information may never cross that boundary.
   LLM reachability without returning sensitive configuration.
 - **NFR-23 [must]** Source identity images are purged after extraction and user
   confirmation, with an independent expiry mechanism for abandoned flows.
+- **NFR-24 [must]** Deployed application artifacts exclude OCR expected labels and the
+  fixture generator's source identity records.
+- **NFR-25 [must]** Delegated OpenEMR authorization is limited to the logged-in
+  patient's required appointment access, name/date-of-birth/address demographic access,
+  and structured-assessment access required by onboarding.
+- **NFR-26 [must]** Groq Zero Data Retention is enabled and verified before any demo
+  request is sent to `openai/gpt-oss-120b`; this setting does not weaken or bypass the
+  local outbound PHI/PII gate.
+- **NFR-27 [must]** The outbound gate runs a pinned Presidio Analyzer release locally
+  on the Oracle AI VM with built-in PII and medical recognizers plus custom recognizers
+  for OpenEMR identifiers, medical-record numbers, and project-specific healthcare
+  patterns; it calls no cloud detection service.
+- **NFR-28 [must]** The privacy-gate golden corpus includes every synthetic patient and
+  provider fixture value plus representative PHI/PII variants, and deployment is
+  blocked if any seeded sensitive value is allowed outbound.
+- **NFR-29 [must]** OCR uses only a pinned local Tesseract release and pinned English
+  trained data. It must reach at least 90% field-level accuracy on the synthetic-ID
+  golden set before deployment; failure reopens the engine decision rather than silently
+  adding PaddleOCR or a cloud OCR service.
+- **NFR-30 [must]** An unexpired active chat session, including delegated OpenEMR
+  authorization and the non-patient workflow cursor needed to reload its OpenEMR draft,
+  survives an AI process or VM restart without requiring patient reauthorization.
+- **NFR-31 [must]** The AI VM stores hashed session handles, non-patient workflow
+  cursors, expiry timestamps, and AES-256-GCM-encrypted OpenEMR OAuth tokens in SQLite
+  WAL mode on a persistent local volume.
+- **NFR-32 [must]** The AES-256-GCM key is supplied through deployment secret storage
+  outside the SQLite files and source repository, and each encrypted value uses a
+  unique nonce with authenticated session metadata.
+- **NFR-33 [must]** SQLite contains no prompt transcript, assessment answer, document
+  content, demographic value, or other patient record, and an expiry job deletes each
+  expired session and its encrypted tokens.
+- **NFR-34 [must]** Caddy accepts public HTTP/HTTPS traffic for both sslip.io hostnames,
+  obtains and renews their Let's Encrypt certificates, redirects HTTP to HTTPS, routes
+  the `emr` hostname to OpenEMR, and routes the `chat` hostname to the private AI VM.
+- **NFR-35 [must]** V1 browser acceptance covers current stable desktop and Android
+  Chrome releases, with desktop Chrome prioritized; no compatibility pass is required
+  for another browser family.
 
 ---
 
@@ -178,7 +249,7 @@ Each request includes only the fields needed for that turn:
 - office-hours intervals;
 - closure intervals;
 - anonymous open-slot token, start, and end values;
-- minimum-notice and enabled-action scheduling rules;
+- OpenEMR-supplied enabled-action scheduling rules when available;
 - structured response schema and schema version.
 
 Anonymous slot tokens are short-lived and are resolved to real OpenEMR resources only
@@ -196,6 +267,8 @@ inside the AI server.
 | Appointment operations | View, book, reschedule, and cancel pass end-to-end |
 | Concurrent booking | Exactly one success for the final open slot |
 | External privacy gate | Zero seeded PHI/PII values in captured external requests |
+| Provider retention control | Groq Zero Data Retention verified before the first demo request |
+| Restart recovery | An unexpired active chat resumes after an AI-server restart without reauthorization |
 | Chat response | Less than 3.0 s p95 under the stated load |
 | Scheduling operation | Less than 1.0 s p95 under the stated load |
 
@@ -206,14 +279,11 @@ hypotheses until real analytics exist.
 
 ## 8. Open questions
 
-- **OQ-1:** Which external LLM provider and pinned model will be used?
-- **OQ-2:** What local PHI/PII detection implementation and test corpus will enforce
-  the outbound gate?
 - **OQ-3:** Which existing endpoints in the current stable OpenEMR release expose
-  provider availability, office hours, holiday closures, rescheduling, and
-  cancellation status updates?
-- **OQ-4:** What booking, rescheduling, cancellation, and minimum-notice rules should
-  the demo enforce?
-- **OQ-5:** Which local OCR engine and confidence floor meet the 90% requirement?
-- **OQ-6:** What minimal storage will hold encrypted OAuth tokens and AI sessions on
-  the AI VM?
+  provider availability, office hours, holiday closures, rescheduling, cancellation,
+  logged-in-patient demographic reads and writes, and assessment draft/completion
+  persistence?
+- **OQ-7:** Which native OpenEMR form, document, or other patient-record resource
+  should represent the structured assessment?
+- **OQ-8:** Which functional, visual, accessibility, or performance differences are
+  acceptable on the lower-priority Android Chrome experience?
