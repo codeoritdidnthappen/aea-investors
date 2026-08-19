@@ -15,22 +15,34 @@ from ai_server.app.auth import (
     SessionStore,
     utc_now,
 )
+from ai_server.app.health import (
+    HealthService,
+    HealthSettings,
+    default_health_service,
+    unavailable_health_service,
+)
 
 
 def create_app(
     settings: AuthSettings | None = None,
     authorization: AuthorizationService | None = None,
     clock: Callable[[], datetime] = utc_now,
+    health_service: HealthService | None = None,
 ) -> FastAPI:
     """Create the AI server without exposing delegated credentials to the browser."""
 
     configured_settings = settings
     configured_authorization = authorization
+    configured_health_service = health_service
     http_client: httpx.AsyncClient | None = None
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-        nonlocal configured_settings, configured_authorization, http_client
+        nonlocal \
+            configured_settings, \
+            configured_authorization, \
+            configured_health_service, \
+            http_client
         if configured_settings is None:
             configured_settings = AuthSettings.from_environment()
         store = SessionStore(configured_settings.database_path, configured_settings.encryption_key)
@@ -41,6 +53,12 @@ def create_app(
                 configured_settings,
                 store,
                 OpenEmrOAuthClient(configured_settings, http_client),
+            )
+        if configured_health_service is None:
+            if http_client is None:
+                http_client = httpx.AsyncClient(timeout=2.0)
+            configured_health_service = default_health_service(
+                HealthSettings.from_environment(configured_settings.issuer), http_client
             )
         yield
         if http_client is not None:
@@ -53,9 +71,10 @@ def create_app(
         return JSONResponse({"detail": str(exc)}, status_code=exc.status_code)
 
     @server.get("/health")
-    async def health() -> dict[str, str]:
-        """Return a non-sensitive liveness response for local development."""
-        return {"status": "ok"}
+    async def health() -> dict[str, object]:
+        """Return non-sensitive dependency reachability for local development."""
+        service = configured_health_service or unavailable_health_service()
+        return await service.report()
 
     @server.get("/oauth/launch")
     async def oauth_launch() -> RedirectResponse:

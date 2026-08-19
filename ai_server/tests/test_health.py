@@ -7,4 +7,12 @@ def test_health_returns_non_sensitive_liveness_response() -> None:
     response = TestClient(app).get("/health")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    assert response.json() == {
+        "status": "degraded",
+        "dependencies": {
+            "ai_server": "ok",
+            "openemr_api": "unavailable",
+            "ocr": "unavailable",
+            "external_llm": "unavailable",
+        },
+    }
