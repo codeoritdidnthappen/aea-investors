@@ -1,0 +1,33 @@
+[project]
+name = "intake-ai-server"
+version = "0.1.0"
+description = "Local AI-server foundation for the Intake demo"
+requires-python = ">=3.9,<3.14"
+dependencies = [
+  "fastapi==0.116.1",
+  "langgraph==0.6.7",
+  "uvicorn==0.35.0",
+]
+
+[dependency-groups]
+dev = [
+  "httpx==0.28.1",
+  "pytest==8.4.2",
+  "pytest-cov==6.2.1",
+  "ruff==0.12.10",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["ai_server/tests"]
+pythonpath = ["."]
+addopts = "--cov=ai_server.app --cov-report=term-missing --cov-fail-under=80"
+
+[tool.coverage.run]
+branch = true
+
+[tool.ruff]
+target-version = "py39"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]

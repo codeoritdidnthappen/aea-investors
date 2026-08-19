@@ -1,0 +1,1 @@
+{"test_cmd":"uv run --locked --group dev ruff format --check . && uv run --locked --group dev ruff check . && uv run --locked --group dev pytest"}

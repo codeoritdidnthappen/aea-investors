@@ -33,3 +33,4 @@ pipeline/data/interim/*.duckdb.wal
 dist/
 *.tsbuildinfo
 coverage/
+.coverage
