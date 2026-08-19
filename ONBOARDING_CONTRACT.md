@@ -15,6 +15,13 @@ patient answers in its session store and sends no assessment value to Groq.
   race, ethnicity, sex, gender identity, sexual orientation, diagnosis, medications,
   trauma history, insurance, emergency contact, or payment information.
 - The user may skip document upload and enter identity fields manually.
+- An uploaded image and its extracted values are transient: revoke consent, request
+  deletion, cancel the upload, or complete identity confirmation to purge them. An
+  independent expiry process purges abandoned uploads. No purge action changes a
+  confirmed OpenEMR demographic record.
+- A purge is successful only when the image cannot be retrieved and a subsequent read
+  of its extracted transient values returns no value; the event log contains only the
+  non-sensitive purge outcome and reason.
 - Every required value uses a labelled control and a short explanation of why it is
   collected. The assistant must not give clinical advice or make suitability claims.
 - A user may leave and resume an incomplete flow. Completion requires all required
@@ -44,8 +51,12 @@ event. The user may return to any field before selecting **Confirm and complete*
    SQLite.
 2. After each valid user submission, checkpoint that field in the OpenEMR draft.
    Never checkpoint OCR output until the user has confirmed or edited it.
-3. On an OCR failure, partial result, declined consent, or upload cancellation, leave
-   all affected identity inputs blank and continue with manual entry. Never guess.
+3. On an OCR failure, leave affected identity inputs blank and continue with manual
+   entry. On a partial result, retain only the extracted values for user confirmation
+   and leave missing inputs blank for manual entry. On declined consent, upload
+   cancellation, consent revocation, or deletion request, stop processing and purge
+   the source image plus its extracted transient values. Never guess. An independent
+   expiry process purges abandoned uploads.
 4. The draft remains incomplete until every required field is valid and the user
    confirms the review screen.
 5. On confirmation, write confirmed demographics and finalize the structured
@@ -67,10 +78,26 @@ receive assessment values under the outbound privacy policy.
 |---|---|---|---|
 | Long pause | 120 seconds with no interaction while a field is active; show once per field. | “Take your time. Your progress is saved, and you can continue when you’re ready.” | Show nothing. Do not start a countdown or repeat the prompt. |
 | Upload failure | Local client/server validation, OCR error, or low-confidence result. | “That image didn’t work, but you can continue by entering your details manually. We won’t guess any missing information.” | Show nothing. Successful or partial uploads proceed to the confirmation fields. |
-| Distress intent | Local, conservative intent detection of an explicit expression of distress; it does not diagnose risk. | “I’m sorry this feels difficult. You can pause or continue later. If you might hurt yourself or are in immediate danger, call or text 988 in the U.S., call 911, or contact local emergency services.” | Show nothing. Never surface crisis language solely because of a demographic, selection, pause, or upload outcome. |
+| General distress intent | The local phrase corpus below matches an expression of distress but no immediate-safety phrase. | “I’m sorry this feels difficult. You can pause or continue later.” | Show nothing. Never show it solely because of a demographic, selection, pause, or upload outcome. |
+| Immediate-safety intent | The local phrase corpus below matches an explicit self-harm, suicide, or immediate-danger expression. | “If you might hurt yourself or are in immediate danger, call or text 988 in the U.S., call 911, or contact local emergency services.” | Show nothing. Never infer immediate danger from a demographic, selection, pause, or upload outcome. |
 
 Support content does not change required fields, completion rules, or appointment
 eligibility. It is not clinical advice and does not replace emergency care.
+
+### Local distress phrase corpus
+
+Normalize a user message to lowercase and collapse whitespace. Do not use an external
+model, sentiment score, clinical classifier, or a derived risk level. A substring match
+is sufficient; the immediate-safety list takes precedence over the general-distress
+list. The detector only selects the approved UI content and does not persist a label.
+
+| Category | Normalized trigger phrases |
+|---|---|
+| General distress | `i feel overwhelmed`, `i can't do this`, `this is too much`, `i am panicking`, `i feel anxious`, `i am scared`, `i feel stressed`, `i need emotional help` |
+| Immediate safety | `i am suicidal`, `i am thinking about suicide`, `i want to kill myself`, `i want to die`, `i want to end my life`, `i want to hurt myself`, `i am self harming`, `i am self-harming`, `i can't keep myself safe`, `i am in immediate danger` |
+
+This small corpus is a deterministic support-content trigger, not a clinical screen.
+It must be expanded only through an approved contract change and matching fixtures.
 
 ## Fixture cases
 
@@ -85,7 +112,12 @@ eligibility. It is not clinical advice and does not replace emergency care.
 | Other accommodation selected | Detail is optional, limited to 200 characters, and is saved only in the OpenEMR draft/assessment. |
 | 120-second inactive field | One long-pause message appears; no message is shown before the threshold. |
 | Upload error or low-confidence OCR | Manual-entry supportive content appears; no identity value is fabricated. |
-| Explicit distress phrase | Distress supportive content appears; an ordinary question or non-distressed answer does not trigger it. |
+| Consent revoked, deletion requested, or upload cancelled | Processing stops; subsequent image retrieval is unavailable, subsequent extracted-value reads are empty, and the non-sensitive purge outcome is recorded. |
+| Abandoned upload expires | The expiry process makes image retrieval unavailable and subsequent extracted-value reads empty. |
+| `I feel overwhelmed` | General-distress supportive content appears; no crisis text appears. |
+| `I want to die` | Immediate-safety supportive content appears. |
+| `I want to schedule an appointment` | No distress content appears. |
+| `I need help scheduling` or `that option is not safe` | No distress content appears. |
 
 ## Approval record
 
