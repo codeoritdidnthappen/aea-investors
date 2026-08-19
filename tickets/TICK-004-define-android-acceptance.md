@@ -8,8 +8,8 @@ estimate: S
 depends_on: []
 labels: [mobile, accessibility, discovery]
 source: [NFR-19, NFR-35]
-status: blocked
-blocked_reason: "The drafted Android matrix, degradation policy, accessibility rules, and verification cases require product approval."
+status: done
+builder_commit: cc66051
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/5
 ---
 
