@@ -9,7 +9,7 @@ depends_on: [TICK-001]
 labels: [ci, foundation]
 source: [NFR-18, NFR-21]
 status: todo
-remote_url: null
+remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/6
 ---
 
 ## Context

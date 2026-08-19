@@ -9,7 +9,7 @@ depends_on: [TICK-005, TICK-006, TICK-011]
 labels: [ocr, privacy, tesseract]
 source: [FR-6, FR-7, FR-21, FR-22, FR-23, FR-25, NFR-23, NFR-29]
 status: todo
-remote_url: null
+remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/15
 ---
 
 ## Context

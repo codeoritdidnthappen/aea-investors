@@ -9,7 +9,7 @@ depends_on: []
 labels: [mobile, accessibility, discovery]
 source: [NFR-19, NFR-35]
 status: todo
-remote_url: null
+remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/5
 ---
 
 ## Context

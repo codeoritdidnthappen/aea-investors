@@ -9,7 +9,7 @@ depends_on: [TICK-005, TICK-006]
 labels: [privacy, presidio, security]
 source: [NFR-2, NFR-3, NFR-4, NFR-5, NFR-8, NFR-27, NFR-28]
 status: todo
-remote_url: null
+remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/10
 ---
 
 ## Context

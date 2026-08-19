@@ -9,7 +9,7 @@ depends_on: [TICK-020]
 labels: [scheduling, verification]
 source: [FR-28, NFR-11, NFR-12]
 status: todo
-remote_url: null
+remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/22
 ---
 
 ## Context

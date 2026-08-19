@@ -9,7 +9,7 @@ depends_on: [TICK-005]
 labels: [fixtures, ocr, privacy]
 source: [FR-24, FR-25, NFR-1, NFR-24, NFR-28, NFR-29]
 status: todo
-remote_url: null
+remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/7
 ---
 
 ## Context

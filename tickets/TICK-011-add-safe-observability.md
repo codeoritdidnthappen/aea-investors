@@ -9,7 +9,7 @@ depends_on: [TICK-005, TICK-008, TICK-009]
 labels: [operations, security]
 source: [NFR-8, NFR-22]
 status: todo
-remote_url: null
+remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/12
 ---
 
 ## Context

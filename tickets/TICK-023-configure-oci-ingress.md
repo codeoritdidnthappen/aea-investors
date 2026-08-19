@@ -9,7 +9,7 @@ depends_on: [TICK-022]
 labels: [deployment, caddy, oci]
 source: [NFR-9, NFR-16, NFR-17, NFR-34]
 status: todo
-remote_url: null
+remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/24
 ---
 
 ## Context

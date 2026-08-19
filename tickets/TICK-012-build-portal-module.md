@@ -9,7 +9,7 @@ depends_on: [TICK-002, TICK-008]
 labels: [openemr, portal, frontend]
 source: [FR-1, FR-2, FR-3, FR-4, NFR-6, NFR-7]
 status: todo
-remote_url: null
+remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/13
 ---
 
 ## Context

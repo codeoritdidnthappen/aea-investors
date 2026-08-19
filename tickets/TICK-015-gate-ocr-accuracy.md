@@ -9,7 +9,7 @@ depends_on: [TICK-006, TICK-014]
 labels: [ocr, evaluation, release-gate]
 source: [NFR-29]
 status: todo
-remote_url: null
+remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/16
 ---
 
 ## Context

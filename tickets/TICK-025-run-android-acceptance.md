@@ -9,7 +9,7 @@ depends_on: [TICK-004, TICK-013, TICK-014, TICK-020, TICK-023]
 labels: [android, chrome, verification]
 source: [NFR-19, NFR-35]
 status: todo
-remote_url: null
+remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/26
 ---
 
 ## Context
