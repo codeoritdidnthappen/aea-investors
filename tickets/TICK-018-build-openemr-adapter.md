@@ -8,10 +8,10 @@ estimate: L
 depends_on: [TICK-001, TICK-008]
 labels: [openemr, scheduling]
 source: [FR-9, FR-10, FR-15, FR-17, FR-20, FR-28, NFR-12, NFR-25]
-status: todo
+status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/19
+builder_commit: cdf23f7
 ---
-
 ## Context
 
 The adapter turns the endpoint map into user-scoped reads and writes against the pinned, disposable local OpenEMR stack while keeping OpenEMR authoritative for all facts and policy. Unsupported operations remain explicit local integration gaps; no database fallback is permitted.
