@@ -8,10 +8,10 @@ estimate: M
 depends_on: [TICK-006, TICK-014]
 labels: [ocr, evaluation, release-gate]
 source: [NFR-29]
-status: todo
+status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/16
+builder_commit: 299354a
 ---
-
 ## Context
 
 Tesseract is the sole v1 OCR engine and must meet the documented field-level target in the local demo environment.
