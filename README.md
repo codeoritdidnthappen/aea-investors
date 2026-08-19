@@ -110,8 +110,12 @@ uv run --locked --group dev pytest
 uv run uvicorn ai_server.app.main:app --host 127.0.0.1 --port 8000
 ```
 
-`GET /health` returns a non-sensitive liveness response. OpenEMR containers, synthetic
-seed data, and the portal module are added by their dedicated tickets.
+`GET /health` returns a non-sensitive liveness response. The portal module is added
+by its dedicated ticket.
+
+The full local demo topology — pinned OpenEMR, MariaDB, and the AI server as
+separate Docker Compose services with persistent local state — lives in
+[deploy/local](deploy/local/README.md).
 
 ---
 
