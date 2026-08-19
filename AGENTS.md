@@ -69,6 +69,10 @@ Read [`GIT_WORKFLOW_GAUNTLET.md`](GIT_WORKFLOW_GAUNTLET.md) before any git work 
 authoritative guidance for branching, commits, merge requests, and the merge gate. Use `glab`
 (not `gh`), and open **merge requests**, not pull requests.
 
+Whenever a local file in `tickets/` is created or updated, create or update its linked GitHub
+issue in the same task. Keep its title, description, acceptance criteria, status, and closure
+state aligned with the local ticket; use the ticket's `remote_url` as the issue reference.
+
 ---
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
