@@ -37,6 +37,13 @@ Living state: what was decided, why, what remains open, and where work stands.
 | 24 | Do not use Cloudflare | Oracle Cloud supplies the infrastructure | Locked |
 | 25 | Keep local OCR and confirmation-before-save behavior | Preserves the selected onboarding brief's document requirement | Locked |
 | 26 | Model output cannot assert an appointment write until OpenEMR confirms it | Prevents hallucinated scheduling commitments | Locked |
+| 27 | Persist confirmed demographics and structured assessments in OpenEMR through existing APIs | OpenEMR remains the sole durable patient-record store | Locked |
+| 28 | Use Groq Free with pinned model ID `openai/gpt-oss-120b` and Zero Data Retention | Meets the free-service constraint while retaining the hard local gate | Locked |
+| 29 | Use pinned local Presidio Analyzer with built-in and custom healthcare recognizers | Reject-on-match checks stay on the Oracle AI VM | Locked |
+| 30 | Use pinned local Tesseract and English trained data as the sole v1 OCR engine | Controlled synthetic IDs make the free local engine appropriate; 90% golden-set accuracy is a release gate | Locked |
+| 31 | Persist session plumbing in SQLite WAL with AES-256-GCM-encrypted OAuth tokens | Active sessions survive restart without adding a patient-record store | Locked |
+| 32 | Use Caddy for public ingress and automatic Let's Encrypt management | One reserved IP and sslip.io hostnames provide free HTTPS routing | Locked |
+| 33 | Target current stable desktop and Android Chrome, prioritizing desktop | Keeps v1 verification within one browser family | Locked |
 
 ### Superseded decisions
 
@@ -49,15 +56,10 @@ Vercel, and AI-owned scheduling tables are superseded by decisions 3–15 and 22
 
 | # | Question | Blocks |
 |---|---|---|
-| O-1 | Which external LLM provider and pinned model will be used? | LLM adapter and eval |
-| O-2 | Which local PHI/PII detector and test corpus enforce the outbound gate? | PrivacyGate |
-| O-3 | Which existing endpoints in the pinned OpenEMR version cover availability, office hours, holiday closures, rescheduling, and cancellation? | OpenEMR adapter |
-| O-4 | What notice and eligibility rules apply to booking, rescheduling, and cancellation? | Scheduling tools |
-| O-5 | Which encrypted store holds OAuth tokens and AI sessions? | Auth/session implementation |
-| O-6 | Which reverse proxy manages hostname routing and certificate renewal? | OCI deployment |
-| O-7 | Which external-LLM retention terms are acceptable? | Provider selection |
-| O-8 | Which OCR engine and confidence floor pass the synthetic golden set? | OCR adapter |
-| O-9 | Which browsers must the embedded sslip.io cookie flow support? | Iframe auth verification |
+| O-3 | Which existing endpoints in the pinned OpenEMR version cover availability, office hours, holiday closures, rescheduling, cancellation, logged-in-patient demographics, and assessment persistence? | OpenEMR adapter |
+| O-10 | Which supported extension hook embeds the iframe in the patient portal on the pinned OpenEMR release? | OpenEMR portal integration |
+| O-11 | Which native OpenEMR form, document, or other patient-record resource represents the structured assessment? | OpenEMR endpoint spike |
+| O-12 | Which functional, visual, accessibility, or performance differences are acceptable on Android Chrome? | Mobile acceptance criteria |
 
 Endpoint verification O-3 must happen before scheduling implementation. Missing API
 coverage may not be bypassed with direct database access.
@@ -91,12 +93,20 @@ OpenEMR itself remains an upstream dependency and is not copied into this reposi
   boundary can be proven with seeded sensitive values.
 - Appointment facts come from OpenEMR API responses.
 - No application code is written until the OpenEMR endpoint spike resolves O-3.
-- Git workflow follows GIT_WORKFLOW_GAUNTLET.md.
+- Groq Zero Data Retention must be verified before model traffic is enabled; it does not
+  replace the local outbound PHI/PII gate.
+- Presidio rejects on any built-in or custom recognizer match; fixture values remain
+  evaluation-only and are unavailable to the deployed OCR adapter.
+- Tesseract is the sole v1 OCR engine; failure to meet the 90% golden-set target blocks
+  deployment and reopens the decision.
+- SQLite stores only hashed session handles, non-patient workflow cursors, expiry, and
+  AES-256-GCM-encrypted OAuth tokens; patient drafts remain in OpenEMR.
+- Git workflow follows GIT_WORKFLOW_COIDH.md.
 
 ---
 
 ## 5. Status
 
-The interview is paused and all confirmed decisions through FastAPI selection are now
-recorded. Next work should resolve the open questions, beginning with OpenEMR endpoint
-coverage, before scaffolding either integration.
+The interview is paused after recording the runtime services, session persistence,
+ingress, and browser target. Next work should resolve the remaining OpenEMR integration
+questions, beginning with endpoint coverage, before scaffolding either integration.

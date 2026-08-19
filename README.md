@@ -1,7 +1,7 @@
 # Intake
 
 An AI-assisted behavioral-health onboarding demo embedded inside
-[OpenEMR](https://github.com/openemr/openemr). A logged-in user opens the chat from
+[OpenEMR](https://github.com/openemr/openemr). A logged-in patient opens the chat from
 OpenEMR, completes the guided intake flow, and can view, book, reschedule, or cancel
 appointments through conversation.
 
@@ -11,8 +11,9 @@ appointments through conversation.
 
 ## Product shape
 
-OpenEMR is the host application, identity provider, appointment system of record, and
-database owner. A small OpenEMR module displays the separately hosted chat UI in an
+OpenEMR is the host application, identity provider, and system of record for
+appointments, demographics, structured assessments, and all other persisted patient data.
+A small OpenEMR patient-portal integration displays the separately hosted chat UI in an
 iframe. The iframe talks only to a FastAPI AI server; it never calls OpenEMR directly.
 
 The AI server uses LangGraph for orchestration, streams response chunks to the iframe,
@@ -41,11 +42,14 @@ provider, office, and admin users but are hidden from the patient-facing chat.
 | Embedded UI | Chat UI inside an OpenEMR iframe |
 | AI server | Python, FastAPI, LangGraph |
 | EHR integration | OpenEMR OAuth/SMART launch and existing OpenEMR APIs |
-| Runtime AI | External LLM provider; exact provider is still open |
-| OCR | Local Tesseract or PaddleOCR; exact engine is still open |
+| Runtime AI | Groq Free with pinned model ID `openai/gpt-oss-120b` and Zero Data Retention enabled |
+| Outbound privacy gate | Local Presidio Analyzer with built-in and custom healthcare recognizers |
+| OCR | Pinned local Tesseract and English trained data |
+| Session store | SQLite in WAL mode; OAuth tokens encrypted with AES-256-GCM |
 | Deployment | Two Oracle Cloud Always Free VMs |
 | Public names | Two sslip.io hostnames on one reserved OCI public IP |
-| TLS | Let's Encrypt |
+| TLS | Caddy-managed Let's Encrypt certificates |
+| Browser | Current stable desktop and Android Chrome; desktop is the priority |
 
 Cloudflare, Supabase, Rails, Next.js, Render, Railway, and Vercel are not part of the
 revised deployment.
@@ -54,12 +58,17 @@ revised deployment.
 
 ## Privacy boundary
 
-The demo uses synthetic patient, provider, and appointment data only.
+The demo uses synthetic patient, provider, appointment, and identity-document data only.
 
 Patient and provider information must never be sent to an external LLM. Before any
 external request, the AI server checks the user's prompt for PHI or PII. A prompt that
 fails the check is not scrubbed or forwarded; it is returned locally with instructions
 to remove the sensitive content and try again.
+
+The gate runs pinned Presidio locally with built-in and custom healthcare recognizers;
+any match rejects the request. Groq Zero Data Retention must be verified before model
+traffic is enabled. Tesseract is the sole v1 OCR engine and must pass the 90% synthetic-ID
+golden set before deployment.
 
 Approved outbound scheduling context is request-specific and minimal: validated prompt
 text, current date/time, timezone, office hours, closure intervals, anonymous open-slot
