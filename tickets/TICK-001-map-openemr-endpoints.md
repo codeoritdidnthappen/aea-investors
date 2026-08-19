@@ -8,7 +8,8 @@ estimate: L
 depends_on: [TICK-005]
 labels: [openemr, discovery]
 source: [FR-3, FR-9, FR-10, FR-12, FR-13, FR-14, FR-17, FR-26, FR-27, FR-30, NFR-15, NFR-25]
-status: todo
+status: done
+builder_commit: 3b542b9
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/2
 ---
 
