@@ -8,7 +8,8 @@ estimate: L
 depends_on: [TICK-005]
 labels: [fixtures, ocr, privacy]
 source: [FR-24, FR-25, NFR-1, NFR-24, NFR-28, NFR-29]
-status: todo
+status: done
+builder_commit: aa98b65
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/7
 ---
 
