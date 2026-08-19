@@ -25,7 +25,7 @@ The OpenEMR integration must use a supported hook on the pinned release so the p
 
 ## Testing
 
-Exercise login, launch, and logout with browser network capture; attach redacted evidence. CI must be green.
+Exercise login, launch, and logout in the pinned local OpenEMR Docker stack with local browser network capture; attach redacted evidence. CI must be green.
 
 ## Out of Scope
 

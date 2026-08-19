@@ -24,7 +24,7 @@ The documented should-level targets are less than 3.0 seconds p95 for chat/API a
 
 ## Testing
 
-Run the load scripts against the OCI-equivalent deployed topology and archive the report. CI must be green.
+Run the load scripts against the local Docker topology and archive the local report. CI must be green.
 
 ## Out of Scope
 

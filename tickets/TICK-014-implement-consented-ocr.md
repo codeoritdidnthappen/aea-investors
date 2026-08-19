@@ -25,7 +25,7 @@ OCR is local, consented, and transient: runtime may use only the upload and expl
 
 ## Testing
 
-Test consent, invalid uploads, partial OCR, manual completion, purge, expiry, and runtime isolation from fixtures. CI must be green.
+Test consent, invalid uploads, partial OCR, manual completion, purge, expiry, and runtime isolation from fixtures locally. Run real Tesseract only when installed locally; CI must be green.
 
 ## Out of Scope
 

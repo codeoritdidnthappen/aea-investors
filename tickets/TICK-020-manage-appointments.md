@@ -25,7 +25,7 @@ Appointment writes occur only after a deterministic OpenEMR call; the assistant 
 
 ## Testing
 
-Run synthetic OpenEMR end-to-end operations, stale conflict, and concurrent-final-slot tests. CI must be green.
+Run synthetic OpenEMR end-to-end operations, stale conflict, and concurrent-final-slot tests against the local pinned Docker stack. CI must be green.
 
 ## Out of Scope
 

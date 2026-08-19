@@ -24,7 +24,7 @@ Desktop Chrome is the v1 priority and must prove the integrated portal, onboardi
 
 ## Testing
 
-Run the critical-flow suite against the deployed topology in current stable desktop Chrome. CI must be green.
+Run the critical-flow suite against the local Docker topology in current stable desktop Chrome. CI must be green.
 
 ## Out of Scope
 

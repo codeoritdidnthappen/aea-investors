@@ -1,12 +1,12 @@
 ---
 id: TICK-022
-title: "chore(deploy): create reproducible local OCI-equivalent topology"
+title: "chore(local): create reproducible local demo topology"
 type: chore
 epic: EPIC-08
 priority: P1
 estimate: L
 depends_on: [TICK-005, TICK-011]
-labels: [deployment, oci]
+labels: [local, docker]
 source: [NFR-9, NFR-15, NFR-16, NFR-20, NFR-31]
 status: todo
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/23
@@ -14,7 +14,7 @@ remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/23
 
 ## Context
 
-The demo uses separate OpenEMR/MariaDB and AI-server VMs; local deployment must reproduce their boundary and persistent state before OCI rollout.
+The demo runs only as a local, reproducible Docker topology with separate OpenEMR/MariaDB and AI-server services and persistent local state.
 
 ## Acceptance Criteria
 
@@ -28,4 +28,4 @@ Start from a clean checkout, seed synthetic data, restart the AI service, and ru
 
 ## Out of Scope
 
-Provisioning a production OCI account.
+OCI, public ingress, cloud provisioning, and production deployment.

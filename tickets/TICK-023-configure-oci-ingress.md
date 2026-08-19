@@ -1,12 +1,12 @@
 ---
 id: TICK-023
-title: "chore(ingress): configure Caddy and OCI private routing"
+title: "chore(local): configure local Caddy ingress"
 type: chore
 epic: EPIC-08
 priority: P1
 estimate: M
 depends_on: [TICK-022]
-labels: [deployment, caddy, oci]
+labels: [local, caddy]
 source: [NFR-9, NFR-16, NFR-17, NFR-34]
 status: todo
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/24
@@ -14,18 +14,18 @@ remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/24
 
 ## Context
 
-Caddy on the OpenEMR VM is the only public ingress for two sslip.io hostnames on one reserved OCI IP.
+Caddy is the local ingress for OpenEMR and chat hostnames in the disposable Docker topology; it has no public or cloud exposure.
 
 ## Acceptance Criteria
 
-- [ ] Caddy redirects HTTP to HTTPS, persists ACME state, and serves valid certificates for both hostnames.
-- [ ] The emr hostname reaches OpenEMR and the chat hostname proxies only over the private OCI network to the AI VM.
-- [ ] OCI rules restrict MariaDB and FastAPI origin ports to private-network callers.
+- [ ] Caddy redirects local HTTP to HTTPS using local development certificates and persists local certificate state.
+- [ ] The local emr hostname reaches OpenEMR and the chat hostname proxies only to the local AI service.
+- [ ] Docker network configuration prevents direct host exposure of MariaDB and internal AI ports.
 
 ## Testing
 
-Verify TLS, routing, renewal persistence, redirect, and blocked public origin-port access. CI must be green.
+Verify local TLS, routing, restart persistence, redirect, and blocked host origin-port access. CI must be green.
 
 ## Out of Scope
 
-Cloudflare or paid hosting.
+Cloud services, public DNS, and paid hosting.

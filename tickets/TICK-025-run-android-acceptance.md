@@ -24,7 +24,7 @@ Android Chrome is in scope with explicitly approved lower-priority degradation o
 
 ## Testing
 
-Execute the approved Android device/version matrix with retained screenshots and network evidence. CI must be green.
+Execute the approved Android device/version matrix against the local topology with retained screenshots and network evidence. CI must be green.
 
 ## Out of Scope
 

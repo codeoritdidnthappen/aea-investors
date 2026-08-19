@@ -1,6 +1,6 @@
 ---
 id: TICK-027
-title: "task(release): verify privacy and deployment readiness"
+title: "task(local): verify privacy and local-demo readiness"
 type: task
 epic: EPIC-08
 priority: P1
@@ -14,17 +14,17 @@ remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/28
 
 ## Context
 
-The demo cannot be represented as ready until all hard privacy, synthetic-data, OCR, artifact, deployment, and browser gates have evidence.
+The local demo cannot be represented as ready until all hard privacy, synthetic-data, OCR, artifact, local-topology, and browser gates have evidence.
 
 ## Acceptance Criteria
 
 - [ ] A release checklist reconciles every P1 requirement and gate to executed evidence.
-- [ ] Privacy golden corpus, OCR threshold, artifact exclusion, ZDR verification, health, TLS, desktop, and Android results are all passing.
+- [ ] Privacy golden corpus, OCR threshold, artifact exclusion, ZDR verification, local health, local TLS, desktop, and Android results are all passing.
 - [ ] Exceptions identify the unmet requirement and prevent readiness approval.
 
 ## Testing
 
-Independently re-run the release checklist against deployed artifacts and retain redacted evidence. CI must be green.
+Independently re-run the release checklist against local artifacts and retain redacted evidence. CI must be green.
 
 ## Out of Scope
 

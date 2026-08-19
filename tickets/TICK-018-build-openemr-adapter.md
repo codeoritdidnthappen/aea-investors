@@ -14,18 +14,18 @@ remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/19
 
 ## Context
 
-The adapter turns the endpoint map into user-scoped reads and writes while keeping OpenEMR authoritative for all facts and policy.
+The adapter turns the endpoint map into user-scoped reads and writes against the pinned, disposable local OpenEMR stack while keeping OpenEMR authoritative for all facts and policy. Unsupported operations remain explicit local integration gaps; no database fallback is permitted.
 
 ## Acceptance Criteria
 
-- [ ] The adapter reads active appointments, availability, office hours, and closures only through mapped endpoints.
+- [ ] The adapter reads active appointments only through mapped endpoints; unavailable availability, office-hours, and closure operations fail explicitly with no fallback until a mapped endpoint exists.
 - [ ] Results include explicit timezones and remain correct across DST.
 - [ ] Cancelled appointments are omitted from patient chat results but are not deleted.
 - [ ] The adapter adds no booking, eligibility, notice, or scheduling default.
 
 ## Testing
 
-Integration-test mapped operations, cancellation filtering, and DST fixtures against pinned synthetic OpenEMR. CI must be green.
+Integration-test supported operations, cancellation filtering, and DST fixtures against a pinned synthetic OpenEMR Docker stack running locally. CI must be green.
 
 ## Out of Scope
 

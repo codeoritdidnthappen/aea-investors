@@ -25,7 +25,7 @@ The iframe is a patient-facing FastAPI-only interface that renders streamed resp
 
 ## Testing
 
-Add UI tests for streaming and unavailable state plus desktop keyboard and accessibility checks. CI must be green.
+Add UI tests for streaming and unavailable state plus desktop keyboard and accessibility checks against the local AI server. CI must be green.
 
 ## Out of Scope
 
