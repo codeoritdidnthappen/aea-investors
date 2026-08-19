@@ -1,0 +1,31 @@
+---
+id: TICK-024
+title: "task(verification): run desktop Chrome critical-flow coverage"
+type: task
+epic: EPIC-08
+priority: P1
+estimate: L
+depends_on: [TICK-013, TICK-015, TICK-016, TICK-017, TICK-020, TICK-023]
+labels: [e2e, chrome, verification]
+source: [FR-1, FR-2, FR-6, FR-12, FR-13, FR-14, FR-18, FR-19, NFR-18, NFR-19, NFR-35]
+status: todo
+remote_url: null
+---
+
+## Context
+
+Desktop Chrome is the v1 priority and must prove the integrated portal, onboarding, OCR, scheduling, and fallback flow.
+
+## Acceptance Criteria
+
+- [ ] Synthetic-patient E2E coverage exercises login, iframe launch, session, streaming, onboarding, OCR confirmation, appointment operations, and fallback.
+- [ ] Keyboard and baseline accessibility checks pass on the embedded chat.
+- [ ] Failures capture reproducible evidence without protected values.
+
+## Testing
+
+Run the critical-flow suite against the deployed topology in current stable desktop Chrome. CI must be green.
+
+## Out of Scope
+
+Other desktop browser families.

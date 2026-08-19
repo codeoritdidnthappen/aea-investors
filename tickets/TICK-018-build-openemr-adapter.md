@@ -1,0 +1,32 @@
+---
+id: TICK-018
+title: "feat(openemr): implement authoritative scheduling adapter"
+type: feature
+epic: EPIC-07
+priority: P1
+estimate: L
+depends_on: [TICK-001, TICK-008]
+labels: [openemr, scheduling]
+source: [FR-9, FR-10, FR-15, FR-17, FR-20, FR-28, NFR-12, NFR-25]
+status: todo
+remote_url: null
+---
+
+## Context
+
+The adapter turns the endpoint map into user-scoped reads and writes while keeping OpenEMR authoritative for all facts and policy.
+
+## Acceptance Criteria
+
+- [ ] The adapter reads active appointments, availability, office hours, and closures only through mapped endpoints.
+- [ ] Results include explicit timezones and remain correct across DST.
+- [ ] Cancelled appointments are omitted from patient chat results but are not deleted.
+- [ ] The adapter adds no booking, eligibility, notice, or scheduling default.
+
+## Testing
+
+Integration-test mapped operations, cancellation filtering, and DST fixtures against pinned synthetic OpenEMR. CI must be green.
+
+## Out of Scope
+
+Model prompting or a parallel schedule database.

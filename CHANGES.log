@@ -1,0 +1,116 @@
+# CHANGES.log
+
+Chronological record of progress across sessions. Newest at the bottom.
+One entry per working session.
+
+---
+
+## 2026-08-18 — Session 1: Project selection and planning documents
+
+### Completed
+
+**Chose the project**
+Compared the two product briefs in `requirements/` — a scheduling portal and a guided onboarding
+assistant. Similar scope, different centre of gravity: one is a correctness-critical booking
+engine, the other puts AI accuracy and PII handling on the critical path. Picked the onboarding
+assistant.
+
+**Fixed the domain**
+Behavioral-health intake. The brief leaves the specialized service unspecified, but the
+compliance regime and the tone of supportive content both depend on it, so it is decided rather
+than deferred. Recorded as decision #2 — it is the one assumption the rest of the design rests on.
+
+**Wrote the planning documents**
+- `README.md` — what the product is, stack, quickstart, commands, quality bars, privacy
+- `PRD.md` — problem, users, scope with per-feature acceptance criteria, edge cases, eval method,
+  privacy stance, non-goals
+- `ARCHITECTURE.md` — component design, data model, AI adapters and their failure paths, the PII
+  boundary table, deployment
+- `PROJECT_CONTEXT.md` — 14 decisions with rationale, 6 open questions, planned layout
+- `.env.example` — rebuilt for this project
+
+**Cleared the repository**
+`README.md` was still the GitLab default template. `PRD.md`, `ARCHITECTURE.md`,
+`PROJECT_CONTEXT.md`, `CHANGES.log`, and `.env.example` were carryover from an unrelated
+project and were replaced wholesale. `CLAUDE.md`, `AGENTS.md`, `GIT_WORKFLOW_GAUNTLET.md`, and
+`.gitignore` were left alone.
+
+### Design positions worth restating
+
+- The confirmation screen is the write boundary. Nothing extracted is persisted before the user
+  accepts it, which makes partial extraction correct by construction rather than by care.
+- Low-confidence fields are reported absent, never guessed. A fabricated date of birth is worse
+  than a blank one.
+- The chat model may ask, summarize, and reassure. It may not assert an appointment, a clinician,
+  or anything about treatment.
+- "No PHI in logs" is enforced by a test that runs a full onboarding and asserts no seeded
+  identity value appears in any log line.
+
+### Open — carried into Session 2
+
+| # | Item |
+|---|---|
+| O-1 | Pick the LLM provider default: Groq rate limits vs. Gemini quota vs. Ollama latency |
+| O-2 | Tesseract vs. PaddleOCR on phone-photo IDs with glare |
+| O-3 | Source the 30 synthetic ID documents |
+| O-4 | Set `OCR_CONFIDENCE_FLOOR` — false-absent vs. false-value |
+| O-5 | Confirm the purge design: signed URLs + sweep job, or object TTL |
+| O-6 | Distress detection: separate classifier or an intent on the main model |
+
+### Next session
+
+1. Run the OCR spike — O-2, O-3, O-4 together. The confidence floor is the parameter the
+   partial-extraction design hangs on; write no extraction code before it is measured.
+2. Scaffold `api/` and `web/`; get an empty end-to-end request path and `GET /health` working.
+3. Migrations and seed, so a clean checkout runs.
+
+---
+
+## 2026-08-18 — Session 2: OpenEMR architecture interview
+
+### Completed
+
+**Changed the host architecture**
+
+- Selected the current stable OpenEMR release as the frontend, login system, and
+  appointment source of truth.
+- Chose a small OpenEMR module that embeds a separately hosted chat UI in an iframe.
+- Restricted the iframe to the AI server; it never calls OpenEMR directly.
+- Replaced Rails and Next.js with Python, FastAPI, and LangGraph for the AI application.
+
+**Defined OpenEMR integration**
+
+- Selected OAuth/SMART authorization-code launch with a direct AI-server callback.
+- Kept delegated OpenEMR access and refresh tokens on the AI server; the iframe gets
+  only a secure AI-session cookie.
+- Required all appointment reads and writes to use existing OpenEMR REST/FHIR
+  endpoints. Direct MariaDB access and a separate appointment database are forbidden.
+- Expanded appointment behavior to viewing active appointments, reading availability,
+  office hours, and holiday closures, booking, rescheduling, and cancellation.
+- Defined cancellation as a retained status change. The patient chat hides cancelled
+  appointments; authorized provider, office, and admin users retain visibility.
+
+**Defined the external AI boundary**
+
+- Allowed an external LLM but prohibited patient and provider information from ever
+  being sent to it.
+- Required a local PHI/PII check before every external request.
+- Chose reject-and-return behavior for unsafe prompts rather than scrubbing.
+- Approved a minimal scheduling payload with anonymous slot tokens.
+- Selected streamed response chunks.
+- Defined failure behavior: show an unavailable message and instructions for reaching
+  OpenEMR's native scheduler.
+
+**Selected demo infrastructure**
+
+- Synthetic data only.
+- Two Oracle Cloud Always Free VMs: OpenEMR/MariaDB and the separate AI server.
+- One reserved OCI public IP, two sslip.io hostnames, private inter-VM routing, and
+  Let's Encrypt TLS.
+- No Cloudflare.
+
+### Open
+
+The external LLM, PHI/PII detector, OpenEMR endpoint mapping, scheduling policy,
+token/session store, reverse proxy, supported browser matrix, and OCR engine remain
+explicit open questions in PROJECT_CONTEXT.md.
