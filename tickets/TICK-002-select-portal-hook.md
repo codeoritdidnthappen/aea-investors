@@ -8,7 +8,8 @@ estimate: M
 depends_on: [TICK-001]
 labels: [openemr, portal, discovery]
 source: [FR-1, FR-2, FR-3, FR-4]
-status: todo
+status: blocked
+blocked_reason: "Required browser login, launch, logout, and network proof cannot run because no browser integration is available; supported hook and local Docker evidence are recorded."
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/3
 ---
 
