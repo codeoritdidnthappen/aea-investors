@@ -24,7 +24,7 @@ Only a patient's confirmed or corrected name, date of birth, and address may cha
 
 ## Testing
 
-Integration-test confirmed update and each no-write path against synthetic OpenEMR. CI must be green.
+Integration-test confirmed update and each no-write path against the pinned synthetic local OpenEMR stack. CI must be green.
 
 ## Out of Scope
 

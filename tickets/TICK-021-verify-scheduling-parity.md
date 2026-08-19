@@ -24,7 +24,7 @@ Chat must match OpenEMR's allowed and rejected scheduling outcomes, not emulate 
 
 ## Testing
 
-Automate the parity matrix where APIs permit; run remaining browser/native checks and record evidence. CI must be green.
+Automate the parity matrix where APIs permit; run remaining browser/native checks against the local stack and record evidence. CI must be green.
 
 ## Out of Scope
 

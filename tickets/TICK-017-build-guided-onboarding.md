@@ -26,7 +26,7 @@ The approved product contract drives an assessment that keeps drafts and complet
 
 ## Testing
 
-Run contract fixtures, restart recovery, trigger/no-trigger cases, and OpenEMR persistence integration tests. CI must be green.
+Run contract fixtures, restart recovery, trigger/no-trigger cases, and local synthetic OpenEMR persistence integration tests. CI must be green.
 
 ## Out of Scope
 

@@ -24,7 +24,7 @@ The selected supported patient-portal hook launches the chat without navigating 
 
 ## Testing
 
-Run synthetic-patient login/launch/logout browser tests and inspect network requests. CI must be green.
+Run synthetic-patient login/launch/logout browser tests against the local OpenEMR stack and inspect local browser network requests. CI must be green.
 
 ## Out of Scope
 

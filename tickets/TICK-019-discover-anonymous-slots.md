@@ -25,7 +25,7 @@ The model may select an available option but never receives real OpenEMR identif
 
 ## Testing
 
-Test slot filtering, token uniqueness/expiry, payload capture, and invalid-token handling. CI must be green.
+Test slot filtering, token uniqueness/expiry, payload capture, and invalid-token handling against local synthetic data only. CI must be green.
 
 ## Out of Scope
 
