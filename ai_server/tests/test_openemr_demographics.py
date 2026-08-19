@@ -1,0 +1,173 @@
+"""Synthetic integration tests for confirmed-only demographic writes (TICK-016)."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+
+import httpx
+import pytest
+
+from ai_server.ocr.service import ExtractedIdentity
+from ai_server.openemr.adapter import OpenEmrConfigurationError, OpenEmrRequestError
+from ai_server.openemr.demographics import (
+    ConfirmedIdentity,
+    IdentityNotConfirmedError,
+    OpenEmrDemographicsAdapter,
+    OpenEmrDemographicsSettings,
+    confirm_identity,
+)
+
+API_BASE_URL = "https://openemr.test/apis/default/api"
+PATIENT_UUID = "synthetic-patient-uuid"
+
+
+def settings() -> OpenEmrDemographicsSettings:
+    return OpenEmrDemographicsSettings(api_base_url=API_BASE_URL)
+
+
+def adapter_with(handler: httpx.MockTransport) -> OpenEmrDemographicsAdapter:
+    client = httpx.AsyncClient(transport=handler)
+    return OpenEmrDemographicsAdapter(settings(), client)
+
+
+def run(coroutine):
+    return asyncio.run(coroutine)
+
+
+def test_settings_from_environment_requires_the_api_base_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENEMR_API_BASE_URL", raising=False)
+    with pytest.raises(OpenEmrConfigurationError, match="OPENEMR_API_BASE_URL"):
+        OpenEmrDemographicsSettings.from_environment()
+
+    monkeypatch.setenv("OPENEMR_API_BASE_URL", f"{API_BASE_URL}/")
+    assert OpenEmrDemographicsSettings.from_environment().api_base_url == API_BASE_URL
+
+
+def test_ac1_confirming_every_field_yields_a_writable_identity() -> None:
+    identity = confirm_identity("Avery Alden", "1990-01-01", "100 Maple Avenue")
+
+    assert identity == ConfirmedIdentity(
+        name="Avery Alden", date_of_birth="1990-01-01", address="100 Maple Avenue"
+    )
+
+
+@pytest.mark.parametrize(
+    "name,date_of_birth,address",
+    [
+        (None, "1990-01-01", "100 Maple Avenue"),
+        ("Avery Alden", None, "100 Maple Avenue"),
+        ("Avery Alden", "1990-01-01", None),
+        (None, None, None),
+        ("", "1990-01-01", "100 Maple Avenue"),
+    ],
+)
+def test_ac1_ac3_any_unconfirmed_or_partial_field_refuses_before_a_write_is_possible(
+    name: str | None, date_of_birth: str | None, address: str | None
+) -> None:
+    with pytest.raises(IdentityNotConfirmedError):
+        confirm_identity(name, date_of_birth, address)
+
+
+def test_ac3_a_failed_ocr_extraction_never_becomes_writable() -> None:
+    """A failed/unavailable Tesseract run leaves every field `None` (ocr/service.py)."""
+    failed = ExtractedIdentity()
+
+    with pytest.raises(IdentityNotConfirmedError):
+        confirm_identity(failed.name, failed.date_of_birth, failed.address)
+
+
+def test_ac3_a_partial_ocr_extraction_never_becomes_writable() -> None:
+    partial = ExtractedIdentity(name="Avery Alden", date_of_birth=None, address="100 Maple Avenue")
+
+    with pytest.raises(IdentityNotConfirmedError):
+        confirm_identity(partial.name, partial.date_of_birth, partial.address)
+
+
+def test_ac3_a_revoked_upload_never_becomes_writable() -> None:
+    """`OcrService.revoke` purges the store; `identity()` then returns `None` (FR-23)."""
+    revoked_identity = None
+
+    with pytest.raises(IdentityNotConfirmedError):
+        confirm_identity(revoked_identity, revoked_identity, revoked_identity)
+
+
+def test_ac2_writes_only_the_confirmed_name_dob_and_address_to_the_mapped_endpoint() -> None:
+    captured: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(200, json={"data": {"fname": "Avery"}})
+
+    identity = confirm_identity("Avery Alden", "1990-01-01", "100 Maple Avenue")
+
+    run(
+        adapter_with(httpx.MockTransport(handler)).write_confirmed_demographics(
+            "synthetic-access-token", PATIENT_UUID, identity
+        )
+    )
+
+    assert len(captured) == 1
+    request = captured[0]
+    assert request.method == "PUT"
+    assert str(request.url) == f"{API_BASE_URL}/patient/{PATIENT_UUID}"
+    assert request.headers["authorization"] == "Bearer synthetic-access-token"
+    body = json.loads(request.content)
+    assert body == {
+        "fname": "Avery",
+        "lname": "Alden",
+        "DOB": "1990-01-01",
+        "street": "100 Maple Avenue",
+    }
+
+
+def test_ac2_a_single_word_confirmed_name_has_no_fabricated_family_name() -> None:
+    captured: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(200, json={"data": {}})
+
+    identity = confirm_identity("Cher", "1990-01-01", "100 Maple Avenue")
+
+    run(
+        adapter_with(httpx.MockTransport(handler)).write_confirmed_demographics(
+            "token", PATIENT_UUID, identity
+        )
+    )
+
+    body = json.loads(captured[0].content)
+    assert body["fname"] == "Cher"
+    assert body["lname"] == ""
+
+
+def test_ac2_a_non_200_response_fails_explicitly_with_no_fallback() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, json={"error": "forbidden"})
+
+    identity = confirm_identity("Avery Alden", "1990-01-01", "100 Maple Avenue")
+
+    async def scenario() -> None:
+        await adapter_with(httpx.MockTransport(handler)).write_confirmed_demographics(
+            "token", PATIENT_UUID, identity
+        )
+
+    with pytest.raises(OpenEmrRequestError):
+        run(scenario())
+
+
+def test_ac2_a_transport_failure_fails_explicitly_with_no_fallback() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    identity = confirm_identity("Avery Alden", "1990-01-01", "100 Maple Avenue")
+
+    async def scenario() -> None:
+        await adapter_with(httpx.MockTransport(handler)).write_confirmed_demographics(
+            "token", PATIENT_UUID, identity
+        )
+
+    with pytest.raises(OpenEmrRequestError):
+        run(scenario())
