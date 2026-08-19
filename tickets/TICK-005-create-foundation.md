@@ -5,7 +5,7 @@ type: chore
 epic: EPIC-02
 priority: P1
 estimate: M
-depends_on: [TICK-001]
+depends_on: []
 labels: [ci, foundation]
 source: [NFR-18, NFR-21]
 status: todo
@@ -14,7 +14,9 @@ remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/6
 
 ## Context
 
-The project needs a reproducible Python/FastAPI/LangGraph foundation after endpoint discovery, with coverage and AI-use records enforced from the start.
+The project needs a reproducible Python/FastAPI/LangGraph foundation for local
+synthetic-data work, with coverage and AI-use records enforced from the start. Endpoint
+discovery gates only the adapter operations that require it.
 
 ## Acceptance Criteria
 
