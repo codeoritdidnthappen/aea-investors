@@ -8,10 +8,10 @@ estimate: L
 depends_on: [TICK-001, TICK-003, TICK-009, TICK-010]
 labels: [onboarding, langgraph, openemr]
 source: [FR-5, FR-8, FR-27, FR-30, NFR-2, NFR-3, NFR-4, NFR-33]
-status: todo
+status: blocked
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/18
+blocked_reason: "TICK-017's core acceptance criteria (draft checkpoint + completion via OpenEMR) require native assessment-draft/completion endpoints that TICK-001's endpoint matrix proves don't exist in OpenEMR v8.3.0, and that matrix explicitly names TICK-017 as forbidden from implementing until a future OpenEMR r"
 ---
-
 ## Context
 
 The approved product contract drives an assessment that keeps drafts and completed records in OpenEMR, while supportive content appears only at defined friction triggers.
