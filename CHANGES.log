@@ -114,3 +114,25 @@ project and were replaced wholesale. `CLAUDE.md`, `AGENTS.md`, `GIT_WORKFLOW_GAU
 The external LLM, PHI/PII detector, OpenEMR endpoint mapping, scheduling policy,
 token/session store, reverse proxy, supported browser matrix, and OCR engine remain
 explicit open questions in PROJECT_CONTEXT.md.
+
+---
+
+## 2026-08-18 — Session 3: Onboarding contract approval
+
+### Completed
+
+- Defined and approved the minimal V1 onboarding contract in
+  `ONBOARDING_CONTRACT.md`.
+- Limited required data to legal identity, one contact preference, service goal, and
+  visit preference; language or accessibility accommodation is optional.
+- Excluded clinical history, diagnosis, insurance, emergency-contact, payment, and
+  other unnecessary sensitive fields.
+- Defined deterministic local validation, OpenEMR draft/checkpoint semantics, and the
+  confirmation write boundary.
+- Approved supportive content for a long pause, upload failure, and explicit distress
+  intent; it remains absent without a trigger.
+
+### Still blocked
+
+The OpenEMR endpoint spike must determine the native assessment resource and
+demographic/assessment write coverage before this approved contract can be implemented.

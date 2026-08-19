@@ -64,7 +64,8 @@ that boundary.
 ### Guided onboarding
 
 - **FR-5 [must]** The chat guides the user through the required intake conversation and
-  produces the structured assessment required by the selected onboarding brief.
+  produces the structured assessment defined in the approved
+  [V1 Onboarding Contract](ONBOARDING_CONTRACT.md).
 - **FR-6 [must]** Local OCR extracts name, date of birth, and address from a synthetic
   identity document, and every extracted field is shown for confirmation or correction
   before it is saved.

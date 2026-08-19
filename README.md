@@ -115,5 +115,6 @@ credentials.
 |---|---|
 | [PRD.md](PRD.md) | Testable product and privacy requirements |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Components, trust boundaries, OAuth flow, and OCI deployment |
+| [ONBOARDING_CONTRACT.md](ONBOARDING_CONTRACT.md) | Minimal v1 field, draft, completion, and supportive-content contract |
 | [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md) | Durable decision log and open questions |
 | [CHANGES.log](CHANGES.log) | Chronological planning history |
