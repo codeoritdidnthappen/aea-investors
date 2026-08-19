@@ -8,7 +8,8 @@ estimate: M
 depends_on: [TICK-005, TICK-008, TICK-009]
 labels: [operations, security]
 source: [NFR-8, NFR-22]
-status: todo
+status: done
+builder_commit: 7a371b4
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/12
 ---
 
