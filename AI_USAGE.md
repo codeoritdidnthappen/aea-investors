@@ -5,7 +5,7 @@
 | Component | Pinned selection | Purpose |
 |---|---|---|
 | External language model | Groq `openai/gpt-oss-120b` | Future approved prompt planning only; no patient or provider data may cross the local privacy gate. |
-| OCR | Local Tesseract with pinned English trained data | Future synthetic identity-document extraction only. |
+| OCR | Local Tesseract (`tesseract` binary), pinned `eng` trained data | Consented, transient synthetic identity-document extraction only (name, date of birth, address); never cloud OCR. |
 | Prompt contract | `ONBOARDING_CONTRACT.md` v1 | Defines deterministic onboarding fields and supportive-content text. |
 
 ## Development assistance
