@@ -34,3 +34,6 @@ dist/
 *.tsbuildinfo
 coverage/
 .coverage
+
+# Offline fixture-generator output is evaluation data, never a runtime artifact.
+generated-fixtures/
