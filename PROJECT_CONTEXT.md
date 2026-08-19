@@ -44,6 +44,7 @@ Living state: what was decided, why, what remains open, and where work stands.
 | 31 | Persist session plumbing in SQLite WAL with AES-256-GCM-encrypted OAuth tokens | Active sessions survive restart without adding a patient-record store | Locked |
 | 32 | Use Caddy for public ingress and automatic Let's Encrypt management | One reserved IP and sslip.io hostnames provide free HTTPS routing | Locked |
 | 33 | Target current stable desktop and Android Chrome, prioritizing desktop | Keeps v1 verification within one browser family | Locked |
+| 34 | Use the approved minimal V1 onboarding contract | Captures only identity, contact preference, service goal, visit preference, and optional accommodations; excludes clinical history and other unnecessary sensitive fields | Locked |
 
 ### Superseded decisions
 
@@ -107,6 +108,6 @@ OpenEMR itself remains an upstream dependency and is not copied into this reposi
 
 ## 5. Status
 
-The interview is paused after recording the runtime services, session persistence,
-ingress, and browser target. Next work should resolve the remaining OpenEMR integration
-questions, beginning with endpoint coverage, before scaffolding either integration.
+The onboarding-field and supportive-content contract is approved. Next work should
+resolve the remaining OpenEMR integration questions, beginning with endpoint coverage,
+before scaffolding either integration.
