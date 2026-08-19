@@ -9,7 +9,7 @@ depends_on: []
 labels: [product, onboarding, discovery]
 source: [FR-5, FR-8, FR-27]
 status: todo
-remote_url: null
+remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/4
 ---
 
 ## Context

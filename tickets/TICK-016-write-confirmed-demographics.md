@@ -9,7 +9,7 @@ depends_on: [TICK-001, TICK-014]
 labels: [openemr, ocr, demographics]
 source: [FR-6, FR-26, FR-17, NFR-25]
 status: todo
-remote_url: null
+remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/17
 ---
 
 ## Context

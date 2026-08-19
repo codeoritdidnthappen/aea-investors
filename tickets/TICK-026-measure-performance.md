@@ -9,7 +9,7 @@ depends_on: [TICK-020, TICK-023]
 labels: [performance, k6, verification]
 source: [NFR-13, NFR-14]
 status: todo
-remote_url: null
+remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/27
 ---
 
 ## Context

@@ -9,7 +9,7 @@ depends_on: [TICK-001, TICK-005]
 labels: [auth, security, openemr]
 source: [FR-1, FR-3, NFR-6, NFR-7, NFR-10, NFR-30, NFR-31, NFR-32, NFR-33]
 status: todo
-remote_url: null
+remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/9
 ---
 
 ## Context

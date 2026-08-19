@@ -9,7 +9,7 @@ depends_on: [TICK-005, TICK-006]
 labels: [ci, privacy, governance]
 source: [NFR-21, NFR-24]
 status: todo
-remote_url: null
+remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/8
 ---
 
 ## Context

@@ -9,7 +9,7 @@ depends_on: [TICK-005, TICK-009]
 labels: [llm, groq, privacy]
 source: [FR-18, FR-20, FR-29, NFR-2, NFR-5, NFR-26]
 status: todo
-remote_url: null
+remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/11
 ---
 
 ## Context

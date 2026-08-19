@@ -9,7 +9,7 @@ depends_on: [TICK-018, TICK-019]
 labels: [scheduling, openemr]
 source: [FR-12, FR-13, FR-14, FR-16, FR-20, FR-28, NFR-11]
 status: todo
-remote_url: null
+remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/21
 ---
 
 ## Context
