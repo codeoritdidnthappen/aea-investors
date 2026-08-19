@@ -1,0 +1,35 @@
+# Local-only ingress for the disposable Docker demo topology (TICK-023). This has
+# no public or cloud exposure: certificates come from Caddy's built-in internal CA,
+# never from Let's Encrypt/public ACME, and the hostnames below never resolve off
+# this machine. Compare ARCHITECTURE.md §9, which describes the separate OCI
+# deployment with public sslip.io hostnames and Let's Encrypt certificates that
+# this file does not implement.
+#
+# emr.localhost and chat.localhost resolve to 127.0.0.1 automatically in current
+# browsers (RFC 6761) without any /etc/hosts edit. Other containers on the `app`
+# Docker network (e.g. the AI server's OAuth calls) resolve the same hostnames to
+# this Caddy container via the network alias in docker-compose.yml.
+#
+# `tls internal` issues and persists local development certificates on the
+# `caddy-data` volume (AC: "persists local certificate state"); Caddy's automatic
+# HTTPS also redirects plain HTTP on port 80 to HTTPS for both site blocks below.
+
+emr.localhost {
+	tls internal
+
+	# OpenEMR terminates its own TLS on 443 with a self-signed certificate (the
+	# same certificate the mariadb/openemr healthcheck in docker-compose.yml
+	# already treats as untrusted via `curl --insecure`).
+	reverse_proxy https://openemr:443 {
+		transport http {
+			tls_insecure_skip_verify
+		}
+	}
+}
+
+chat.localhost {
+	tls internal
+
+	# Proxies only to the local AI service — never to OpenEMR or MariaDB.
+	reverse_proxy ai-server:8000
+}

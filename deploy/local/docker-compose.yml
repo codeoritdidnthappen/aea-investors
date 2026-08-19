@@ -1,7 +1,7 @@
 # Reproducible local demo topology: OpenEMR/MariaDB and the AI server run as
-# separate services with persistent named volumes. There is no public ingress or
-# cloud provisioning here (see TICK-023 for local Caddy ingress and TICK-005/README
-# for OCI deployment, which is out of scope for this file).
+# separate services with persistent named volumes, fronted by a local-only Caddy
+# ingress (TICK-023). There is no public ingress or cloud provisioning here (see
+# TICK-005/README for OCI deployment, which is out of scope for this file).
 #
 # Usage: from this directory, `cp .env.example .env`, fill in .env, then
 # `docker compose up -d`. See README.md for the full walkthrough.
@@ -68,6 +68,30 @@ services:
       - emr
       - app
 
+  caddy:
+    # Pinned patch release, matching the pinning convention used for mariadb/openemr
+    # above (NFR-15).
+    image: caddy:2.9.1-alpine
+    restart: unless-stopped
+    depends_on:
+      - openemr
+      - ai-server
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    ports:
+      - "${CADDY_HTTP_PORT:-80}:80"
+      - "${CADDY_HTTPS_PORT:-443}:443"
+    networks:
+      app:
+        # Lets both the host browser and other containers (e.g. the AI server's
+        # OAuth calls) reach OpenEMR/the AI server through the same hostnames
+        # (README.md step 3, TICK-023).
+        aliases:
+          - emr.localhost
+          - chat.localhost
+
   ai-server:
     build:
       context: ../..
@@ -92,8 +116,8 @@ services:
       LLM_PROVIDER: ${LLM_PROVIDER:-groq}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
       GROQ_ZDR_VERIFIED_ON: ${GROQ_ZDR_VERIFIED_ON:-}
-    ports:
-      - "${AI_SERVER_PORT:-8000}:8000"
+    # No host port: the internal AI port is reachable only from other containers
+    # on the `app` network (Caddy's chat hostname), never directly from the host.
     volumes:
       - ai-session-data:/data
     networks:
@@ -101,7 +125,8 @@ services:
 
 networks:
   # OpenEMR<->MariaDB traffic stays off the ai-server's network; the AI server must
-  # never connect to MariaDB directly (ARCHITECTURE.md §4).
+  # never connect to MariaDB directly (ARCHITECTURE.md §4). Caddy joins only `app`,
+  # so it cannot reach MariaDB either.
   emr:
   app:
 
@@ -110,3 +135,5 @@ volumes:
   openemr-sites:
   openemr-logs:
   ai-session-data:
+  caddy-data:
+  caddy-config:

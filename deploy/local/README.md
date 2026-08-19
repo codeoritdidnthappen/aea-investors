@@ -1,10 +1,12 @@
 # Local demo topology
 
 A reproducible, disposable Docker Compose stack for local development: separate
-OpenEMR, MariaDB, and AI-server services with persistent local state. There is no
-public ingress, cloud provisioning, or production deployment here — see
-[TICK-023](../../tickets/TICK-023-configure-oci-ingress.md) for local Caddy ingress
-and [ARCHITECTURE.md](../../ARCHITECTURE.md) §9 for the separate OCI deployment.
+OpenEMR, MariaDB, and AI-server services with persistent local state, fronted by a
+local-only Caddy ingress (`emr.localhost`, `chat.localhost`) using Caddy's internal
+development certificates. There is no public ingress, cloud provisioning, or
+production deployment here — see [ARCHITECTURE.md](../../ARCHITECTURE.md) §9 for
+the separate OCI deployment, which uses public sslip.io hostnames and Let's
+Encrypt instead.
 
 ## Prerequisites
 
@@ -47,11 +49,13 @@ docker compose logs -f openemr
 
 ## 3. Register the AI server as an OpenEMR OAuth client
 
-Log in to OpenEMR at `https://localhost:${OPENEMR_HTTPS_PORT:-8443}` with
-`OE_USER`/`OE_PASS` from `.env`, then register a confidential OAuth client (Admin >
-System > API Clients, or `POST /oauth2/default/registration`) with redirect URI
-`OPENEMR_OAUTH_REDIRECT_URI` and the scopes in `ai_server/app/auth.py`
-(`AuthSettings.scopes`). Copy the issued client ID/secret into `.env`, then:
+Log in to OpenEMR at `https://emr.localhost` (routed through Caddy; your browser
+will warn about the untrusted local development certificate the first time — this
+is expected, see step 7) with `OE_USER`/`OE_PASS` from `.env`, then register a
+confidential OAuth client (Admin > System > API Clients, or
+`POST /oauth2/default/registration`) with redirect URI `OPENEMR_OAUTH_REDIRECT_URI`
+and the scopes in `ai_server/app/auth.py` (`AuthSettings.scopes`). Copy the issued
+client ID/secret into `.env`, then:
 
 ```sh
 docker compose up -d ai-server
@@ -70,27 +74,62 @@ evaluation-only; it is not loaded into OpenEMR by this script.
 ## 5. Run health checks
 
 ```sh
-curl http://localhost:${AI_SERVER_PORT:-8000}/health
+curl -k https://chat.localhost/health
 ```
 
-Returns non-sensitive dependency reachability for the AI server, OpenEMR API, OCR,
-and external LLM. `ocr` reports `ok` once the image's pinned Tesseract is reachable.
-`openemr_api` reuses `OPENEMR_OAUTH_ISSUER`, which is intentionally the
-browser-facing `localhost` address (see `.env.example`); the AI-server container
-cannot resolve that address to the `openemr` container, so this check reports
-`unavailable` in this topology until TICK-023's ingress gives both the browser and
-the containers one shared hostname. `external_llm` is `unavailable` whenever
-`GROQ_API_KEY` is blank, which is the default, paid-service-free path.
+(`-k` skips curl's certificate trust check for Caddy's local development
+certificate — see step 7.) Returns non-sensitive dependency reachability for the
+AI server, OpenEMR API, OCR, and external LLM. `ocr` reports `ok` once the image's
+pinned Tesseract is reachable. `openemr_api` reuses `OPENEMR_OAUTH_ISSUER`, which
+now goes through Caddy's `emr.localhost` hostname (see `.env.example`), reachable
+from both the browser and the AI-server container. `external_llm` is `unavailable`
+whenever `GROQ_API_KEY` is blank, which is the default, paid-service-free path.
 
 ## 6. Verify restart persistence
 
 ```sh
 docker compose restart ai-server
-curl http://localhost:${AI_SERVER_PORT:-8000}/health
+curl -k https://chat.localhost/health
 ```
 
 The `ai-session-data` volume persists the SQLite WAL session store
 (`AI_SESSION_DATABASE_PATH`) across the restart (NFR-31).
+
+## 7. Verify the local Caddy ingress
+
+Caddy is the only service with a published host port for HTTP/application
+traffic; MariaDB has no host port at all, and the AI server's internal port
+(8000) is reachable only from other containers, never directly from the host:
+
+```sh
+curl http://localhost:8000/health    # connection refused: not published to the host
+```
+
+HTTP redirects to HTTPS:
+
+```sh
+curl -kI http://emr.localhost/       # -> 3xx Location: https://emr.localhost/...
+```
+
+The `emr` hostname reaches OpenEMR, and the `chat` hostname proxies only to the AI
+service:
+
+```sh
+curl -k https://emr.localhost/ | head -1     # OpenEMR's login page
+curl -k https://chat.localhost/health        # the AI server's health endpoint
+```
+
+Local certificate state persists in the `caddy-data` volume across restarts (no
+new certificate warning or delay after a restart):
+
+```sh
+docker compose restart caddy
+curl -k https://emr.localhost/ | head -1
+```
+
+Because these are local development certificates from Caddy's internal CA (not a
+publicly trusted one), curl needs `-k` and browsers show a one-time warning you
+must accept; this is expected for a disposable local topology (see Caddyfile).
 
 ## Tear down
 
