@@ -1,0 +1,112 @@
+# Reproducible local demo topology: OpenEMR/MariaDB and the AI server run as
+# separate services with persistent named volumes. There is no public ingress or
+# cloud provisioning here (see TICK-023 for local Caddy ingress and TICK-005/README
+# for OCI deployment, which is out of scope for this file).
+#
+# Usage: from this directory, `cp .env.example .env`, fill in .env, then
+# `docker compose up -d`. See README.md for the full walkthrough.
+services:
+  mariadb:
+    # Pinned to the same release the upstream OpenEMR v8.3.0 production compose file
+    # uses, so the local topology matches the pinned OpenEMR release it serves.
+    image: mariadb:11.8.8
+    restart: unless-stopped
+    command: ["mariadbd", "--character-set-server=utf8mb4"]
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:?set MARIADB_ROOT_PASSWORD in deploy/local/.env}
+    volumes:
+      - mariadb-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck.sh", "--su-mysql", "--connect", "--innodb_initialized"]
+      start_period: 1m
+      start_interval: 10s
+      interval: 1m
+      timeout: 5s
+      retries: 3
+    networks:
+      - emr
+
+  openemr:
+    # Pinned stable release per TICK-001's endpoint matrix (evidence/TICK-001);
+    # never tracks an unversioned/"latest" tag (NFR-15).
+    image: openemr/openemr:8.3.0
+    restart: unless-stopped
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    environment:
+      MYSQL_HOST: mariadb
+      MYSQL_ROOT_PASS: ${MARIADB_ROOT_PASSWORD:?set MARIADB_ROOT_PASSWORD in deploy/local/.env}
+      MYSQL_USER: ${OPENEMR_MYSQL_USER:?set OPENEMR_MYSQL_USER in deploy/local/.env}
+      MYSQL_PASS: ${OPENEMR_MYSQL_PASSWORD:?set OPENEMR_MYSQL_PASSWORD in deploy/local/.env}
+      OE_USER: ${OPENEMR_ADMIN_USER:?set OPENEMR_ADMIN_USER in deploy/local/.env}
+      OE_PASS: ${OPENEMR_ADMIN_PASSWORD:?set OPENEMR_ADMIN_PASSWORD in deploy/local/.env}
+    ports:
+      - "${OPENEMR_HTTP_PORT:-8080}:80"
+      - "${OPENEMR_HTTPS_PORT:-8443}:443"
+    volumes:
+      - openemr-sites:/var/www/localhost/htdocs/openemr/sites
+      - openemr-logs:/var/log
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "/usr/bin/curl",
+          "--fail",
+          "--insecure",
+          "--location",
+          "--show-error",
+          "--silent",
+          "https://localhost/meta/health/readyz",
+        ]
+      start_period: 3m
+      start_interval: 10s
+      interval: 1m
+      timeout: 5s
+      retries: 3
+    networks:
+      - emr
+      - app
+
+  ai-server:
+    build:
+      context: ../..
+      dockerfile: deploy/local/ai-server.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - openemr
+    environment:
+      # Session volume: SQLite WAL state on a persistent named volume (NFR-31).
+      AI_SESSION_DATABASE_PATH: /data/ai_session.sqlite3
+      AI_SESSION_ENCRYPTION_KEY: ${AI_SESSION_ENCRYPTION_KEY:?set AI_SESSION_ENCRYPTION_KEY in deploy/local/.env}
+      OPENEMR_OAUTH_AUTHORIZE_URL: ${OPENEMR_OAUTH_AUTHORIZE_URL:?set OPENEMR_OAUTH_AUTHORIZE_URL in deploy/local/.env}
+      OPENEMR_OAUTH_TOKEN_URL: ${OPENEMR_OAUTH_TOKEN_URL:?set OPENEMR_OAUTH_TOKEN_URL in deploy/local/.env}
+      OPENEMR_OAUTH_JWKS_URL: ${OPENEMR_OAUTH_JWKS_URL:?set OPENEMR_OAUTH_JWKS_URL in deploy/local/.env}
+      OPENEMR_OAUTH_ISSUER: ${OPENEMR_OAUTH_ISSUER:?set OPENEMR_OAUTH_ISSUER in deploy/local/.env}
+      OPENEMR_OAUTH_CLIENT_ID: ${OPENEMR_OAUTH_CLIENT_ID:?set OPENEMR_OAUTH_CLIENT_ID in deploy/local/.env}
+      OPENEMR_OAUTH_CLIENT_SECRET: ${OPENEMR_OAUTH_CLIENT_SECRET:?set OPENEMR_OAUTH_CLIENT_SECRET in deploy/local/.env}
+      OPENEMR_OAUTH_REDIRECT_URI: ${OPENEMR_OAUTH_REDIRECT_URI:?set OPENEMR_OAUTH_REDIRECT_URI in deploy/local/.env}
+      AI_SESSION_SUCCESS_REDIRECT_URI: ${AI_SESSION_SUCCESS_REDIRECT_URI:?set AI_SESSION_SUCCESS_REDIRECT_URI in deploy/local/.env}
+      # Default LLM path requires no paid service (NFR-20); GROQ_API_KEY is Groq's
+      # free tier and is optional until chat/LLM endpoints are wired in.
+      LLM_PROVIDER: ${LLM_PROVIDER:-groq}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GROQ_ZDR_VERIFIED_ON: ${GROQ_ZDR_VERIFIED_ON:-}
+    ports:
+      - "${AI_SERVER_PORT:-8000}:8000"
+    volumes:
+      - ai-session-data:/data
+    networks:
+      - app
+
+networks:
+  # OpenEMR<->MariaDB traffic stays off the ai-server's network; the AI server must
+  # never connect to MariaDB directly (ARCHITECTURE.md §4).
+  emr:
+  app:
+
+volumes:
+  mariadb-data:
+  openemr-sites:
+  openemr-logs:
+  ai-session-data:
