@@ -8,7 +8,8 @@ estimate: M
 depends_on: []
 labels: [ci, foundation]
 source: [NFR-18, NFR-21]
-status: in_progress
+status: done
+builder_commit: 25e8f96
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/6
 ---
 
