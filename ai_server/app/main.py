@@ -74,7 +74,15 @@ def create_app(
         await asyncio.to_thread(store.initialize)
         configured_session_store = store
         if configured_authorization is None:
-            auth_http_client = httpx.AsyncClient(timeout=10.0)
+            # OPENEMR_OAUTH_TOKEN_URL/JWKS_URL (deploy/local/.env.example) call
+            # OpenEMR's container directly (`https://openemr/...`), bypassing Caddy,
+            # so they hit OpenEMR's own self-signed cert -- the same one
+            # deploy/local/Caddyfile already treats as untrusted via
+            # `tls_insecure_skip_verify` for the identical reason. No CA is shared
+            # into this container, so default verification always fails here
+            # (confirmed live: every token exchange 500s on ConnectError), not just
+            # in some misconfiguration case.
+            auth_http_client = httpx.AsyncClient(timeout=10.0, verify=False)
             owned_http_clients.append(auth_http_client)
             configured_authorization = AuthorizationService(
                 configured_settings,
@@ -82,7 +90,10 @@ def create_app(
                 OpenEmrOAuthClient(configured_settings, auth_http_client),
             )
         if configured_health_service is None:
-            health_http_client = httpx.AsyncClient(timeout=2.0)
+            # Same untrusted-self-signed-cert reason as auth_http_client above:
+            # HealthSettings' openemr_api probe hits configured_settings.issuer
+            # (OPENEMR_OAUTH_ISSUER), which resolves to OpenEMR the same way.
+            health_http_client = httpx.AsyncClient(timeout=2.0, verify=False)
             owned_http_clients.append(health_http_client)
             configured_health_service = default_health_service(
                 HealthSettings.from_environment(configured_settings.issuer), health_http_client
