@@ -22,21 +22,34 @@ from ai_server.llm.groq import (
     GroqWorkflow,
     PlanningOutput,
 )
-from ai_server.privacy.gate import OutboundMessage, OutboundPayload
+from ai_server.privacy.gate import (
+    OutboundMessage,
+    OutboundPayload,
+    ResponseFormat,
+    SchedulingContext,
+    SchedulingRules,
+)
 
-SYSTEM_PROMPT = "Scheduling assistant instructions"
+SYSTEM_PROMPT = (
+    "You help a patient discuss scheduling for this clinic. Use only the office hours, "
+    "closures, and open slots given in scheduling_context, and only the actions allowed "
+    "by scheduling_rules -- never state or imply that an appointment was booked, "
+    "rescheduled, or cancelled; that can only be confirmed by OpenEMR, not by you. If "
+    "every scheduling action is disabled, say so and do not propose one. Do not give "
+    "clinical or treatment advice; if asked, say you can only help with scheduling."
+)
 
 # No authoritative scheduling tool is wired yet (booking/rescheduling/cancellation
 # live behind separate, still-blocked tickets), so every request is sent with every
 # scheduling action disabled. This keeps the model from ever describing a booking,
 # reschedule, or cancellation as real (FR-20) while the underlying capability doesn't
 # exist yet.
-_SCHEDULING_RULES = {
-    "minimum_booking_notice_minutes": 1440,
-    "booking_enabled": False,
-    "rescheduling_enabled": False,
-    "cancellation_enabled": False,
-}
+_SCHEDULING_RULES = SchedulingRules(
+    minimum_booking_notice_minutes=1440,
+    booking_enabled=False,
+    rescheduling_enabled=False,
+    cancellation_enabled=False,
+)
 _TIMEZONE = "America/Chicago"
 
 
@@ -79,23 +92,21 @@ class ChatService:
             yield chunk
 
     def _payload(self, message: str) -> OutboundPayload:
-        return OutboundPayload.model_validate(
-            {
-                "model": "openai/gpt-oss-120b",
-                "messages": [
-                    OutboundMessage(role="system", content=SYSTEM_PROMPT),
-                    OutboundMessage(role="user", content=message),
-                ],
-                "scheduling_context": {
-                    "current_datetime": self.clock().isoformat(),
-                    "timezone": _TIMEZONE,
-                    "office_hours": [],
-                    "closures": [],
-                    "open_slots": [],
-                },
-                "scheduling_rules": _SCHEDULING_RULES,
-                "response_format": {"type": "json_schema", "schema_version": "1"},
-            }
+        return OutboundPayload(
+            model="openai/gpt-oss-120b",
+            messages=[
+                OutboundMessage(role="system", content=SYSTEM_PROMPT),
+                OutboundMessage(role="user", content=message),
+            ],
+            scheduling_context=SchedulingContext(
+                current_datetime=self.clock(),
+                timezone=_TIMEZONE,
+                office_hours=[],
+                closures=[],
+                open_slots=[],
+            ),
+            scheduling_rules=_SCHEDULING_RULES,
+            response_format=ResponseFormat(type="json_schema", schema_version="1"),
         )
 
 
@@ -272,11 +283,20 @@ CHAT_PAGE_HTML = """<!doctype html>
     var replyBody = appendMessage("assistant", "");
     setStatus("Sending...");
 
+    var controller = new AbortController();
+    var stallTimer = setTimeout(function () { controller.abort(); }, 30000);
+
+    function resetStallTimer() {
+      clearTimeout(stallTimer);
+      stallTimer = setTimeout(function () { controller.abort(); }, 30000);
+    }
+
     fetch("/api/chat", {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: message })
+      body: JSON.stringify({ message: message }),
+      signal: controller.signal
     }).then(function (response) {
       if (!response.ok || !response.body) {
         throw new Error("chat request failed");
@@ -288,16 +308,19 @@ CHAT_PAGE_HTML = """<!doctype html>
       function read() {
         return reader.read().then(function (result) {
           if (result.done) {
+            clearTimeout(stallTimer);
             setStatus("Response complete.");
             sendButton.disabled = false;
             return;
           }
+          resetStallTimer();
           replyBody.textContent += decoder.decode(result.value, { stream: true });
           return read();
         });
       }
       return read();
     }).catch(function () {
+      clearTimeout(stallTimer);
       showFallback();
       sendButton.disabled = false;
     });
