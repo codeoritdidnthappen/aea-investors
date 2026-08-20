@@ -38,30 +38,47 @@ class IdentityNotConfirmedError(Exception):
 
 @dataclass(frozen=True)
 class ConfirmedIdentity:
-    """Only a fully confirmed identity; every field is a non-empty confirmed value."""
+    """Only a fully confirmed identity; every field but `family_name` is non-empty.
 
-    name: str
+    `given_name` and `family_name` are kept separate rather than one `name` string:
+    OpenEMR's write endpoint takes them as separate fields, and no join-then-split
+    scheme can recover an internally-spaced family name (e.g. "Van Der Berg") from a
+    joined string without guessing. `family_name` alone may be empty for a confirmed
+    mononym; `confirm_identity` still requires every other field.
+    """
+
+    given_name: str
+    family_name: str
     date_of_birth: str
     address: str
 
 
 def confirm_identity(
-    name: str | None, date_of_birth: str | None, address: str | None
+    given_name: str | None,
+    family_name: str | None,
+    date_of_birth: str | None,
+    address: str | None,
 ) -> ConfirmedIdentity:
-    """Build a write-eligible identity only once every field is confirmed (AC1).
+    """Build a write-eligible identity only once every required field is confirmed (AC1).
 
     Each argument is the value the patient explicitly confirmed or corrected, never
     a raw OCR value passed through automatically. `None` or blank covers every
     no-write case in one path: never extracted, extracted but not yet confirmed,
     revoked, or failed OCR (AC3) - all refuse identically instead of writing a
-    partial record.
+    partial record. `family_name` is the one field allowed to be confirmed as empty
+    (a mononym), so it is not part of this check.
     """
-    fields = {"name": name, "date_of_birth": date_of_birth, "address": address}
+    fields = {"given_name": given_name, "date_of_birth": date_of_birth, "address": address}
     missing = [field for field, value in fields.items() if not value]
     if missing:
         raise IdentityNotConfirmedError(f"identity fields not confirmed: {', '.join(missing)}")
-    assert name and date_of_birth and address  # narrows for the type checker; missing is empty
-    return ConfirmedIdentity(name=name, date_of_birth=date_of_birth, address=address)
+    assert given_name and date_of_birth and address  # narrows for the type checker
+    return ConfirmedIdentity(
+        given_name=given_name,
+        family_name=family_name or "",
+        date_of_birth=date_of_birth,
+        address=address,
+    )
 
 
 @dataclass(frozen=True)
@@ -99,10 +116,9 @@ class OpenEmrDemographicsAdapter:
         `identity` can only exist via `confirm_identity`, so there is no code path
         from an unconfirmed, partial, revoked, or failed OCR value to this call.
         """
-        given_name, family_name = _split_confirmed_name(identity.name)
         body = {
-            "fname": given_name,
-            "lname": family_name,
+            "fname": identity.given_name,
+            "lname": identity.family_name,
             "DOB": identity.date_of_birth,
             "street": identity.address,
         }
@@ -116,15 +132,3 @@ class OpenEmrDemographicsAdapter:
             raise OpenEmrRequestError("writing confirmed demographics to OpenEMR failed") from exc
         if response.status_code != 200:
             raise OpenEmrRequestError("writing confirmed demographics to OpenEMR failed")
-
-
-def _split_confirmed_name(full_name: str) -> tuple[str, str]:
-    """Reshape one confirmed full name into OpenEMR's separate given/family fields.
-
-    Nothing is fabricated: the confirmed value is only reformatted, never guessed. A
-    single-word confirmed name has no family-name component to split out.
-    """
-    parts = full_name.split()
-    if len(parts) < 2:
-        return full_name, ""
-    return " ".join(parts[:-1]), parts[-1]
