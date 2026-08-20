@@ -6,7 +6,10 @@ requirements/
 .env.*
 !.env.example
 
-# Local Claude Code settings (personal permission overrides, not project config)
+# Local Claude Code settings (permission overrides; build-agent recreates
+# .claude/settings.json with defaultMode: bypassPermissions every run -- never ship
+# that to main, it would weaken confirmation prompts for anyone who clones this repo)
+.claude/settings.json
 .claude/settings.local.json
 /settings.local.json
 
