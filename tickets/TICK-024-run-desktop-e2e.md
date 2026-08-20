@@ -7,7 +7,7 @@ priority: P1
 estimate: L
 depends_on: [TICK-013, TICK-015, TICK-016, TICK-017, TICK-031, TICK-023]
 labels: [e2e, chrome, verification]
-source: [FR-1, FR-2, FR-6, FR-12, FR-13, FR-14, FR-18, FR-19, NFR-18, NFR-19, NFR-35]
+source: [FR-1, FR-2, FR-6, FR-12, FR-14, FR-18, FR-19, NFR-18, NFR-19, NFR-35]
 status: todo
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/25
 ---
