@@ -8,10 +8,10 @@ estimate: S
 depends_on: [TICK-012]
 labels: [portal, frontend, accessibility]
 source: [FR-1, FR-2]
-status: todo
+status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/63
+builder_commit: 1907330
 ---
-
 ## Context
 
 Found live during TICK-024's real desktop Chrome E2E pass

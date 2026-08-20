@@ -8,10 +8,10 @@ estimate: M
 depends_on: [TICK-008]
 labels: [auth, security, openemr]
 source: [FR-3, NFR-25]
-status: todo
+status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/64
+builder_commit: be2070b
 ---
-
 ## Context
 
 Found live during TICK-024's real desktop Chrome E2E pass
