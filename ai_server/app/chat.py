@@ -9,6 +9,7 @@ client-side panel that will render even if the request never completes (FR-19).
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import AsyncIterator, Callable
@@ -22,13 +23,17 @@ from ai_server.llm.groq import (
     GroqWorkflow,
     PlanningOutput,
 )
+from ai_server.openemr.adapter import OpenEmrConfigurationError, OpenEmrRequestError
 from ai_server.privacy.gate import (
+    AnonymousSlot,
     OutboundMessage,
     OutboundPayload,
     ResponseFormat,
     SchedulingContext,
     SchedulingRules,
 )
+from ai_server.scheduling.booking import AppointmentRequest, BookingService, SlotBookingError
+from ai_server.scheduling.slots import CandidateSlot, SlotDiscoveryService
 
 SYSTEM_PROMPT = (
     "You help a patient discuss scheduling for this clinic. Use only the office hours, "
@@ -59,19 +64,161 @@ class ChatTurnRequest(BaseModel):
     message: str = Field(min_length=1, max_length=4_000)
 
 
-class NoActionTool(AuthoritativeTool):
-    """The only `AuthoritativeTool` available until a scheduling tool ships.
+NO_ACTION_SUMMARY = "No scheduling action is available yet in this demo."
 
-    Booking, rescheduling, and cancellation are unimplemented (TICK-020 is blocked)
-    and guided onboarding's draft/completion checkpoint is unimplemented (TICK-017 is
-    blocked), so this tool performs no OpenEMR operation and reports none occurred.
+
+class NoActionTool(AuthoritativeTool):
+    """The fallback `AuthoritativeTool` for every intent `BookingTool` cannot perform.
+
+    Rescheduling has no OpenEMR service method (TICK-020 is permanently blocked) and
+    cancellation needs its own anonymous appointment-targeting token that does not
+    exist yet (TICK-036), so this tool performs no OpenEMR operation and reports none
+    occurred. `BookingTool` also delegates here for a `book` intent missing a
+    `slot_token`, and `_build_scheduling_tool` (`ai_server/app/main.py`) uses this as
+    the whole tool for any environment missing the OpenEMR settings booking needs
+    (TICK-034 AC3/AC5).
     """
 
     async def execute(self, plan: PlanningOutput) -> AuthoritativeToolResult:
-        del plan  # No authoritative action exists yet for any planned intent.
+        del plan  # No authoritative action exists for any of these planned intents.
+        return AuthoritativeToolResult(public_summary=NO_ACTION_SUMMARY)
+
+
+@dataclass(frozen=True)
+class BookingTool(AuthoritativeTool):
+    """Executes a `book` plan through `BookingService`; everything else falls back to
+    `NoActionTool` (TICK-034 AC3).
+
+    `access_token`/`patient_id` are this turn's already-delegated OpenEMR credentials
+    (`SessionStore.access_token`/`patient_uuid`, `ai_server/app/main.py`'s `/api/chat`
+    handler) -- baked into a fresh instance per turn by `_build_scheduling_tool`'s
+    factory, never stored anywhere beyond that. `patient_id` carries the session's
+    OpenEMR patient UUID: `ai_server/openemr/demographics.py`'s already-proven-live
+    `PUT /patient/{uuid}` establishes that this Standard API accepts the UUID as the
+    `pid` path segment, so `BookingService.book`'s `patient_id` argument reuses it the
+    same way, rather than resolving a second, numeric patient id this module has no
+    endpoint to look up.
+    """
+
+    booking: BookingService
+    appointment_request: AppointmentRequest
+    access_token: str | None
+    patient_id: str | None
+    now: datetime
+
+    async def execute(self, plan: PlanningOutput) -> AuthoritativeToolResult:
+        if plan.intent != "book" or plan.slot_token is None:
+            return await NoActionTool().execute(plan)
+        if self.access_token is None or self.patient_id is None:
+            # No delegated session credentials for this turn (e.g. the session's
+            # patient id was never captured, TICK-028) -- no OpenEMR call is possible.
+            return AuthoritativeToolResult(public_summary=NO_ACTION_SUMMARY)
+        try:
+            booked = await self.booking.book(
+                self.access_token,
+                self.patient_id,
+                plan.slot_token,
+                self.appointment_request,
+                self.now,
+            )
+        except SlotBookingError:
+            return AuthoritativeToolResult(
+                public_summary=(
+                    "That appointment time is no longer available. Please ask for "
+                    "open times again and choose a new one."
+                )
+            )
+        except OpenEmrRequestError:
+            return AuthoritativeToolResult(
+                public_summary=(
+                    "OpenEMR could not confirm that booking just now, so no "
+                    "appointment was created. Please try again."
+                )
+            )
         return AuthoritativeToolResult(
-            public_summary="No scheduling action is available yet in this demo."
+            public_summary=(
+                "Booked and confirmed by OpenEMR: appointment "
+                f"{booked.id}, {booked.starts_at.isoformat()} to {booked.ends_at.isoformat()}."
+            )
         )
+
+
+class NoMappedCandidateSource:
+    """Honestly reports zero open-slot candidates: no OpenEMR endpoint exists on the
+    pinned v8.3.0 release for provider availability, regular office hours, or
+    closures (`evidence/TICK-001/ENDPOINT_MATRIX.md`, "Implementation-blocking API
+    gap" on all three), and ADR-3 (`ARCHITECTURE.md`) forbids a database workaround or
+    an invented default in their place -- the same discipline
+    `ai_server.openemr.adapter.OpenEmrScheduleAdapter.availability/office_hours/
+    closures` already document for this identical gap.
+
+    Using this keeps `SlotDiscoveryService` genuinely wired into `ChatService._payload`
+    instead of a value hardcoded there (TICK-034 AC2): `open_slots` is empty today
+    because no source has real candidates to report, not because the call was never
+    made. A future ticket that maps a real candidate-source endpoint only has to
+    replace this one implementation.
+    """
+
+    async def candidate_slots(self) -> list[CandidateSlot]:
+        return []
+
+
+@dataclass(frozen=True)
+class BookingToolSettings:
+    """Validated, admin-configured appointment fields this demo's single office uses
+    for every AI-booked appointment.
+
+    `ai_server.scheduling.booking.AppointmentRequest`'s own docstring is explicit that
+    this module has no office configuration of its own and the caller must supply
+    these fields; this is that caller's configuration boundary, kept out of
+    `booking.py` itself (TICK-034's Out of Scope: "Changing `BookingService` ...
+    themselves").
+    """
+
+    category_id: str
+    title: str
+    facility_id: str
+    billing_location_id: str
+    provider_id: str | None = None
+
+    @classmethod
+    def from_environment(cls) -> BookingToolSettings:
+        """Parse the required local-office booking fields once during startup."""
+        values = {
+            "AI_BOOKING_CATEGORY_ID": os.environ.get("AI_BOOKING_CATEGORY_ID"),
+            "AI_BOOKING_TITLE": os.environ.get("AI_BOOKING_TITLE"),
+            "AI_BOOKING_FACILITY_ID": os.environ.get("AI_BOOKING_FACILITY_ID"),
+            "AI_BOOKING_BILLING_LOCATION_ID": os.environ.get("AI_BOOKING_BILLING_LOCATION_ID"),
+        }
+        missing = [name for name, value in values.items() if not value]
+        if missing:
+            raise OpenEmrConfigurationError(
+                f"missing required booking settings: {', '.join(missing)}"
+            )
+        return cls(
+            category_id=str(values["AI_BOOKING_CATEGORY_ID"]),
+            title=str(values["AI_BOOKING_TITLE"]),
+            facility_id=str(values["AI_BOOKING_FACILITY_ID"]),
+            billing_location_id=str(values["AI_BOOKING_BILLING_LOCATION_ID"]),
+            provider_id=os.environ.get("AI_BOOKING_PROVIDER_ID") or None,
+        )
+
+    def appointment_request(self) -> AppointmentRequest:
+        return AppointmentRequest(
+            category_id=self.category_id,
+            title=self.title,
+            facility_id=self.facility_id,
+            billing_location_id=self.billing_location_id,
+            provider_id=self.provider_id,
+        )
+
+
+ToolFactory = Callable[[str | None, str | None, datetime], AuthoritativeTool]
+
+
+def no_action_tool_factory() -> ToolFactory:
+    """The fallback factory: every turn gets a fresh, stateless `NoActionTool`."""
+    return lambda access_token, patient_id, now: NoActionTool()
 
 
 @dataclass(frozen=True)
@@ -79,19 +226,38 @@ class ChatService:
     """Builds the approved payload for a turn and streams the workflow's reply."""
 
     workflow: GroqWorkflow | None
-    tool: AuthoritativeTool
+    tool_factory: ToolFactory
+    slot_discovery: SlotDiscoveryService | None = None
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
 
-    async def stream_reply(self, message: str) -> AsyncIterator[str]:
-        """Yield the fixed unavailable message, or the workflow's streamed reply."""
+    async def stream_reply(
+        self, message: str, access_token: str | None = None, patient_id: str | None = None
+    ) -> AsyncIterator[str]:
+        """Yield the fixed unavailable message, or the workflow's streamed reply.
+
+        `access_token`/`patient_id` are this turn's delegated OpenEMR credentials
+        (TICK-034 AC1); they are used only to build this turn's payload and tool, and
+        are held nowhere once this call returns.
+        """
         if self.workflow is None:
             yield UNAVAILABLE_RESPONSE
             return
-        payload = self._payload(message)
-        async for chunk in self.workflow.respond(payload, self.tool):
+        now = self.clock()
+        payload = await self._payload(message, access_token, now)
+        tool = self.tool_factory(access_token, patient_id, now)
+        async for chunk in self.workflow.respond(payload, tool):
             yield chunk
 
-    def _payload(self, message: str) -> OutboundPayload:
+    async def _payload(
+        self, message: str, access_token: str | None, now: datetime
+    ) -> OutboundPayload:
+        open_slots: list[AnonymousSlot] = []
+        if self.slot_discovery is not None and access_token is not None:
+            tokens = await self.slot_discovery.open_slots(access_token, now)
+            open_slots = [
+                AnonymousSlot(slot_token=t.slot_token, starts_at=t.starts_at, ends_at=t.ends_at)
+                for t in tokens
+            ]
         return OutboundPayload(
             model="openai/gpt-oss-120b",
             messages=[
@@ -99,11 +265,11 @@ class ChatService:
                 OutboundMessage(role="user", content=message),
             ],
             scheduling_context=SchedulingContext(
-                current_datetime=self.clock(),
+                current_datetime=now,
                 timezone=_TIMEZONE,
                 office_hours=[],
                 closures=[],
-                open_slots=[],
+                open_slots=open_slots,
             ),
             scheduling_rules=_SCHEDULING_RULES,
             response_format=ResponseFormat(type="json_schema", schema_version="1"),
@@ -112,7 +278,7 @@ class ChatService:
 
 def unavailable_chat_service() -> ChatService:
     """Return a service that always reports the fixed unavailable message."""
-    return ChatService(workflow=None, tool=NoActionTool())
+    return ChatService(workflow=None, tool_factory=no_action_tool_factory())
 
 
 # The embedded chat page. It is intentionally a single static document: FastAPI is

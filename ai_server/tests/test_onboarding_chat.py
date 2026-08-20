@@ -453,7 +453,10 @@ class _ScriptedOnboardingService:
 class _ScriptedSchedulingService:
     calls: list[str] = field(default_factory=list)
 
-    async def stream_reply(self, message: str) -> AsyncIterator[str]:
+    async def stream_reply(
+        self, message: str, access_token: str | None = None, patient_id: str | None = None
+    ) -> AsyncIterator[str]:
+        del access_token, patient_id
         self.calls.append(message)
         yield "scheduling-reply"
 

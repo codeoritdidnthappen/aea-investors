@@ -18,9 +18,13 @@ from ai_server.app.auth import (
 )
 from ai_server.app.chat import (
     CHAT_PAGE_HTML,
+    BookingTool,
+    BookingToolSettings,
     ChatService,
     ChatTurnRequest,
-    NoActionTool,
+    NoMappedCandidateSource,
+    ToolFactory,
+    no_action_tool_factory,
     unavailable_chat_service,
 )
 from ai_server.app.health import (
@@ -37,9 +41,19 @@ from ai_server.app.onboarding_chat import (
 from ai_server.llm.groq import GroqConfigurationError, GroqSettings, GroqWorkflow, HttpGroqClient
 from ai_server.onboarding.draft_client import AssessmentDraftAdapter, OpenEmrPortalSettings
 from ai_server.onboarding.flow import OnboardingFlow
-from ai_server.openemr.adapter import OpenEmrConfigurationError
+from ai_server.openemr.adapter import (
+    OpenEmrConfigurationError,
+    OpenEmrScheduleAdapter,
+    OpenEmrScheduleSettings,
+)
 from ai_server.openemr.demographics import OpenEmrDemographicsAdapter, OpenEmrDemographicsSettings
 from ai_server.privacy.gate import PrivacyGate
+from ai_server.scheduling.booking import (
+    BookingService,
+    OpenEmrBookingAdapter,
+    OpenEmrBookingSettings,
+)
+from ai_server.scheduling.slots import AnonymousSlotStore, SlotDiscoveryService
 
 
 def _origin_of(url: str) -> str:
@@ -120,7 +134,14 @@ def create_app(
         if configured_chat_service is None:
             chat_http_client = httpx.AsyncClient(timeout=30.0)
             owned_http_clients.append(chat_http_client)
-            configured_chat_service = _build_chat_service(chat_http_client, clock)
+            # Same untrusted-self-signed-cert reason as auth_http_client/
+            # health_openemr_client above: booking and appointment reads call
+            # configured_settings.issuer's host directly, not through the browser.
+            chat_openemr_client = httpx.AsyncClient(timeout=30.0, verify=False)
+            owned_http_clients.append(chat_openemr_client)
+            configured_chat_service = _build_chat_service(
+                chat_http_client, chat_openemr_client, clock
+            )
         if configured_onboarding_service is None:
             onboarding_http_client = httpx.AsyncClient(timeout=30.0)
             owned_http_clients.append(onboarding_http_client)
@@ -178,7 +199,13 @@ def create_app(
                 onboarding.stream_reply(handle, turn.message), media_type="text/plain"
             )
         service = configured_chat_service or unavailable_chat_service()
-        return StreamingResponse(service.stream_reply(turn.message), media_type="text/plain")
+        # Retrieved for this call only (TICK-034 AC1): never persisted, logged, or
+        # cached beyond the stream_reply() call they are passed into.
+        access_token = await asyncio.to_thread(configured_session_store.access_token, handle, now)
+        patient_id = await asyncio.to_thread(configured_session_store.patient_uuid, handle, now)
+        return StreamingResponse(
+            service.stream_reply(turn.message, access_token, patient_id), media_type="text/plain"
+        )
 
     @server.get("/oauth/launch")
     async def oauth_launch() -> RedirectResponse:
@@ -213,7 +240,9 @@ def create_app(
     return server
 
 
-def _build_chat_service(client: httpx.AsyncClient, clock: Callable[[], datetime]) -> ChatService:
+def _build_chat_service(
+    client: httpx.AsyncClient, openemr_client: httpx.AsyncClient, clock: Callable[[], datetime]
+) -> ChatService:
     """Build the real Groq-backed chat service, or a fixed-unavailable fallback.
 
     Mirrors `default_health_service`'s tolerance of absent Groq configuration: the
@@ -225,7 +254,46 @@ def _build_chat_service(client: httpx.AsyncClient, clock: Callable[[], datetime]
     except GroqConfigurationError:
         return unavailable_chat_service()
     workflow = GroqWorkflow(PrivacyGate.create(), HttpGroqClient(groq_settings, client))
-    return ChatService(workflow=workflow, tool=NoActionTool(), clock=clock)
+    tool_factory, slot_discovery = _build_scheduling_tool(openemr_client)
+    return ChatService(
+        workflow=workflow, tool_factory=tool_factory, slot_discovery=slot_discovery, clock=clock
+    )
+
+
+def _build_scheduling_tool(
+    client: httpx.AsyncClient,
+) -> tuple[ToolFactory, SlotDiscoveryService | None]:
+    """Build the real booking tool and slot discovery, or the no-op fallback.
+
+    Mirrors `_build_chat_service`'s/`_build_onboarding_service`'s tolerance of absent
+    OpenEMR configuration (TICK-034 AC5): every environment missing the Standard
+    API/FHIR base URLs or the admin-configured booking fields keeps today's fixed
+    no-action tool and an empty `open_slots` instead of failing startup.
+    """
+    try:
+        booking_settings = OpenEmrBookingSettings.from_environment()
+        schedule_settings = OpenEmrScheduleSettings.from_environment()
+        booking_tool_settings = BookingToolSettings.from_environment()
+    except OpenEmrConfigurationError:
+        return no_action_tool_factory(), None
+    # One store shared by discovery (issues tokens) and booking (resolves them), so a
+    # token issued in an earlier turn's open_slots can still be booked in a later one.
+    store = AnonymousSlotStore()
+    booking_service = BookingService(store, OpenEmrBookingAdapter(booking_settings, client))
+    schedule_adapter = OpenEmrScheduleAdapter(schedule_settings, client)
+    discovery = SlotDiscoveryService(NoMappedCandidateSource(), schedule_adapter, store)
+    appointment_request = booking_tool_settings.appointment_request()
+
+    def factory(access_token: str | None, patient_id: str | None, now: datetime) -> BookingTool:
+        return BookingTool(
+            booking=booking_service,
+            appointment_request=appointment_request,
+            access_token=access_token,
+            patient_id=patient_id,
+            now=now,
+        )
+
+    return factory, discovery
 
 
 def _build_onboarding_service(

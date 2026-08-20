@@ -18,11 +18,13 @@ from ai_server.app.chat import (
     CHAT_PAGE_HTML,
     ChatService,
     NoActionTool,
+    no_action_tool_factory,
     unavailable_chat_service,
 )
 from ai_server.app.main import create_app
 from ai_server.llm.groq import UNAVAILABLE_RESPONSE, GroqWorkflow
 from ai_server.privacy.gate import OutboundPayload, PrivacyGate
+from ai_server.scheduling.slots import AnonymousSlotToken
 
 NOW = datetime(2026, 8, 20, 12, 0, tzinfo=timezone.utc)
 
@@ -58,8 +60,10 @@ class ScriptedChatService:
 
     chunks: list[str]
 
-    async def stream_reply(self, message: str) -> AsyncIterator[str]:
-        del message
+    async def stream_reply(
+        self, message: str, access_token: str | None = None, patient_id: str | None = None
+    ) -> AsyncIterator[str]:
+        del message, access_token, patient_id
         for chunk in self.chunks:
             await asyncio.sleep(0)
             yield chunk
@@ -173,8 +177,10 @@ def test_ac2_route_streams_the_services_async_generator_without_buffering_it(
     seen: list[str] = []
 
     class RecordingChatService(ScriptedChatService):
-        async def stream_reply(self, message: str) -> AsyncIterator[str]:
-            async for chunk in super().stream_reply(message):
+        async def stream_reply(
+            self, message: str, access_token: str | None = None, patient_id: str | None = None
+        ) -> AsyncIterator[str]:
+            async for chunk in super().stream_reply(message, access_token, patient_id):
                 seen.append(chunk)
                 yield chunk
 
@@ -250,7 +256,9 @@ def test_ac3_chat_service_disables_every_scheduling_action_pending_a_real_tool(
             captured.append(payload)
             yield "ok"
 
-    service = ChatService(workflow=CapturingWorkflow(), tool=NoActionTool(), clock=lambda: NOW)
+    service = ChatService(
+        workflow=CapturingWorkflow(), tool_factory=no_action_tool_factory(), clock=lambda: NOW
+    )
 
     async def run() -> list[str]:
         return [chunk async for chunk in service.stream_reply("Can you book me an appointment?")]
@@ -261,6 +269,151 @@ def test_ac3_chat_service_disables_every_scheduling_action_pending_a_real_tool(
     assert rules.booking_enabled is False
     assert rules.rescheduling_enabled is False
     assert rules.cancellation_enabled is False
+
+
+# --- TICK-034: real access token/patient id threading and open-slot wiring --------
+
+
+class FakeSlotDiscovery:
+    """A `SlotDiscoveryService`-shaped double recording every call it receives."""
+
+    def __init__(self, tokens: list[AnonymousSlotToken]) -> None:
+        self._tokens = tokens
+        self.calls: list[tuple[str, datetime]] = []
+
+    async def open_slots(self, access_token: str, now: datetime) -> list[AnonymousSlotToken]:
+        self.calls.append((access_token, now))
+        return self._tokens
+
+
+def test_tick034_payload_populates_open_slots_from_slot_discovery_for_the_logged_in_patient() -> (
+    None
+):
+    captured: list[OutboundPayload] = []
+
+    class CapturingWorkflow(GroqWorkflow):
+        def __init__(self) -> None:
+            super().__init__(PrivacyGate.create(), client=None)  # type: ignore[arg-type]
+
+        async def respond(self, payload, tool):  # type: ignore[override]
+            captured.append(payload)
+            yield "ok"
+
+    issued = AnonymousSlotToken(
+        slot_token="slot_" + "a" * 20,
+        starts_at=NOW + timedelta(hours=2),
+        ends_at=NOW + timedelta(hours=2, minutes=30),
+    )
+    discovery = FakeSlotDiscovery([issued])
+    service = ChatService(
+        workflow=CapturingWorkflow(),
+        tool_factory=no_action_tool_factory(),
+        slot_discovery=discovery,
+        clock=lambda: NOW,
+    )
+
+    async def run() -> list[str]:
+        return [
+            chunk
+            async for chunk in service.stream_reply(
+                "What times are open?", access_token="delegated-token", patient_id="patient-uuid"
+            )
+        ]
+
+    assert asyncio.run(run()) == ["ok"]
+    assert discovery.calls == [("delegated-token", NOW)]
+    open_slots = captured[0].scheduling_context.open_slots
+    assert len(open_slots) == 1
+    assert open_slots[0].slot_token == issued.slot_token
+    assert open_slots[0].starts_at == issued.starts_at
+    assert open_slots[0].ends_at == issued.ends_at
+
+
+def test_tick034_open_slots_stay_empty_and_discovery_is_never_called_with_no_access_token() -> None:
+    captured: list[OutboundPayload] = []
+
+    class CapturingWorkflow(GroqWorkflow):
+        def __init__(self) -> None:
+            super().__init__(PrivacyGate.create(), client=None)  # type: ignore[arg-type]
+
+        async def respond(self, payload, tool):  # type: ignore[override]
+            captured.append(payload)
+            yield "ok"
+
+    discovery = FakeSlotDiscovery([])
+    service = ChatService(
+        workflow=CapturingWorkflow(),
+        tool_factory=no_action_tool_factory(),
+        slot_discovery=discovery,
+        clock=lambda: NOW,
+    )
+
+    async def run() -> list[str]:
+        return [chunk async for chunk in service.stream_reply("Hello", access_token=None)]
+
+    assert asyncio.run(run()) == ["ok"]
+    assert discovery.calls == []
+    assert captured[0].scheduling_context.open_slots == []
+
+
+def test_tick034_tool_factory_receives_this_turns_access_token_and_patient_id() -> None:
+    received: list[tuple[str | None, str | None, datetime]] = []
+
+    class CapturingWorkflow(GroqWorkflow):
+        def __init__(self) -> None:
+            super().__init__(PrivacyGate.create(), client=None)  # type: ignore[arg-type]
+
+        async def respond(self, payload, tool):  # type: ignore[override]
+            yield "ok"
+
+    def factory(access_token, patient_id, now):
+        received.append((access_token, patient_id, now))
+        return NoActionTool()
+
+    service = ChatService(workflow=CapturingWorkflow(), tool_factory=factory, clock=lambda: NOW)
+
+    async def run() -> list[str]:
+        return [
+            chunk
+            async for chunk in service.stream_reply(
+                "Book me an appointment", access_token="delegated-token", patient_id="patient-uuid"
+            )
+        ]
+
+    assert asyncio.run(run()) == ["ok"]
+    assert received == [("delegated-token", "patient-uuid", NOW)]
+
+
+def test_tick034_api_chat_route_passes_the_sessions_access_token_and_patient_id(
+    tmp_path: Path,
+) -> None:
+    """AC1: `/api/chat` retrieves the session's access token (and the patient id
+    booking also needs) via the same `SessionStore` methods TICK-035 already
+    established, and makes them available to `ChatService` for this turn only."""
+    configured = settings(tmp_path)
+    store = SessionStore(configured.database_path, configured.encryption_key)
+    store.initialize()
+    tokens = OAuthTokens(
+        "real-access-token", "real-refresh-token", "nonce", patient_uuid="patient-uuid"
+    )
+    handle = store.create_session(tokens, NOW, configured.session_ttl)
+
+    received: list[tuple[str | None, str | None]] = []
+
+    @dataclass
+    class RecordingChatService:
+        async def stream_reply(
+            self, message: str, access_token: str | None = None, patient_id: str | None = None
+        ) -> AsyncIterator[str]:
+            received.append((access_token, patient_id))
+            yield "ok"
+
+    app = create_app(configured, clock=lambda: NOW, chat_service=RecordingChatService())
+
+    response = asyncio.run(_post_chat(app, cookie=handle))
+
+    assert response.status_code == 200
+    assert received == [("real-access-token", "patient-uuid")]
 
 
 # --- AC4: keyboard navigation, labels, visible focus, contrast, non-colour status -
@@ -344,7 +497,9 @@ def test_ticket_010_privacy_rejection_still_never_calls_the_model(tmp_path: Path
             raise AssertionError("Groq must not be called for a rejected turn")
 
     workflow = GroqWorkflow(PrivacyGate.create(), FailIfCalledClient())
-    service = ChatService(workflow=workflow, tool=NoActionTool(), clock=lambda: NOW)
+    service = ChatService(
+        workflow=workflow, tool_factory=no_action_tool_factory(), clock=lambda: NOW
+    )
 
     async def run() -> list[str]:
         return [chunk async for chunk in service.stream_reply("My phone is 555-555-5555.")]
