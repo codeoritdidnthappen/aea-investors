@@ -41,12 +41,18 @@ services:
       MYSQL_PASS: ${OPENEMR_MYSQL_PASSWORD:?set OPENEMR_MYSQL_PASSWORD in deploy/local/.env}
       OE_USER: ${OPENEMR_ADMIN_USER:?set OPENEMR_ADMIN_USER in deploy/local/.env}
       OE_PASS: ${OPENEMR_ADMIN_PASSWORD:?set OPENEMR_ADMIN_PASSWORD in deploy/local/.env}
+      # Read by the aeai-portal-chat module (TICK-012) as the iframe's only src; the
+      # local default points at Caddy's chat hostname, never at OpenEMR itself.
+      AEAI_PORTAL_CHAT_URL: ${AEAI_PORTAL_CHAT_URL:-https://chat.localhost/oauth/launch}
     ports:
       - "${OPENEMR_HTTP_PORT:-8080}:80"
       - "${OPENEMR_HTTPS_PORT:-8443}:443"
     volumes:
       - openemr-sites:/var/www/localhost/htdocs/openemr/sites
       - openemr-logs:/var/log
+      # The patient-portal AI chat entry (TICK-012), bind-mounted read-only into the
+      # pinned image's custom-module directory rather than baking a forked image.
+      - ../../openemr_modules/aeai-portal-chat:/var/www/localhost/htdocs/openemr/interface/modules/custom_modules/aeai-portal-chat:ro
     healthcheck:
       test:
         [
