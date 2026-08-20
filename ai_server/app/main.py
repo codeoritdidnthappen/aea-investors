@@ -46,7 +46,7 @@ def create_app(
     configured_health_service = health_service
     configured_chat_service = chat_service
     configured_session_store: SessionStore | None = None
-    http_client: httpx.AsyncClient | None = None
+    owned_http_clients: list[httpx.AsyncClient] = []
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -55,33 +55,33 @@ def create_app(
             configured_authorization, \
             configured_health_service, \
             configured_chat_service, \
-            configured_session_store, \
-            http_client
+            configured_session_store
         if configured_settings is None:
             configured_settings = AuthSettings.from_environment()
         store = SessionStore(configured_settings.database_path, configured_settings.encryption_key)
         await asyncio.to_thread(store.initialize)
         configured_session_store = store
         if configured_authorization is None:
-            http_client = httpx.AsyncClient(timeout=10.0)
+            auth_http_client = httpx.AsyncClient(timeout=10.0)
+            owned_http_clients.append(auth_http_client)
             configured_authorization = AuthorizationService(
                 configured_settings,
                 store,
-                OpenEmrOAuthClient(configured_settings, http_client),
+                OpenEmrOAuthClient(configured_settings, auth_http_client),
             )
         if configured_health_service is None:
-            if http_client is None:
-                http_client = httpx.AsyncClient(timeout=2.0)
+            health_http_client = httpx.AsyncClient(timeout=2.0)
+            owned_http_clients.append(health_http_client)
             configured_health_service = default_health_service(
-                HealthSettings.from_environment(configured_settings.issuer), http_client
+                HealthSettings.from_environment(configured_settings.issuer), health_http_client
             )
         if configured_chat_service is None:
-            if http_client is None:
-                http_client = httpx.AsyncClient(timeout=10.0)
-            configured_chat_service = _build_chat_service(http_client, clock)
+            chat_http_client = httpx.AsyncClient(timeout=30.0)
+            owned_http_clients.append(chat_http_client)
+            configured_chat_service = _build_chat_service(chat_http_client, clock)
         yield
-        if http_client is not None:
-            await http_client.aclose()
+        for owned_client in owned_http_clients:
+            await owned_client.aclose()
 
     server = FastAPI(title="Intake AI Server", version="0.1.0", lifespan=lifespan)
 
