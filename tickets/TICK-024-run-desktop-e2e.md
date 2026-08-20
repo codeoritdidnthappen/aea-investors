@@ -10,7 +10,7 @@ labels: [e2e, chrome, verification]
 source: [FR-1, FR-2, FR-6, FR-12, FR-14, FR-18, FR-19, NFR-18, NFR-19, NFR-35]
 status: blocked
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/25
-blocked_reason: "Re-attempted live 2026-08-20 now that TICK-032/033 landed -- got substantially further (nav tile, patient-context consent, streaming, accessibility, and keyboard operability all verified live) but two new, real, live bugs found along the way block full closure: TICK-038 (onboarding's first turn reaches a real successful OpenEMR write but the AI server fails to parse the response) and TICK-039 (cancellation never selects a real, available appointment despite it reaching the LLM's context). See evidence/TICK-024/DESKTOP_E2E_EVIDENCE_2.md. Re-attempt once both land."
+blocked_reason: "Re-attempted live 2026-08-20 now that TICK-032/033 landed -- got substantially further (nav tile, patient-context consent, streaming, accessibility, and keyboard operability all verified live) but two new, real, live bugs found along the way block full closure: TICK-038 (onboarding's first turn reaches a real successful OpenEMR write but the AI server fails to parse the response) and TICK-039 (cancellation never selects a real, available appointment despite it reaching the LLM's context). See evidence/TICK-024/DESKTOP_E2E_EVIDENCE_2.md. TICK-038 has since landed and was independently re-verified live -- onboarding now progresses past its first turn ('How should we contact you?'). Full onboarding-through-OCR-confirmation and cancellation-completion coverage were not re-exercised past that single confirming turn in this pass; re-attempt to close out remaining coverage once TICK-039 also lands."
 ---
 
 ## Context
