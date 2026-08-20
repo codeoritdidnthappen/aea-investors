@@ -8,8 +8,9 @@ estimate: M
 depends_on: [TICK-001]
 labels: [openemr, portal, discovery]
 source: [FR-1, FR-2, FR-3, FR-4]
-status: todo
+status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/3
+builder_commit: 22b08e2
 ---
 ## Context
 
