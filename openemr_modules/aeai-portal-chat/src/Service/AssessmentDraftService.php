@@ -103,20 +103,31 @@ class AssessmentDraftService
             return $fields;
         }
         $status = $requestedCompletion ? 'completed' : 'draft';
-        // `AND status != 'completed'` makes this a compare-and-swap: closes the
-        // window between the read above and this write where a concurrent request
-        // (e.g. a retried client submission) could complete the same draft in
-        // between. If that happens, 0 rows are affected here even though the read
-        // saw a non-completed row -- report the same 409 the read-time check above
-        // would have, rather than a false 200.
+        // Optimistic concurrency control: `AND version = ?` (the version read above)
+        // closes the read-modify-write window entirely, not just the completion
+        // case -- two concurrent checkpoint PUTs each merge from their own read, so
+        // without this the second write to land would silently clobber the first
+        // one's fields with its own (now-stale) merge. `status != 'completed'` is
+        // now redundant with the version check (any concurrent write bumps the
+        // version) but kept for a clearer error message on that specific case.
         sqlStatement(
             "UPDATE aeai_assessment_draft
-                SET payload = ?, status = ?, updated_at = ?
-              WHERE patient_uuid = ? AND uuid = ? AND status != 'completed'",
-            [json_encode($fields), $status, gmdate('Y-m-d H:i:s'), $patientUuid, $uuid]
+                SET payload = ?, status = ?, updated_at = ?, version = version + 1
+              WHERE patient_uuid = ? AND uuid = ? AND status != 'completed' AND version = ?",
+            [json_encode($fields), $status, gmdate('Y-m-d H:i:s'), $patientUuid, $uuid, $row['version']]
         );
         if (QueryUtils::affectedRows() === 0) {
-            return $this->errorResponse(409, 'this assessment is already completed and cannot be edited');
+            // Something changed between the read above and this write -- find out
+            // what, so the client gets an accurate, actionable error rather than a
+            // generic one.
+            $current = $this->forPatient($patientUuid, $uuid);
+            if ($current !== null && $current['status'] === 'completed') {
+                return $this->errorResponse(409, 'this assessment is already completed and cannot be edited');
+            }
+            return $this->errorResponse(
+                409,
+                'this assessment was changed by another request; reload and retry'
+            );
         }
         return new JsonResponse(['uuid' => $uuid, 'status' => $status, 'fields' => $fields], 200);
     }
@@ -129,7 +140,7 @@ class AssessmentDraftService
     private function forPatient(string $patientUuid, string $uuid): ?array
     {
         $row = sqlQuery(
-            "SELECT uuid, status, payload FROM aeai_assessment_draft
+            "SELECT uuid, status, payload, version FROM aeai_assessment_draft
               WHERE patient_uuid = ? AND uuid = ?",
             [$patientUuid, $uuid]
         );

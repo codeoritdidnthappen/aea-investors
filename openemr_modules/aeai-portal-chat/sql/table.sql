@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS aeai_assessment_draft (
     patient_uuid VARCHAR(64) NOT NULL,
     status VARCHAR(16) NOT NULL DEFAULT 'draft',
     payload MEDIUMTEXT NOT NULL,
+    version INT NOT NULL DEFAULT 0,
     created_at DATETIME NOT NULL,
     updated_at DATETIME NOT NULL,
     UNIQUE KEY uk_aeai_assessment_draft_uuid (uuid),

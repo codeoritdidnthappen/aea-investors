@@ -119,6 +119,20 @@ A `/code-review` pass against this branch found and fixed four issues before mer
   quoted SQL string specifically (the bound-parameter array legitimately references
   those variables; only the string itself must not).
 
+A second review round on the same branch found one more: the `status != 'completed'`
+compare-and-swap only guarded the completion case, not general concurrent checkpoint
+edits — two concurrent `PUT`s to the same draft each merge from their own read, so
+the second write to land would silently clobber the first one's fields with no error
+to either client. Added a `version` column and made every `update()` a proper
+optimistic-concurrency compare-and-swap: read the version, `UPDATE ... AND version =
+?` (the value just read), `version = version + 1` on success. Zero affected rows now
+means *something* changed since the read — a follow-up lookup distinguishes
+"completed" from "edited by another request" so the client gets an accurate,
+actionable `409` either way, not a generic one. `sql/table.sql` updated (applied to
+the live table via `ALTER TABLE` for this proof, since module install only runs
+`CREATE TABLE IF NOT EXISTS`), plus a static test locking in that the version column
+is actually used in both the read and the compare-and-swap write.
+
 ### Bug found in OpenEMR core along the way
 
 `HttpRestRequest::getRequestBodyJSON()` (`src/Common/Http/HttpRestRequest.php`) calls
