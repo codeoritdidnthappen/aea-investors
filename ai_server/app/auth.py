@@ -51,6 +51,7 @@ class AuthSettings:
     state_ttl: timedelta = timedelta(minutes=10)
     scopes: tuple[str, ...] = (
         "openid",
+        "offline_access",
         "api:oemr",
         "user/patient.crus",
         "user/appointment.cruds",
@@ -157,7 +158,7 @@ class OpenEmrOAuthClient:
         header, claims, signed_data, signature = _jwt_parts(token)
         algorithm = header.get("alg")
         key_id = header.get("kid")
-        if algorithm != "RS256" or not isinstance(key_id, str):
+        if algorithm != "RS256" or (key_id is not None and not isinstance(key_id, str)):
             raise AuthError("authorization server returned an unsupported ID token", 401)
         jwks_response = await self._client.get(self._settings.jwks_url)
         if jwks_response.status_code != 200:
@@ -192,11 +193,22 @@ def _jwt_parts(token: object) -> tuple[dict[str, object], dict[str, object], byt
     return header, claims, f"{parts[0]}.{parts[1]}".encode("ascii"), signature
 
 
-def _jwks_key(jwks: object, key_id: str) -> rsa.RSAPublicKey:
+def _jwks_key(jwks: object, key_id: str | None) -> rsa.RSAPublicKey:
     if not isinstance(jwks, dict) or not isinstance(jwks.get("keys"), list):
         raise AuthError("authorization server returned invalid signing keys", 401)
-    for candidate in jwks["keys"]:
-        if not isinstance(candidate, dict) or candidate.get("kid") != key_id:
+    candidates = jwks["keys"]
+    # OpenEMR's OIDC responses omit `kid` from both the ID token header and its
+    # single-entry JWKS (confirmed live: steverhoades/oauth2-openid-connect-server's
+    # IdTokenResponse only sets `kid` when constructed with a $keyIdentifier, which
+    # OpenEMR never passes). Without a kid to match on, the only key-selection that
+    # stays unambiguous is exactly one published key.
+    if key_id is None:
+        if len(candidates) != 1:
+            raise AuthError("authorization server signing key was not found", 401)
+    else:
+        candidates = [c for c in candidates if isinstance(c, dict) and c.get("kid") == key_id]
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
             continue
         modulus = candidate.get("n")
         exponent = candidate.get("e")
