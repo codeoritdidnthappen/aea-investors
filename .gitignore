@@ -6,6 +6,10 @@ requirements/
 .env.*
 !.env.example
 
+# Local Claude Code settings (personal permission overrides, not project config)
+.claude/settings.local.json
+/settings.local.json
+
 # OS
 .DS_Store
 .builder/
