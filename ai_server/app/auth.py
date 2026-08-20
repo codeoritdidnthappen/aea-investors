@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator, Protocol
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 import httpx
 from cryptography.exceptions import InvalidSignature, InvalidTag
@@ -81,6 +81,13 @@ class AuthSettings:
             raise RuntimeError("AI_SESSION_ENCRYPTION_KEY must be base64url encoded") from exc
         if len(key) != 32:
             raise RuntimeError("AI_SESSION_ENCRYPTION_KEY must decode to exactly 32 bytes")
+        success_redirect_uri = str(values["AI_SESSION_SUCCESS_REDIRECT_URI"])
+        parsed_success_redirect = urlsplit(success_redirect_uri)
+        if not parsed_success_redirect.scheme or not parsed_success_redirect.netloc:
+            # main.py's /api/chat Origin check derives the chat page's expected
+            # origin from this value; a relative URL would make every legitimate
+            # request 403 forever instead of failing loudly here at startup.
+            raise RuntimeError("AI_SESSION_SUCCESS_REDIRECT_URI must be an absolute URL")
         return cls(
             database_path=Path(str(values["AI_SESSION_DATABASE_PATH"])),
             encryption_key=key,
@@ -91,7 +98,7 @@ class AuthSettings:
             client_id=str(values["OPENEMR_OAUTH_CLIENT_ID"]),
             client_secret=str(values["OPENEMR_OAUTH_CLIENT_SECRET"]),
             redirect_uri=str(values["OPENEMR_OAUTH_REDIRECT_URI"]),
-            success_redirect_uri=str(values["AI_SESSION_SUCCESS_REDIRECT_URI"]),
+            success_redirect_uri=success_redirect_uri,
         )
 
 

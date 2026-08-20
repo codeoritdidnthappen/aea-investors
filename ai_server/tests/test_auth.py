@@ -88,6 +88,31 @@ def test_ac1_environment_settings_require_a_32_byte_key(
     assert AuthSettings.from_environment().encryption_key == b"k" * 32
 
 
+def test_ac1_environment_settings_require_an_absolute_success_redirect_uri(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # main.py's /api/chat Origin check derives its expected origin from this value;
+    # a relative URL must fail loudly here, not 403 every request forever.
+    environment = {
+        "AI_SESSION_DATABASE_PATH": str(tmp_path / "sessions.sqlite3"),
+        "AI_SESSION_ENCRYPTION_KEY": base64.urlsafe_b64encode(b"k" * 32).decode("ascii"),
+        "OPENEMR_OAUTH_AUTHORIZE_URL": "https://openemr.test/authorize",
+        "OPENEMR_OAUTH_TOKEN_URL": "https://openemr.test/token",
+        "OPENEMR_OAUTH_JWKS_URL": "https://openemr.test/jwks",
+        "OPENEMR_OAUTH_ISSUER": "https://openemr.test",
+        "OPENEMR_OAUTH_CLIENT_ID": "synthetic-client",
+        "OPENEMR_OAUTH_CLIENT_SECRET": "synthetic-secret",
+        "OPENEMR_OAUTH_REDIRECT_URI": "https://chat.test/oauth/callback",
+        "AI_SESSION_SUCCESS_REDIRECT_URI": "/",
+    }
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+    with pytest.raises(
+        RuntimeError, match="AI_SESSION_SUCCESS_REDIRECT_URI must be an absolute URL"
+    ):
+        AuthSettings.from_environment()
+
+
 def signed_id_token(
     settings: AuthSettings, nonce: str, expires_at: int
 ) -> tuple[str, dict[str, object]]:

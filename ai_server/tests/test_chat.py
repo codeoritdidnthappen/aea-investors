@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -122,6 +123,21 @@ def test_ac1_chat_turn_rejects_a_missing_or_mismatched_origin(tmp_path: Path) ->
 
     wrong_origin = asyncio.run(_post_chat(app, cookie=handle, origin="https://attacker.test"))
     assert wrong_origin.status_code == 403
+
+
+def test_ac1_chat_turn_origin_check_is_case_insensitive(tmp_path: Path) -> None:
+    # Real browsers always send Origin lowercased; a config value with any
+    # uppercase (e.g. AI_SESSION_SUCCESS_REDIRECT_URI) must still match it.
+    configured = dataclasses.replace(settings(tmp_path), success_redirect_uri="https://Chat.Test/")
+    handle = active_session_cookie(configured)
+    app = create_app(
+        configured,
+        clock=lambda: NOW,
+        chat_service=ScriptedChatService(chunks=["Hel", "lo!"]),
+    )
+
+    response = asyncio.run(_post_chat(app, cookie=handle, origin="https://chat.test"))
+    assert response.status_code == 200
 
 
 def test_ac1_chat_turn_accepts_a_valid_ai_session_cookie(tmp_path: Path) -> None:

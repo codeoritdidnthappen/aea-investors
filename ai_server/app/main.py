@@ -34,9 +34,14 @@ from ai_server.privacy.gate import PrivacyGate
 
 
 def _origin_of(url: str) -> str:
-    """Return the scheme+host part of `url`, for comparison against an Origin header."""
+    """Return the lowercase scheme+host part of `url`, to compare against an Origin header.
+
+    Browsers always send Origin with a lowercase-normalized scheme and host, so this
+    must normalize the same way or a config value with any uppercase would 403 every
+    legitimate request.
+    """
     parts = urlsplit(url)
-    return f"{parts.scheme}://{parts.netloc}"
+    return f"{parts.scheme}://{parts.netloc}".lower()
 
 
 def create_app(
@@ -117,7 +122,8 @@ def create_app(
         # request; Starlette also parses the body as JSON regardless of the
         # declared Content-Type, so neither gives CSRF protection on its own. Only
         # a same-origin fetch from the served chat page sends a matching Origin.
-        if request.headers.get("origin") != _origin_of(configured_settings.success_redirect_uri):
+        origin = request.headers.get("origin")
+        if origin is None or origin.lower() != _origin_of(configured_settings.success_redirect_uri):
             raise AuthError("request origin is not allowed", 403)
         handle = request.cookies.get(configured_settings.cookie_name)
         valid = handle is not None and await asyncio.to_thread(
