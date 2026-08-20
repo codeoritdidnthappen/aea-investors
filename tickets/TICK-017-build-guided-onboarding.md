@@ -8,8 +8,9 @@ estimate: L
 depends_on: [TICK-001, TICK-003, TICK-009, TICK-010]
 labels: [onboarding, langgraph, openemr]
 source: [FR-5, FR-8, FR-27, FR-30, NFR-2, NFR-3, NFR-4, NFR-33]
-status: todo
+status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/18
+builder_commit: b193665
 ---
 ## Context
 
