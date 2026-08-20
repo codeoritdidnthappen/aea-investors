@@ -8,10 +8,10 @@ estimate: M
 depends_on: [TICK-031]
 labels: [scheduling, verification]
 source: [FR-28, NFR-11, NFR-12]
-status: todo
+status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/22
+builder_commit: dca7012
 ---
-
 ## Context
 
 Chat must match OpenEMR's allowed and rejected scheduling outcomes, not emulate them with independent logic.
