@@ -22,6 +22,7 @@ from ai_server.onboarding.draft_client import (
     AssessmentDraft,
     AssessmentDraftAdapter,
     AssessmentDraftConflictError,
+    AssessmentDraftNotFoundError,
     AssessmentDraftValidationError,
 )
 from ai_server.onboarding.fields import (
@@ -213,10 +214,23 @@ class OnboardingFlow:
             elif field == "address":
                 address = validated
 
-        draft = await self._draft_adapter.read(access_token, cursor.draft_uuid)
-        missing = [key for key in _REQUIRED_DRAFT_KEYS if not draft.fields.get(key)]
-        if missing:
-            errors.append(f"the assessment draft is missing required fields: {', '.join(missing)}")
+        try:
+            draft = await self._draft_adapter.read(access_token, cursor.draft_uuid)
+        except AssessmentDraftNotFoundError:
+            # A stale/invalid cursor (e.g. the OpenEMR draft was deleted out from
+            # under it) is a form of "this assessment cannot be completed as
+            # attempted", not a network/write failure -- fold it into the same
+            # OnboardingIncompleteError contract as a missing required field,
+            # rather than let a third, undocumented exception type escape.
+            errors.append("the assessment draft for this cursor no longer exists")
+            draft = None
+
+        if draft is not None:
+            missing = [key for key in _REQUIRED_DRAFT_KEYS if not draft.fields.get(key)]
+            if missing:
+                errors.append(
+                    f"the assessment draft is missing required fields: {', '.join(missing)}"
+                )
 
         if errors:
             raise OnboardingIncompleteError(errors)

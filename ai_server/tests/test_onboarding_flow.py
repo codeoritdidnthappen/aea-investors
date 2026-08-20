@@ -273,6 +273,21 @@ def test_ac3_completion_never_joins_then_re_splits_a_multi_word_family_name() ->
     assert record.family_name == "Van Der Berg"
 
 
+def test_ac3_completion_with_a_stale_cursor_raises_the_documented_error_type() -> None:
+    """A cursor whose OpenEMR draft no longer exists (deleted out from under it, or
+    just invalid) must still fail as OnboardingIncompleteError -- the type complete()
+    documents and demographics_writes == [] verifies -- not the draft-client's own
+    AssessmentDraftNotFoundError leaking through undocumented."""
+    server = _SyntheticOpenEmr()
+    flow = _flow(server)
+    cursor = OnboardingCursor(draft_uuid="never-created")
+
+    with pytest.raises(OnboardingIncompleteError):
+        run(flow.complete("token", PATIENT_UUID, cursor, _IDENTITY, NOW))
+
+    assert server.demographics_writes == []
+
+
 def test_ac3_completion_with_a_missing_required_field_writes_nothing() -> None:
     """AC3: no separate durable patient record -- an incomplete attempt persists
     nothing anywhere, OpenEMR included."""
