@@ -69,12 +69,15 @@ module layout as settled until it is read from the pinned source.
 
 - [x] A supported extension hook is identified for the pinned release, with source
       evidence from the pinned tag.
-- [ ] The installation path (custom-module scaffolding + registration) is documented
-      against v8.3.0 source.
-- [ ] A minimal synthetic-patient proof shows the hook is unavailable when logged out and
-      launches inside the portal when logged in.
-- [ ] The proof identifies the direct AI-server callback and confirms the iframe issues no
-      OpenEMR API calls.
+- [x] The installation path (custom-module scaffolding + registration) is documented
+      against v8.3.0 source. See `evidence/TICK-002/PORTAL_HOOK_EVIDENCE.md`
+      ("Installation path").
+- [x] A minimal synthetic-patient proof shows the hook is unavailable when logged out and
+      launches inside the portal when logged in. See `evidence/TICK-002/PORTAL_HOOK_EVIDENCE.md`
+      ("Minimal synthetic-patient proof" HTTP transcript, steps 1-6).
+- [x] The proof identifies the direct AI-server callback and confirms the iframe issues no
+      OpenEMR API calls. See `evidence/TICK-002/PORTAL_HOOK_EVIDENCE.md`
+      ("AI-server callback and no-OpenEMR-API-call confirmation").
 
 ## Environment established (2026-08-20)
 

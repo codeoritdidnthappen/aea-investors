@@ -18,10 +18,14 @@ The iframe is a patient-facing FastAPI-only interface that renders streamed resp
 
 ## Acceptance Criteria
 
-- [ ] The UI sends turns only to the AI server with the AI-session cookie.
-- [ ] Response chunks render progressively and preserve an understandable status.
-- [ ] AI-server or LLM unavailability shows instructions for the native OpenEMR scheduler.
-- [ ] Desktop controls support keyboard navigation, labels, visible focus, contrast, and non-colour-only status.
+- [x] The UI sends turns only to the AI server with the AI-session cookie.
+      See `ai_server/tests/test_chat.py` `test_ac1_*`.
+- [x] Response chunks render progressively and preserve an understandable status.
+      See `ai_server/tests/test_chat.py` `test_ac2_*`.
+- [x] AI-server or LLM unavailability shows instructions for the native OpenEMR scheduler.
+      See `ai_server/tests/test_chat.py` `test_ac3_*`.
+- [x] Desktop controls support keyboard navigation, labels, visible focus, contrast, and non-colour-only status.
+      See `ai_server/tests/test_chat.py` `test_ac4_*`.
 
 ## Testing
 
