@@ -345,3 +345,69 @@ def test_ac5_expiry_deletes_session_and_encrypted_tokens(tmp_path: Path) -> None
     )
     assert not store.active_session(handle, NOW + timedelta(seconds=2))
     assert database_row(configured.database_path, "SELECT count(*) FROM sessions") == (0,)
+
+
+def test_save_and_load_cursor_round_trips_the_onboarding_workflow_position(
+    tmp_path: Path,
+) -> None:
+    """TICK-017 AC2: the non-patient onboarding workflow cursor persists in the same
+    AI-server SQLite session store the OAuth session already lives in
+    (ARCHITECTURE.md Sec. 5), so a draft can be reloaded after a restart."""
+    configured = settings(tmp_path)
+    store = SessionStore(configured.database_path, configured.encryption_key)
+    store.initialize()
+    handle = store.create_session(
+        OAuthTokens("synthetic-access-token", "synthetic-refresh-token", "nonce"),
+        NOW,
+        timedelta(minutes=30),
+    )
+
+    assert store.load_cursor(handle, NOW) is None
+
+    store.save_cursor(handle, "draft-1", NOW)
+
+    assert store.load_cursor(handle, NOW) == "draft-1"
+
+
+def test_load_cursor_survives_a_restart(tmp_path: Path) -> None:
+    configured = settings(tmp_path)
+    first_store = SessionStore(configured.database_path, configured.encryption_key)
+    first_store.initialize()
+    handle = first_store.create_session(
+        OAuthTokens("synthetic-access-token", "synthetic-refresh-token", "nonce"),
+        NOW,
+        timedelta(minutes=30),
+    )
+    first_store.save_cursor(handle, "draft-1", NOW)
+
+    restarted_store = SessionStore(configured.database_path, configured.encryption_key)
+    restarted_store.initialize()
+
+    assert restarted_store.load_cursor(handle, NOW + timedelta(minutes=1)) == "draft-1"
+
+
+def test_load_cursor_returns_none_for_an_unknown_or_expired_session(tmp_path: Path) -> None:
+    configured = settings(tmp_path)
+    store = SessionStore(configured.database_path, configured.encryption_key)
+    store.initialize()
+
+    assert store.load_cursor("unknown-handle", NOW) is None
+
+    handle = store.create_session(
+        OAuthTokens("synthetic-access-token", "synthetic-refresh-token", "nonce"),
+        NOW,
+        timedelta(seconds=1),
+    )
+    store.save_cursor(handle, "draft-1", NOW)
+
+    assert store.load_cursor(handle, NOW + timedelta(seconds=2)) is None
+
+
+def test_save_cursor_is_a_no_op_for_an_unknown_or_expired_session(tmp_path: Path) -> None:
+    configured = settings(tmp_path)
+    store = SessionStore(configured.database_path, configured.encryption_key)
+    store.initialize()
+
+    store.save_cursor("unknown-handle", "draft-1", NOW)
+
+    assert database_row(configured.database_path, "SELECT count(*) FROM sessions") == (0,)

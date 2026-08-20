@@ -342,6 +342,32 @@ class SessionStore:
                 return False
         return row is not None
 
+    def save_cursor(self, handle: str, cursor: str, now: datetime) -> None:
+        """Persist the non-patient onboarding workflow cursor for an active session.
+
+        This is never a field value (ARCHITECTURE.md Sec. 5, "AI orchestration"):
+        TICK-017's `OnboardingCursor` serializes to exactly the opaque draft id this
+        column stores, so a restart can reload the draft from OpenEMR without this
+        process ever having kept a patient answer itself.
+        """
+        handle_hash = _hash(handle)
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE sessions SET cursor = ? WHERE handle_hash = ? AND expires_at > ?",
+                (cursor, handle_hash, _timestamp(now)),
+            )
+
+    def load_cursor(self, handle: str, now: datetime) -> str | None:
+        """Return the persisted cursor for an active session, or `None` if absent/expired."""
+        handle_hash = _hash(handle)
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT cursor, expires_at FROM sessions WHERE handle_hash = ?", (handle_hash,)
+            ).fetchone()
+        if row is None or row[1] <= _timestamp(now) or not row[0]:
+            return None
+        return row[0]
+
     def purge_expired(self, now: datetime) -> int:
         with self._connect() as connection:
             result = connection.execute(
