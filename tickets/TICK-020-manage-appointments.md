@@ -5,7 +5,7 @@ type: feature
 epic: EPIC-07
 priority: P1
 estimate: L
-depends_on: [TICK-018, TICK-019, TICK-034, TICK-036]
+depends_on: [TICK-018, TICK-019, TICK-034, TICK-036, TICK-039]
 labels: [scheduling, openemr]
 source: [FR-13, FR-20, FR-28, NFR-11]
 status: todo
@@ -53,11 +53,26 @@ requests, not one DB transaction) -- the acceptance criteria below exist
 specifically to make the partial-failure case (old appointment cancelled,
 new one fails to book) honest rather than silently lossy.
 
+**Depends on TICK-039 (open):** live verification found that chat's cancel
+*intent* is not reliably selected by the planning LLM even when a real,
+available appointment is in context. Reschedule must be implemented as its
+own dedicated `reschedule` plan intent -- taking both a target `slot_token`
+and the existing `appointment_token` together in one plan output and calling
+`BookingService`/`CancellationService` directly server-side -- rather than by
+routing through the separately-selected chat `cancel` intent TICK-039 shows
+is broken; this sidesteps that specific bug by construction. Still listed as
+a dependency because both intents draw on the same underlying appointment-
+discovery/token mechanism, and TICK-039's root cause isn't confirmed yet --
+until it lands, treat any assumption that "cancellation is fully reliable
+end-to-end" as unproven for reschedule too.
+
 ## Acceptance Criteria
 
-- [ ] A patient can reschedule an existing appointment by composing the real
+- [ ] A patient can reschedule an existing appointment through a dedicated
+      `reschedule` plan intent that composes the real
       `CancellationService.cancel()` (TICK-036) and `BookingService`/booking
-      call (TICK-034) -- no new raw SQL, no new OpenEMR write path.
+      call (TICK-034) directly -- no new raw SQL, no new OpenEMR write path,
+      and no dependency on the separately-selected chat `cancel` intent path.
 - [ ] The new slot is booked and confirmed by OpenEMR *before* the original
       appointment is cancelled, so a slot that's no longer open (already
       taken, stale token, etc.) never leaves the patient with both
@@ -73,10 +88,15 @@ new one fails to book) honest rather than silently lossy.
 ## Testing
 
 Run synthetic OpenEMR end-to-end reschedule operations against the local
-pinned Docker stack, including: happy path (book-then-cancel both succeed),
-stale/conflicting target slot (book fails, original appointment untouched),
-and cancellation failure after a successful rebook (both real OpenEMR
-responses, not simulated). CI must be green.
+pinned Docker stack: happy path (book-then-cancel both succeed) and
+stale/conflicting target slot (book fails, original appointment untouched)
+must both be proven live, with real OpenEMR responses. Cancellation failing
+after a successful rebook is harder to force live on demand (no established
+pattern in this repo for deterministically triggering a genuine, non-mocked
+OpenEMR failure on the second call) -- an integration test with a mocked
+adapter response for that specific edge case is acceptable, provided the
+happy-path and conflicting-slot cases are still proven live. CI must be
+green.
 
 ## Out of Scope
 
