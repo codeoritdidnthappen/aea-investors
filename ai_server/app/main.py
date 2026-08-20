@@ -5,7 +5,7 @@ from typing import AsyncIterator, Callable
 
 import httpx
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 
 from ai_server.app.auth import (
     AuthError,
@@ -15,12 +15,21 @@ from ai_server.app.auth import (
     SessionStore,
     utc_now,
 )
+from ai_server.app.chat import (
+    CHAT_PAGE_HTML,
+    ChatService,
+    ChatTurnRequest,
+    NoActionTool,
+    unavailable_chat_service,
+)
 from ai_server.app.health import (
     HealthService,
     HealthSettings,
     default_health_service,
     unavailable_health_service,
 )
+from ai_server.llm.groq import GroqConfigurationError, GroqSettings, GroqWorkflow, HttpGroqClient
+from ai_server.privacy.gate import PrivacyGate
 
 
 def create_app(
@@ -28,12 +37,15 @@ def create_app(
     authorization: AuthorizationService | None = None,
     clock: Callable[[], datetime] = utc_now,
     health_service: HealthService | None = None,
+    chat_service: ChatService | None = None,
 ) -> FastAPI:
     """Create the AI server without exposing delegated credentials to the browser."""
 
     configured_settings = settings
     configured_authorization = authorization
     configured_health_service = health_service
+    configured_chat_service = chat_service
+    configured_session_store: SessionStore | None = None
     http_client: httpx.AsyncClient | None = None
 
     @asynccontextmanager
@@ -42,11 +54,14 @@ def create_app(
             configured_settings, \
             configured_authorization, \
             configured_health_service, \
+            configured_chat_service, \
+            configured_session_store, \
             http_client
         if configured_settings is None:
             configured_settings = AuthSettings.from_environment()
         store = SessionStore(configured_settings.database_path, configured_settings.encryption_key)
         await asyncio.to_thread(store.initialize)
+        configured_session_store = store
         if configured_authorization is None:
             http_client = httpx.AsyncClient(timeout=10.0)
             configured_authorization = AuthorizationService(
@@ -60,6 +75,10 @@ def create_app(
             configured_health_service = default_health_service(
                 HealthSettings.from_environment(configured_settings.issuer), http_client
             )
+        if configured_chat_service is None:
+            if http_client is None:
+                http_client = httpx.AsyncClient(timeout=10.0)
+            configured_chat_service = _build_chat_service(http_client, clock)
         yield
         if http_client is not None:
             await http_client.aclose()
@@ -75,6 +94,25 @@ def create_app(
         """Return non-sensitive dependency reachability for local development."""
         service = configured_health_service or unavailable_health_service()
         return await service.report()
+
+    @server.get("/", response_class=HTMLResponse)
+    async def chat_page() -> str:
+        """Serve the self-contained chat page the OAuth callback redirects to."""
+        return CHAT_PAGE_HTML
+
+    @server.post("/api/chat")
+    async def chat_turn(request: Request, turn: ChatTurnRequest) -> StreamingResponse:
+        """Stream a reply for one turn; refuse any request without an AI session."""
+        if configured_settings is None or configured_session_store is None:
+            raise AuthError("the chat service is unavailable", 503)
+        handle = request.cookies.get(configured_settings.cookie_name)
+        valid = handle is not None and await asyncio.to_thread(
+            configured_session_store.active_session, handle, clock()
+        )
+        if not valid:
+            raise AuthError("an active AI session is required", 401)
+        service = configured_chat_service or unavailable_chat_service()
+        return StreamingResponse(service.stream_reply(turn.message), media_type="text/plain")
 
     @server.get("/oauth/launch")
     async def oauth_launch() -> RedirectResponse:
@@ -101,6 +139,21 @@ def create_app(
         return response
 
     return server
+
+
+def _build_chat_service(client: httpx.AsyncClient, clock: Callable[[], datetime]) -> ChatService:
+    """Build the real Groq-backed chat service, or a fixed-unavailable fallback.
+
+    Mirrors `default_health_service`'s tolerance of absent Groq configuration: the
+    demo's default path requires no paid LLM service (NFR-20), so a missing
+    `GROQ_API_KEY`/ZDR date degrades the chat service instead of failing startup.
+    """
+    try:
+        groq_settings = GroqSettings.from_environment()
+    except GroqConfigurationError:
+        return unavailable_chat_service()
+    workflow = GroqWorkflow(PrivacyGate.create(), HttpGroqClient(groq_settings, client))
+    return ChatService(workflow=workflow, tool=NoActionTool(), clock=clock)
 
 
 app = create_app()
