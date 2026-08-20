@@ -104,9 +104,10 @@ the chat UI, dependency-failure fallback, and desktop accessibility checks
 (`AND-COOKIE-01` through `AND-A11Y-01`-equivalent desktop cases) could not be
 reached because finding 2 blocks obtaining a real `ai_session` cookie through
 the actual patient-facing flow. TICK-013/017/031's own unit/integration test
-suites (394 passing) cover this logic in isolation; this ticket's job was
-specifically to prove the *integrated* flow works end to end through a real
-browser, which finding 2 prevented.
+suites cover this logic in isolation (`pytest ai_server/tests/` -- 334 passed,
+3 skipped, 86.44% coverage, re-run 2026-08-20 to confirm this figure); this
+ticket's job was specifically to prove the *integrated* flow works end to end
+through a real browser, which finding 2 prevented.
 
 ## Recommendation
 
