@@ -101,9 +101,16 @@ class OutboundPayload(BaseModel):
             raise ValueError("messages must contain a system message followed by a user message")
         return self
 
-    def message_contents(self) -> tuple[str, str]:
-        """Return the only two strings that are not structurally allowlisted."""
-        return (self.messages[0].content, self.messages[1].content)
+    def user_message_content(self) -> str:
+        """Return the one string that can ever contain patient-supplied text.
+
+        The system message is a fixed, developer-authored constant (SYSTEM_PROMPT in
+        ai_server/app/chat.py) that never carries runtime patient data, so it is not a
+        privacy-gate target -- screening it anyway false-positives on ordinary
+        scheduling vocabulary (confirmed live: Presidio's DATE_TIME recognizer flags
+        "hours" in "office hours"), which would reject every request unconditionally.
+        """
+        return self.messages[1].content
 
 
 class ExternalModelClient(Protocol):
@@ -178,6 +185,6 @@ class OutboundDispatcher:
 
     async def dispatch(self, payload: OutboundPayload) -> DispatchResult:
         """Reject local PHI/PII or send only an approved, validated payload."""
-        if any(self._gate.has_sensitive_text(content) for content in payload.message_contents()):
+        if self._gate.has_sensitive_text(payload.user_message_content()):
             return DispatchResult(accepted=False, content=LOCAL_CORRECTION)
         return DispatchResult(accepted=True, content=await self._client.complete(payload))
