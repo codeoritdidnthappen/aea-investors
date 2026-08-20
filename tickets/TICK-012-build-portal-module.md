@@ -29,8 +29,10 @@ source; correct read-only mount and env passthrough). Unlike TICK-002's curl-bas
 proof, no request was made against a running OpenEMR container with the module actually
 installed and enabled — these three criteria are therefore unverified at runtime, not
 just unchecked bookkeeping. Live verification belongs with TICK-024's desktop Chrome
-critical-flow pass once its blockers (TICK-017, TICK-020) resolve; it was not attempted
-here to keep this pass scoped to the code-review merge gate.
+critical-flow pass once its remaining blocker (TICK-031; TICK-017 is done, and TICK-024
+no longer depends on TICK-020, which narrowed to a permanently blocked reschedule-only
+scope) resolves; it was not attempted here to keep this pass scoped to the code-review
+merge gate.
 
 ## Testing
 

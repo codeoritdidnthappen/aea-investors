@@ -1,7 +1,9 @@
 # Intake backlog
 
 Local Markdown is the source of truth for the AI-assisted OpenEMR onboarding demo. This
-backlog has 8 epics and 27 tickets: 13 features, 6 tasks, 4 chores, and 4 spikes.
+backlog has 8 epics and 31 tickets: 14 features, 8 tasks, 4 chores, and 5 spikes.
+TICK-028 through TICK-031 were added after the initial 27 as gaps and follow-ups
+were found during implementation (see their own ticket files for why).
 
 ## Epics and execution order
 
@@ -18,8 +20,11 @@ backlog has 8 epics and 27 tickets: 13 features, 6 tasks, 4 chores, and 4 spikes
    consented OCR, its accuracy gate, and confirmed-only demographic persistence.
 6. **EPIC-06 — Deliver guided onboarding:** TICK-017 implements the product-approved
    assessment, supportive content, draft checkpoints, and completion.
-7. **EPIC-07 — Deliver authoritative scheduling:** TICK-018 through TICK-021 deliver
-   the OpenEMR adapter, anonymous slots, operations, and native-policy parity.
+7. **EPIC-07 — Deliver authoritative scheduling:** TICK-018 through TICK-021, plus
+   TICK-031, deliver the OpenEMR adapter, anonymous slots, operations, and
+   native-policy parity. TICK-020 narrowed to reschedule only and stays
+   permanently blocked (no OpenEMR service method exists); TICK-031 split off
+   book + cancel-by-status, both buildable.
 8. **EPIC-08 — Deploy and verify:** TICK-022 through TICK-027 establish deployment,
    ingress, desktop/Android coverage, performance measurement, and release gates.
 
@@ -38,15 +43,15 @@ backlog has 8 epics and 27 tickets: 13 features, 6 tasks, 4 chores, and 4 spikes
 | FR-9 | TICK-001, TICK-018 |
 | FR-10 | TICK-001, TICK-018, TICK-019 |
 | FR-11 | TICK-019 |
-| FR-12 | TICK-001, TICK-020, TICK-024 |
-| FR-13 | TICK-001, TICK-020, TICK-024 |
-| FR-14 | TICK-001, TICK-020, TICK-024 |
+| FR-12 | TICK-001, TICK-031, TICK-024 |
+| FR-13 | TICK-001, TICK-020 |
+| FR-14 | TICK-001, TICK-031, TICK-024 |
 | FR-15 | TICK-018 |
-| FR-16 | TICK-020 |
+| FR-16 | TICK-031 |
 | FR-17 | TICK-001, TICK-016, TICK-018 |
 | FR-18 | TICK-010, TICK-013, TICK-024 |
 | FR-19 | TICK-013, TICK-024 |
-| FR-20 | TICK-010, TICK-018, TICK-019, TICK-020 |
+| FR-20 | TICK-010, TICK-018, TICK-019, TICK-020, TICK-031 |
 | FR-21 | TICK-014 |
 | FR-22 | TICK-014 |
 | FR-23 | TICK-014 |
@@ -54,7 +59,7 @@ backlog has 8 epics and 27 tickets: 13 features, 6 tasks, 4 chores, and 4 spikes
 | FR-25 | TICK-006, TICK-014 |
 | FR-26 | TICK-001, TICK-016 |
 | FR-27 | TICK-001, TICK-003, TICK-017 |
-| FR-28 | TICK-018, TICK-020, TICK-021 |
+| FR-28 | TICK-018, TICK-020, TICK-031, TICK-021 |
 | FR-29 | TICK-010 |
 | FR-30 | TICK-001, TICK-017 |
 | NFR-1 | TICK-006, TICK-027 |
@@ -67,7 +72,7 @@ backlog has 8 epics and 27 tickets: 13 features, 6 tasks, 4 chores, and 4 spikes
 | NFR-8 | TICK-009, TICK-011, TICK-027 |
 | NFR-9 | TICK-022, TICK-023 |
 | NFR-10 | TICK-008 |
-| NFR-11 | TICK-020, TICK-021 |
+| NFR-11 | TICK-020, TICK-031, TICK-021 |
 | NFR-12 | TICK-018, TICK-019, TICK-021 |
 | NFR-13 | TICK-026 |
 | NFR-14 | TICK-026 |
