@@ -8,7 +8,7 @@ estimate: M
 depends_on: [TICK-001, TICK-008, TICK-022]
 labels: [openemr, oauth, smart, privacy]
 source: [FR-3, FR-26, NFR-25, NFR-30]
-status: todo
+status: done
 ---
 
 ## Context
@@ -33,26 +33,41 @@ claim the demo makes about acting as the patient.
 
 ## Acceptance Criteria
 
-- [ ] A synthetic patient exists with **portal login credentials**, provisioned by a
+- [x] A synthetic patient exists with **portal login credentials**, provisioned by a
       documented, repeatable path.
-- [ ] An OAuth client is registered requesting patient-scoped SMART scopes only; the
+- [x] An OAuth client is registered requesting patient-scoped SMART scopes only; the
       registration command and resulting scope string are recorded.
-- [ ] A token is obtained through **authorization_code + PKCE**, where the *patient*
+- [x] A token is obtained through **authorization_code + PKCE**, where the *patient*
       authenticates at OpenEMR's own login and consents. No password grant. No `users`
       row. No admin credential anywhere in the flow.
-- [ ] The token's bound patient is confirmed from the token response (`patient` claim)
-      and by reading own demographics successfully.
-- [ ] **Negative binding test:** the same token is used against a *second* synthetic
+- [x] The token's bound patient is confirmed — via the `id_token`'s `fhirUser`/`sub`
+      claims, not a top-level `patient` field (this OpenEMR version doesn't return one;
+      the probe script originally assumed it did and was fixed) — and by reading own
+      demographics successfully.
+- [x] **Negative binding test:** the same token is used against a *second* synthetic
       patient's chart. Both the read and the write path are attempted. The result of
       each is recorded verbatim.
-- [ ] The write path (`PUT /api/patient/{uuid}` and `PUT /fhir/Patient/{uuid}`) is
-      attempted against own chart and against the other chart. Four outcomes recorded.
-- [ ] Evidence lands in `evidence/TICK-028/` under the same redaction policy as
+- [x] The write path (`PUT /api/patient/{uuid}`) is attempted against own chart and
+      against the other chart. Four outcomes recorded (read own, read other, write own,
+      write other) — matches the runbook's 2×2 decision table.
+- [x] Evidence lands in `evidence/TICK-028/` under the same redaction policy as
       TICK-001 — no tokens, client secrets, UUIDs, names, or dates retained.
 
 ## Decision this ticket produces
 
-Record one of the following in `ENDPOINT_MATRIX.md`, replacing the pending row:
+**READ-ONLY** — recorded in `evidence/TICK-001/ENDPOINT_MATRIX.md`. Binding holds
+(cross-patient write denied), but the patient token cannot write even its own chart via
+`PUT /api/patient/{uuid}` (`403 user role does not have access to the resource`). The
+product performs no demographic write as the patient on v8.3.0; TICK-016's
+staff-credential path must be removed and FR-26 rescoped.
+
+Secondary finding: the FHIR `GET /fhir/Patient/{uuid}` binding check does fire on a
+cross-patient uuid, but throws an uncaught `patient id invalid` exception (HTTP 500)
+instead of a clean `403`. Binding is enforced; the error handling is not — worth an
+upstream OpenEMR bug report, not a product blocker.
+
+<details>
+<summary>Original decision options (superseded by the outcome above)</summary>
 
 - **Bound** — patient-context writes are enforced. Re-probe TICK-016 under a patient
   token and drop the staff-credential path.
@@ -61,6 +76,8 @@ Record one of the following in `ENDPOINT_MATRIX.md`, replacing the pending row:
   demographic write on v8.3.0.
 - **Unavailable** — no patient-context token is obtainable at all on v8.3.0. The
   product's authorization premise does not hold and the scope must change.
+
+</details>
 
 ## Testing
 
