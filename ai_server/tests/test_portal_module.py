@@ -44,10 +44,37 @@ def test_controller_hooks_only_the_authenticated_patient_portal_render_event() -
     # Main\Tabs\RenderEvent some bundled OpenEMR modules also use.
     assert "use OpenEMR\\Events\\PatientPortal\\RenderEvent;" in controller
     assert "RenderEvent::EVENT_SECTION_RENDER_POST" in controller
-    # This is the whole logged-out guarantee (FR-1): no other event, and no
-    # unauthenticated route or endpoint, is registered anywhere in the module.
+    assert "RenderEvent::EVENT_DASHBOARD_INJECT_CARD" in controller
+    # This is the whole logged-out guarantee (FR-1): no event outside the
+    # patient-portal RenderEvent family, and no unauthenticated route or endpoint, is
+    # registered anywhere in the module. Both listeners fire only from portal/home.php
+    # (evidence/TICK-002/PORTAL_HOOK_EVIDENCE.md), which never renders for a logged-out
+    # visitor.
     assert "addListener" in controller
-    assert controller.count("addListener") == 1
+    assert controller.count("addListener") == 2
+
+
+def test_controller_dashboard_tile_matches_the_existing_nav_icon_pattern() -> None:
+    controller = _controller_text()
+
+    # TICK-032: a launcher tile in the dashboard grid, using the same markup
+    # contract as templates/portal/partial/_nav_icon.html.twig (the include every
+    # other dashboard tile -- Clinical Documents, Appointments, etc. -- uses), so it
+    # is visible without scrolling and behaves like its siblings.
+    assert 'data-toggle="collapse"' in controller
+    assert 'data-parent="#cardgroup"' in controller
+    assert "href=\"#' . self::CARD_ID . '\"" in controller
+    assert "CARD_ID = 'aeai-portal-chat'" in controller
+
+
+def test_controller_panel_is_a_collapsible_accordion_card() -> None:
+    controller = _controller_text()
+
+    # The chat panel itself must be one more `.collapse` card sharing `#cardgroup`
+    # with every other portal feature's panel (e.g. `#downloadcard`), not a bare
+    # always-visible section appended after the dashboard.
+    assert 'id="\' . self::CARD_ID . \'" class="card collapse overflow-auto"' in controller
+    assert 'data-parent="#cardgroup">\'' in controller
 
 
 def test_controller_renders_a_single_iframe_with_no_openemr_api_reference() -> None:

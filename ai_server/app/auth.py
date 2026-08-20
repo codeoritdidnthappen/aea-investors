@@ -229,7 +229,9 @@ def _jwks_keys(jwks: object, key_id: str | None) -> list[rsa.RSAPublicKey]:
     return keys
 
 
-def _verify_with_any_key(keys: list[rsa.RSAPublicKey], signature: bytes, signed_data: bytes) -> bool:
+def _verify_with_any_key(
+    keys: list[rsa.RSAPublicKey], signature: bytes, signed_data: bytes
+) -> bool:
     for key in keys:
         try:
             key.verify(signature, signed_data, padding.PKCS1v15(), hashes.SHA256())
