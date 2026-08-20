@@ -8,10 +8,10 @@ estimate: L
 depends_on: [TICK-008, TICK-010, TICK-012]
 labels: [chat, frontend, accessibility]
 source: [FR-4, FR-18, FR-19, NFR-7, NFR-19]
-status: todo
+status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/14
+builder_commit: 9c4d778
 ---
-
 ## Context
 
 The iframe is a patient-facing FastAPI-only interface that renders streamed responses and a safe native-scheduler fallback.

@@ -8,10 +8,10 @@ estimate: M
 depends_on: [TICK-002, TICK-008]
 labels: [openemr, portal, frontend]
 source: [FR-1, FR-2, FR-3, FR-4, NFR-6, NFR-7]
-status: todo
+status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/13
+builder_commit: 5191aba
 ---
-
 ## Context
 
 The selected supported patient-portal hook launches the chat without navigating away and maintains browser isolation from OpenEMR APIs.
