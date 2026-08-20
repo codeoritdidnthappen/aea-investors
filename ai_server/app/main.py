@@ -2,6 +2,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import AsyncIterator, Callable
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import FastAPI, Request
@@ -30,6 +31,12 @@ from ai_server.app.health import (
 )
 from ai_server.llm.groq import GroqConfigurationError, GroqSettings, GroqWorkflow, HttpGroqClient
 from ai_server.privacy.gate import PrivacyGate
+
+
+def _origin_of(url: str) -> str:
+    """Return the scheme+host part of `url`, for comparison against an Origin header."""
+    parts = urlsplit(url)
+    return f"{parts.scheme}://{parts.netloc}"
 
 
 def create_app(
@@ -105,6 +112,13 @@ def create_app(
         """Stream a reply for one turn; refuse any request without an AI session."""
         if configured_settings is None or configured_session_store is None:
             raise AuthError("the chat service is unavailable", 503)
+        # SameSite=None on the session cookie (required for the cross-site portal
+        # iframe, see /oauth/callback) means the cookie rides along on any origin's
+        # request; Starlette also parses the body as JSON regardless of the
+        # declared Content-Type, so neither gives CSRF protection on its own. Only
+        # a same-origin fetch from the served chat page sends a matching Origin.
+        if request.headers.get("origin") != _origin_of(configured_settings.success_redirect_uri):
+            raise AuthError("request origin is not allowed", 403)
         handle = request.cookies.get(configured_settings.cookie_name)
         valid = handle is not None and await asyncio.to_thread(
             configured_session_store.active_session, handle, clock()
@@ -137,9 +151,8 @@ def create_app(
             # portal (TICK-012): browsers compute SameSite against the top-level
             # document's site, so Lax would silently withhold this cookie from the
             # iframe's own fetch("/api/chat") call. `secure=True` is required for
-            # None, and /api/chat only accepts an application/json POST body with
-            # no permissive CORS policy configured, so a cross-site page still
-            # can't complete a forged request (the preflight has nothing to pass).
+            # None. This alone permits cross-site delivery, so chat_turn() below
+            # enforces an Origin check as the actual CSRF defense.
             samesite="none",
             path="/",
         )
