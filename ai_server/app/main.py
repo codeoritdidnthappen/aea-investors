@@ -145,7 +145,11 @@ def create_app(
                 chat_http_client, chat_openemr_client, clock
             )
         if configured_onboarding_service is None:
-            onboarding_http_client = httpx.AsyncClient(timeout=30.0)
+            # Same untrusted-self-signed-cert reason as chat_openemr_client above:
+            # OnboardingFlow's draft/demographics calls hit configured_settings.issuer's
+            # host directly (ai_server/onboarding/draft_client.py never calls an
+            # external model, only OpenEMR), and got missed when this client was added.
+            onboarding_http_client = httpx.AsyncClient(timeout=30.0, verify=False)
             owned_http_clients.append(onboarding_http_client)
             configured_onboarding_service = _build_onboarding_service(
                 onboarding_http_client, store, clock
