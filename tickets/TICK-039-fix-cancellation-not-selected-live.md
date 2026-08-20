@@ -34,7 +34,7 @@ Despite that, asking the chat "Can you cancel my upcoming appointment?" (a
 real, live login and chat turn, not a scripted probe) returned the exact
 `NoActionTool` fallback text ("No scheduling action is available yet in this
 demo.") -- the same fallback a `book` intent with no candidate slots also
-produces. `AuthoritativeToolFactory.execute()` only calls `_execute_cancel()`
+produces. `BookingTool.execute()` only calls `_execute_cancel()`
 when `plan.intent == "cancel" and plan.appointment_token is not None`
 (`chat.py:127`); since neither branch was taken, either the LLM (Groq
 `openai/gpt-oss-120b`) never selected `intent="cancel"` for this phrasing, or
