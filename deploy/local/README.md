@@ -51,7 +51,7 @@ docker compose logs -f openemr
 
 Log in to OpenEMR at `https://emr.localhost` (routed through Caddy; your browser
 will warn about the untrusted local development certificate the first time — this
-is expected, see step 7) with `OE_USER`/`OE_PASS` from `.env`, then register a
+is expected, see step 8) with `OE_USER`/`OE_PASS` from `.env`, then register a
 confidential OAuth client (Admin > System > API Clients, or
 `POST /oauth2/default/registration`) with redirect URI `OPENEMR_OAUTH_REDIRECT_URI`
 and the scopes in `ai_server/app/auth.py` (`AuthSettings.scopes`). Copy the issued
@@ -61,7 +61,20 @@ client ID/secret into `.env`, then:
 docker compose up -d ai-server
 ```
 
-## 4. Seed synthetic data
+## 4. Enable the AI portal chat module
+
+`docker compose up -d` already bind-mounts `openemr_modules/aeai-portal-chat` (TICK-012)
+read-only into OpenEMR's custom-module directory, but OpenEMR only loads a custom module
+once it has a `modules` row with `mod_active = 1`. Register and enable it the same way as
+any other custom module: log in to OpenEMR at `https://emr.localhost` with `OE_USER`/
+`OE_PASS`, then **Modules > Manage Modules > Custom Modules**, find "AEA Investors Portal
+Chat", **Register**, then **Install**/**Enable**. A logged-in patient's portal home page
+(`/portal/home.php`) then embeds the chat iframe; a logged-out visitor never sees it,
+because the underlying `RenderEvent::EVENT_SECTION_RENDER_POST` hook only fires from that
+authenticated page (see
+[evidence/TICK-002/PORTAL_HOOK_EVIDENCE.md](../../evidence/TICK-002/PORTAL_HOOK_EVIDENCE.md)).
+
+## 5. Seed synthetic data
 
 ```sh
 ../seed.sh
@@ -71,21 +84,21 @@ Writes offline synthetic identities to `generated-fixtures/local-demo/` (see
 [TICK-006](../../tickets/TICK-006-build-synthetic-fixtures.md)). This data is
 evaluation-only; it is not loaded into OpenEMR by this script.
 
-## 5. Run health checks
+## 6. Run health checks
 
 ```sh
 curl -k https://chat.localhost/health
 ```
 
 (`-k` skips curl's certificate trust check for Caddy's local development
-certificate — see step 7.) Returns non-sensitive dependency reachability for the
+certificate — see step 8.) Returns non-sensitive dependency reachability for the
 AI server, OpenEMR API, OCR, and external LLM. `ocr` reports `ok` once the image's
 pinned Tesseract is reachable. `openemr_api` reuses `OPENEMR_OAUTH_ISSUER`, which
 now goes through Caddy's `emr.localhost` hostname (see `.env.example`), reachable
 from both the browser and the AI-server container. `external_llm` is `unavailable`
 whenever `GROQ_API_KEY` is blank, which is the default, paid-service-free path.
 
-## 6. Verify restart persistence
+## 7. Verify restart persistence
 
 ```sh
 docker compose restart ai-server
@@ -95,7 +108,7 @@ curl -k https://chat.localhost/health
 The `ai-session-data` volume persists the SQLite WAL session store
 (`AI_SESSION_DATABASE_PATH`) across the restart (NFR-31).
 
-## 7. Verify the local Caddy ingress
+## 8. Verify the local Caddy ingress
 
 Caddy is the only service with a published host port for HTTP/application
 traffic; MariaDB has no host port at all, and the AI server's internal port
