@@ -10,7 +10,7 @@ labels: [openemr, scheduling]
 source: [FR-9, FR-10, FR-15, FR-17, FR-20, FR-28, NFR-12, NFR-25]
 status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/19
-builder_commit: cdf23f7
+builder_commit: 8d731fb
 ---
 ## Context
 

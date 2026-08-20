@@ -10,7 +10,7 @@ labels: [local, docker]
 source: [NFR-9, NFR-15, NFR-16, NFR-20, NFR-31]
 status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/23
-builder_commit: 651f48a
+builder_commit: aca74df
 ---
 ## Context
 

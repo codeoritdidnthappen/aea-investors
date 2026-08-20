@@ -9,6 +9,8 @@ depends_on: [TICK-001, TICK-008, TICK-022]
 labels: [openemr, oauth, smart, privacy]
 source: [FR-3, FR-26, NFR-25, NFR-30]
 status: done
+remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/50
+builder_commit: b0cdd4b
 ---
 
 ## Context

@@ -10,7 +10,7 @@ labels: [ocr, evaluation, release-gate]
 source: [NFR-29]
 status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/16
-builder_commit: 299354a
+builder_commit: 1e72213
 ---
 ## Context
 

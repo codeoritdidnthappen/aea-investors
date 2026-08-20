@@ -10,7 +10,7 @@ labels: [local, caddy]
 source: [NFR-9, NFR-16, NFR-17, NFR-34]
 status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/24
-builder_commit: 44cccc3
+builder_commit: 77f7364
 ---
 ## Context
 
