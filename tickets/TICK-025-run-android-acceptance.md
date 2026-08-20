@@ -5,7 +5,7 @@ type: task
 epic: EPIC-08
 priority: P1
 estimate: M
-depends_on: [TICK-004, TICK-013, TICK-014, TICK-020, TICK-023]
+depends_on: [TICK-004, TICK-013, TICK-014, TICK-031, TICK-023]
 labels: [android, chrome, verification]
 source: [NFR-19, NFR-35]
 status: todo
@@ -15,6 +15,10 @@ remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/26
 ## Context
 
 Android Chrome is in scope with explicitly approved lower-priority degradation only.
+
+**Dependency changed (2026-08-20):** was `TICK-020`; split into TICK-031 (book +
+cancel, buildable) and a narrowed TICK-020 (reschedule only, permanently
+blocked).
 
 ## Acceptance Criteria
 

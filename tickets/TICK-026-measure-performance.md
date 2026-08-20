@@ -5,7 +5,7 @@ type: task
 epic: EPIC-08
 priority: P2
 estimate: M
-depends_on: [TICK-020, TICK-023]
+depends_on: [TICK-031, TICK-023]
 labels: [performance, k6, verification]
 source: [NFR-13, NFR-14]
 status: todo
@@ -15,6 +15,10 @@ remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/27
 ## Context
 
 The documented should-level targets are less than 3.0 seconds p95 for chat/API and less than 1.0 second p95 for scheduling reads/writes at 20 virtual users for 60 seconds.
+
+**Dependency changed (2026-08-20):** was `TICK-020`; split into TICK-031 (book +
+cancel, buildable) and a narrowed TICK-020 (reschedule only, permanently
+blocked). "Scheduling reads/writes" here means book/cancel.
 
 ## Acceptance Criteria
 

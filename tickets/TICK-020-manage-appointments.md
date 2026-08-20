@@ -1,6 +1,6 @@
 ---
 id: TICK-020
-title: "feat(scheduling): book reschedule and cancel through OpenEMR"
+title: "feat(scheduling): reschedule an appointment through OpenEMR"
 type: feature
 epic: EPIC-07
 priority: P1
@@ -10,18 +10,25 @@ labels: [scheduling, openemr]
 source: [FR-12, FR-13, FR-14, FR-16, FR-20, FR-28, NFR-11]
 status: blocked
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/21
-blocked_reason: "TICK-020 requires reschedule and cancel-by-OpenEMR-status, but evidence/TICK-001/ENDPOINT_MATRIX.md documents no such endpoint exists on the pinned OpenEMR v8.3.0 release and explicitly names TICK-018\u2013TICK-020 as forbidden from implementing these gap rows (no delete/recreate or DELETE-based emulatio"
+blocked_reason: "Narrowed 2026-08-20 to reschedule only (see note below): OpenEMR v8.3.0's AppointmentService has no update method for an existing appointment's date/time/duration -- only ~150 lines of inline SQL in the legacy interface/main/calendar/add_edit_event.php page, tangled with recurrence/multi-provider branching, not a callable service. Implementing reschedule would mean new raw pc_event writes, exactly the workaround evidence/TICK-001/ENDPOINT_MATRIX.md already rejects. Booking and cancel-by-status, this ticket's other two parts, are NOT blocked -- see TICK-031."
 ---
 ## Context
 
 Appointment writes occur only after a deterministic OpenEMR call; the assistant may not claim success before that response.
 
+## Scope narrowed (2026-08-20)
+
+This ticket bundled book + reschedule + cancel. Investigation (mirroring TICK-017's
+own gap-resolution) found booking and cancel-by-status are both buildable --
+`AppointmentService::insert()` and `AppointmentService::updateAppointmentStatus()`
+are real, callable OpenEMR business logic, the same class of mechanism TICK-017
+used. Split out as **TICK-031**, now `done`. Reschedule alone has no such call
+path and stays blocked here; see `blocked_reason`.
+
 ## Acceptance Criteria
 
-- [ ] A patient can book an open slot, reschedule an existing appointment, and cancel by OpenEMR status update.
-- [ ] OpenEMR confirmation is required before any success response.
-- [ ] Conflict or stale-slot responses are clear and create no invented commitment.
-- [ ] Double-submitted or concurrent booking attempts produce no more than one confirmed appointment.
+- [ ] A patient can reschedule an existing appointment through a deterministic
+      OpenEMR call, with no invented commitment on conflict.
 
 ## Testing
 
