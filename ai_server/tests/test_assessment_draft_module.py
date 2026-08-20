@@ -12,6 +12,7 @@ into OpenEMR's real extension events rather than some invented mechanism.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -77,14 +78,16 @@ def test_service_scopes_every_query_by_patient_uuid() -> None:
 
 def test_service_uses_parameterized_queries_only() -> None:
     service = _service_text()
-    # Every sql* call in this file must bind values, never interpolate them --
-    # otherwise the binding-by-query-scope guarantee above would be moot.
-    sql_call_prefixes = ("sqlInsert(", "sqlStatement(", "sqlQuery(")
-    for line in service.splitlines():
-        stripped = line.strip()
-        if stripped.startswith(sql_call_prefixes):
-            assert "$patientUuid" not in stripped
-            assert "$uuid" not in stripped
+    # Every sql* call's SQL string (its first argument) must use placeholders, never
+    # interpolate a variable -- the bound-parameter array that follows legitimately
+    # references $patientUuid/$uuid, so only the quoted string portion is checked.
+    # Calls are multi-line, so this must isolate that string across line breaks, not
+    # just scan the line where the call opens.
+    sql_strings = re.findall(r'sql(?:Insert|Statement|Query)\(\s*"(.*?)",', service, re.DOTALL)
+    assert len(sql_strings) == 3  # create/update/forPatient -- fails loudly if one is added/removed
+    for sql_string in sql_strings:
+        assert "$patientUuid" not in sql_string
+        assert "$uuid" not in sql_string
 
 
 def test_service_requires_all_contract_fields_to_complete() -> None:

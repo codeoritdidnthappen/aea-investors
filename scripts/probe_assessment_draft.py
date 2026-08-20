@@ -216,8 +216,15 @@ def login_and_get_token(username: str, password: str) -> dict:
     return payload
 
 
-def api(method: str, path: str, token: str, body: dict | None = None) -> tuple[int, dict]:
-    data = json.dumps(body).encode() if body is not None else None
+def api(
+    method: str, path: str, token: str, body: dict | None = None, raw_body: bytes | None = None
+) -> tuple[int, dict]:
+    if raw_body is not None:
+        data = raw_body
+    elif body is not None:
+        data = json.dumps(body).encode()
+    else:
+        data = None
     req = urllib.request.Request(
         f"{BASE}/apis/default{path}",
         data=data,
@@ -256,7 +263,13 @@ def main() -> int:
 
     results: list = []
 
-    # 1. Patient A creates a draft.
+    # 1. Malformed JSON body must 400, not be silently treated as an empty draft.
+    status, body = api(
+        "POST", "/portal/patient/assessment", token_a, raw_body=b"{not valid json,,,"
+    )
+    _check(results, "A submits malformed JSON (must fail)", status, 400, True, body)
+
+    # 2. Patient A creates a draft.
     status, body = api("POST", "/portal/patient/assessment", token_a, {"help_type": "not_sure_yet"})
     _check(results, "A creates own draft", status, 201, True, body)
     draft_uuid = body.get("uuid")
@@ -265,12 +278,12 @@ def main() -> int:
         return 1
     path = f"/portal/patient/assessment/{draft_uuid}"
 
-    # 2. Patient A reads it back.
+    # 3. Patient A reads it back.
     status, body = api("GET", path, token_a)
     help_type_present = body.get("fields", {}).get("help_type") == "not_sure_yet"
     _check(results, "A reads own draft", status, 200, help_type_present, body)
 
-    # 3. Patient A updates it incrementally.
+    # 4. Patient A updates it incrementally.
     contact_fields = {"preferred_contact_method": "email", "contact_value": "avery@example.invalid"}
     status, body = api("PUT", path, token_a, contact_fields)
     fields = body.get("fields", {})
@@ -280,24 +293,24 @@ def main() -> int:
     )
     _check(results, "A checkpoints a new field", status, 200, both_present, body)
 
-    # 4. NEGATIVE: patient B attempts to read patient A's draft.
+    # 5. NEGATIVE: patient B attempts to read patient A's draft.
     status, body = api("GET", path, token_b)
     _check(results, "B reads A's draft (must fail)", status, 404, True, body)
 
-    # 5. NEGATIVE: patient B attempts to write patient A's draft.
+    # 6. NEGATIVE: patient B attempts to write patient A's draft.
     status, body = api("PUT", path, token_b, {"help_type": "both"})
     _check(results, "B writes A's draft (must fail)", status, 404, True, body)
 
-    # 6. Validation: reject an invalid enum value.
+    # 7. Validation: reject an invalid enum value.
     invalid = {"help_type": "not-a-real-option"}
     status, body = api("POST", "/portal/patient/assessment", token_a, invalid)
     _check(results, "A submits invalid help_type (must fail)", status, 400, True, body)
 
-    # 7. Completion requires all required fields; attempt with only 2 of 4 present.
+    # 8. Completion requires all required fields; attempt with only 2 of 4 present.
     status, body = api("PUT", path, token_a, {"status": "completed"})
     _check(results, "A completes with missing required fields (must fail)", status, 400, True, body)
 
-    # 8. Fill remaining required fields and complete for real.
+    # 9. Fill remaining required fields and complete for real.
     status, body = api(
         "PUT", path, token_a,
         {"visit_format": "video", "visit_time_window": "no_preference", "status": "completed"},
@@ -305,7 +318,7 @@ def main() -> int:
     completed = body.get("status") == "completed"
     _check(results, "A completes with all required fields", status, 200, completed, body)
 
-    # 9. Completed drafts are immutable.
+    # 10. Completed drafts are immutable.
     status, body = api("PUT", path, token_a, {"help_type": "both"})
     _check(results, "A edits a completed draft (must fail)", status, 409, True, body)
 

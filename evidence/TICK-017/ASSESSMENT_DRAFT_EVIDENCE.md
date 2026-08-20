@@ -80,20 +80,44 @@ against the live route:
 
 | # | Step | Result |
 |---|---|---|
-| 1 | Patient A creates a draft (`POST /portal/patient/assessment`, `help_type` only) | `201` |
-| 2 | Patient A reads it back | `200`, `help_type` present |
-| 3 | Patient A checkpoints `preferred_contact_method`/`contact_value` | `200`, both fields now present |
-| 4 | **Patient B reads patient A's draft by uuid** | `404` |
-| 5 | **Patient B writes patient A's draft by uuid** | `404` |
-| 6 | Patient A submits an invalid `help_type` enum value | `400` |
-| 7 | Patient A requests completion with 2 of 4 required fields present | `400` |
-| 8 | Patient A supplies the remaining required fields and completes | `200`, `status=completed` |
-| 9 | Patient A attempts to edit the now-completed draft | `409` |
+| 1 | Patient A submits a syntactically invalid JSON body | `400` |
+| 2 | Patient A creates a draft (`POST /portal/patient/assessment`, `help_type` only) | `201` |
+| 3 | Patient A reads it back | `200`, `help_type` present |
+| 4 | Patient A checkpoints `preferred_contact_method`/`contact_value` | `200`, both fields now present |
+| 5 | **Patient B reads patient A's draft by uuid** | `404` |
+| 6 | **Patient B writes patient A's draft by uuid** | `404` |
+| 7 | Patient A submits an invalid `help_type` enum value | `400` |
+| 8 | Patient A requests completion with 2 of 4 required fields present | `400` |
+| 9 | Patient A supplies the remaining required fields and completes | `200`, `status=completed` |
+| 10 | Patient A attempts to edit the now-completed draft | `409` |
 
-All 9 checks passed (`scripts/probe_assessment_draft.py` exit 0). Steps 4–5 are the
+All 10 checks passed (`scripts/probe_assessment_draft.py` exit 0). Steps 5–6 are the
 binding proof: same mechanism TICK-028 found *missing* on the FHIR `Patient` write
 route, here confirmed present on this new route because it reuses OpenEMR's own
 token-derived patient-UUID rather than trusting any client-supplied identifier.
+
+### Fixes from the merge-gate code review
+
+A `/code-review` pass against this branch found and fixed four issues before merge:
+
+- Malformed JSON was silently treated as an empty body (`(array) null === []`),
+  returning `201`/silent-no-op instead of `400` — step 1 above locks this in.
+  `AssessmentDraftController` now parses the body once (`parseJsonBody()`) and
+  returns `400` on a decode failure.
+- `update()`'s read-then-write had a TOCTOU window: two concurrent requests for the
+  same draft could both pass the "not yet completed" check before either write
+  landed. The final `UPDATE` now adds `AND status != 'completed'` (compare-and-swap)
+  and checks `QueryUtils::affectedRows()`, returning the same `409` a losing request
+  would have gotten from the read-time check.
+- The `POST`/`PUT` closures had duplicated body-parsing logic; extracted into one
+  `parseJsonBody()` method.
+- The Python static test for "no SQL interpolation" only inspected the source line
+  where a `sql*()` call opened, missing the continuation lines where the actual SQL
+  string and bound-parameter array live (every real call in this file is
+  multi-line) — it would have passed even if a future edit interpolated
+  `$patientUuid` directly into a query string. Rewritten to isolate and check the
+  quoted SQL string specifically (the bound-parameter array legitimately references
+  those variables; only the string itself must not).
 
 ### Bug found in OpenEMR core along the way
 
