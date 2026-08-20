@@ -75,7 +75,7 @@ def test_ticket_011_groq_probe_keeps_api_key_out_of_health_output_and_logs(
 
     async def scenario() -> None:
         async with httpx.AsyncClient(transport=httpx.MockTransport(responder)) as client:
-            service = default_health_service(settings, client)
+            service = default_health_service(settings, client, client)
             return await service.report()
 
     with caplog.at_level(logging.WARNING):
