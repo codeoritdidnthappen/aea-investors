@@ -8,8 +8,9 @@ estimate: L
 depends_on: [TICK-018, TICK-019]
 labels: [scheduling, openemr]
 source: [FR-12, FR-14, FR-16, FR-20, FR-28, NFR-11]
-status: todo
+status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/58
+builder_commit: 261cd46
 ---
 ## Context
 
