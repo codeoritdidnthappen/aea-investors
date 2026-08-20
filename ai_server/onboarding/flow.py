@@ -225,7 +225,7 @@ class OnboardingFlow:
         )  # narrows for the type checker
 
         confirmed: ConfirmedIdentity = confirm_identity(
-            f"{given_name} {family_name}", date_of_birth, _format_address(address)
+            given_name, family_name, date_of_birth, _format_address(address)
         )
         # A failure here (network, non-200) propagates as `OpenEmrRequestError` and
         # nothing further runs: the draft is never marked completed, matching

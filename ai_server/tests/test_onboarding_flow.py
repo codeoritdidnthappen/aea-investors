@@ -254,6 +254,25 @@ def test_ac3_completion_writes_demographics_and_finalizes_the_native_assessment(
     assert record.draft_fields["help_type"] == "both"
 
 
+def test_ac3_completion_never_joins_then_re_splits_a_multi_word_family_name() -> None:
+    """given_name/family_name reach the demographics write exactly as confirmed, never
+    joined into one string and re-split -- a re-split cannot recover a multi-word
+    family name ("Van Der Berg") without guessing which word is the family name."""
+    server = _SyntheticOpenEmr()
+    flow = _flow(server)
+    cursor = run(flow.start("token"))
+    for field, value in _REQUIRED_COMPLETE_FIELDS.items():
+        run(flow.checkpoint_field("token", cursor, field, value, NOW))
+
+    identity = {**_IDENTITY, "family_name": "Van Der Berg"}
+    record = run(flow.complete("token", PATIENT_UUID, cursor, identity, NOW))
+
+    demographics_body = json.loads(server.demographics_writes[0].content)
+    assert demographics_body["fname"] == "Avery"
+    assert demographics_body["lname"] == "Van Der Berg"
+    assert record.family_name == "Van Der Berg"
+
+
 def test_ac3_completion_with_a_missing_required_field_writes_nothing() -> None:
     """AC3: no separate durable patient record -- an incomplete attempt persists
     nothing anywhere, OpenEMR included."""

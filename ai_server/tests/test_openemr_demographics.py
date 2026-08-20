@@ -47,28 +47,31 @@ def test_settings_from_environment_requires_the_api_base_url(
 
 
 def test_ac1_confirming_every_field_yields_a_writable_identity() -> None:
-    identity = confirm_identity("Avery Alden", "1990-01-01", "100 Maple Avenue")
+    identity = confirm_identity("Avery", "Alden", "1990-01-01", "100 Maple Avenue")
 
     assert identity == ConfirmedIdentity(
-        name="Avery Alden", date_of_birth="1990-01-01", address="100 Maple Avenue"
+        given_name="Avery",
+        family_name="Alden",
+        date_of_birth="1990-01-01",
+        address="100 Maple Avenue",
     )
 
 
 @pytest.mark.parametrize(
-    "name,date_of_birth,address",
+    "given_name,date_of_birth,address",
     [
         (None, "1990-01-01", "100 Maple Avenue"),
-        ("Avery Alden", None, "100 Maple Avenue"),
-        ("Avery Alden", "1990-01-01", None),
+        ("Avery", None, "100 Maple Avenue"),
+        ("Avery", "1990-01-01", None),
         (None, None, None),
         ("", "1990-01-01", "100 Maple Avenue"),
     ],
 )
 def test_ac1_ac3_any_unconfirmed_or_partial_field_refuses_before_a_write_is_possible(
-    name: str | None, date_of_birth: str | None, address: str | None
+    given_name: str | None, date_of_birth: str | None, address: str | None
 ) -> None:
     with pytest.raises(IdentityNotConfirmedError):
-        confirm_identity(name, date_of_birth, address)
+        confirm_identity(given_name, "Alden", date_of_birth, address)
 
 
 def test_ac3_a_failed_ocr_extraction_never_becomes_writable() -> None:
@@ -76,14 +79,14 @@ def test_ac3_a_failed_ocr_extraction_never_becomes_writable() -> None:
     failed = ExtractedIdentity()
 
     with pytest.raises(IdentityNotConfirmedError):
-        confirm_identity(failed.name, failed.date_of_birth, failed.address)
+        confirm_identity(failed.name, "Alden", failed.date_of_birth, failed.address)
 
 
 def test_ac3_a_partial_ocr_extraction_never_becomes_writable() -> None:
-    partial = ExtractedIdentity(name="Avery Alden", date_of_birth=None, address="100 Maple Avenue")
+    partial = ExtractedIdentity(name="Avery", date_of_birth=None, address="100 Maple Avenue")
 
     with pytest.raises(IdentityNotConfirmedError):
-        confirm_identity(partial.name, partial.date_of_birth, partial.address)
+        confirm_identity(partial.name, "Alden", partial.date_of_birth, partial.address)
 
 
 def test_ac3_a_revoked_upload_never_becomes_writable() -> None:
@@ -91,7 +94,7 @@ def test_ac3_a_revoked_upload_never_becomes_writable() -> None:
     revoked_identity = None
 
     with pytest.raises(IdentityNotConfirmedError):
-        confirm_identity(revoked_identity, revoked_identity, revoked_identity)
+        confirm_identity(revoked_identity, revoked_identity, revoked_identity, revoked_identity)
 
 
 def test_ac2_writes_only_the_confirmed_name_dob_and_address_to_the_mapped_endpoint() -> None:
@@ -101,7 +104,7 @@ def test_ac2_writes_only_the_confirmed_name_dob_and_address_to_the_mapped_endpoi
         captured.append(request)
         return httpx.Response(200, json={"data": {"fname": "Avery"}})
 
-    identity = confirm_identity("Avery Alden", "1990-01-01", "100 Maple Avenue")
+    identity = confirm_identity("Avery", "Alden", "1990-01-01", "100 Maple Avenue")
 
     run(
         adapter_with(httpx.MockTransport(handler)).write_confirmed_demographics(
@@ -123,14 +126,14 @@ def test_ac2_writes_only_the_confirmed_name_dob_and_address_to_the_mapped_endpoi
     }
 
 
-def test_ac2_a_single_word_confirmed_name_has_no_fabricated_family_name() -> None:
+def test_ac2_a_confirmed_mononym_has_no_fabricated_family_name() -> None:
     captured: list[httpx.Request] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
         captured.append(request)
         return httpx.Response(200, json={"data": {}})
 
-    identity = confirm_identity("Cher", "1990-01-01", "100 Maple Avenue")
+    identity = confirm_identity("Cher", None, "1990-01-01", "100 Maple Avenue")
 
     run(
         adapter_with(httpx.MockTransport(handler)).write_confirmed_demographics(
@@ -143,11 +146,34 @@ def test_ac2_a_single_word_confirmed_name_has_no_fabricated_family_name() -> Non
     assert body["lname"] == ""
 
 
+def test_ac2_a_multi_word_family_name_is_never_split() -> None:
+    """given_name/family_name are carried separately end to end, never joined then
+    re-split -- a join+split round trip cannot recover a multi-word family name
+    ("Van Der Berg") without guessing which word is the family name."""
+    captured: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(200, json={"data": {}})
+
+    identity = confirm_identity("Avery", "Van Der Berg", "1990-01-01", "100 Maple Avenue")
+
+    run(
+        adapter_with(httpx.MockTransport(handler)).write_confirmed_demographics(
+            "token", PATIENT_UUID, identity
+        )
+    )
+
+    body = json.loads(captured[0].content)
+    assert body["fname"] == "Avery"
+    assert body["lname"] == "Van Der Berg"
+
+
 def test_ac2_a_non_200_response_fails_explicitly_with_no_fallback() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(403, json={"error": "forbidden"})
 
-    identity = confirm_identity("Avery Alden", "1990-01-01", "100 Maple Avenue")
+    identity = confirm_identity("Avery", "Alden", "1990-01-01", "100 Maple Avenue")
 
     async def scenario() -> None:
         await adapter_with(httpx.MockTransport(handler)).write_confirmed_demographics(
@@ -162,7 +188,7 @@ def test_ac2_a_transport_failure_fails_explicitly_with_no_fallback() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("connection refused", request=request)
 
-    identity = confirm_identity("Avery Alden", "1990-01-01", "100 Maple Avenue")
+    identity = confirm_identity("Avery", "Alden", "1990-01-01", "100 Maple Avenue")
 
     async def scenario() -> None:
         await adapter_with(httpx.MockTransport(handler)).write_confirmed_demographics(
