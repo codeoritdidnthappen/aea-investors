@@ -129,3 +129,16 @@ browser-automation tool this session was not given. A follow-up live pass -- ide
 re-running TICK-024's exact Finding 2 repro against the already-seeded
 `AverySubjecttest1` appointment now that this fix is in place -- would close that
 remaining gap.
+
+**Update, live-verified 2026-08-20 (after this ticket's fix landed and the running
+`local-ai-server-1` container was rebuilt to pick it up):** the planning half fixed
+here is confirmed correct live -- the model now selects `intent=cancel` with the
+real `appointment_token`, and a real `PUT` to OpenEMR's cancel route is genuinely
+made. But that call returned a real `404`, and the patient-visible response still
+claimed `"cancellation":"confirmed"` -- a fabrication produced by a *second*,
+separate Groq call (`GroqWorkflow.respond()`'s post-tool "describe the result" step)
+that this ticket's fix never touched. `pc_apptstatus` was confirmed unchanged in the
+database. This is a distinct, more severe bug than TICK-039 was scoped to fix --
+filed as **TICK-041** (P0). TICK-039's own narrow claim (the model reliably selects
+a real appointment token once it's actually present in its input) is true and
+proven; it just isn't sufficient on its own for a trustworthy end-to-end result.
