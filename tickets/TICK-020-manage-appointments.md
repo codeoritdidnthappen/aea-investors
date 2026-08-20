@@ -32,7 +32,7 @@ has no such call path and stays blocked here; see `blocked_reason`.
 
 ## Testing
 
-Run synthetic OpenEMR end-to-end operations, stale conflict, and concurrent-final-slot tests against the local pinned Docker stack. CI must be green.
+Run synthetic OpenEMR end-to-end reschedule operations and stale-conflict tests against the local pinned Docker stack. CI must be green.
 
 ## Out of Scope
 
