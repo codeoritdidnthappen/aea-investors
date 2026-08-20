@@ -72,9 +72,16 @@ IMMEDIATE_SAFETY_PHRASES: tuple[str, ...] = (
 
 _WHITESPACE = re.compile(r"\s+")
 
+# Curly/smart-quote apostrophe variants a phone keyboard or word processor's
+# autocorrect commonly substitutes for a straight one -- every phrase in the corpus
+# below is written with a straight apostrophe, so these must collapse to it or a
+# message like "I can’t keep myself safe" would silently fail to match.
+_SMART_APOSTROPHES = re.compile("[‘’ʼ]")
+
 
 def _normalize(message: str) -> str:
-    return _WHITESPACE.sub(" ", message.strip().lower())
+    unquoted = _SMART_APOSTROPHES.sub("'", message)
+    return _WHITESPACE.sub(" ", unquoted.strip().lower())
 
 
 def detect_distress(message: str) -> Trigger | None:

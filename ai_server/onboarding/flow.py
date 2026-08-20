@@ -291,6 +291,11 @@ class OnboardingFlow:
             return {"error": [str(exc), *exc.details] if exc.details else [str(exc)]}
         except AssessmentDraftConflictError as exc:
             return {"error": [str(exc)]}
+        except AssessmentDraftNotFoundError as exc:
+            # Same class of gap complete() already closes: a stale/deleted-draft
+            # cursor must fold into the documented FieldCheckpointRejected contract,
+            # not leak the draft client's own exception type past it.
+            return {"error": [str(exc)]}
         return {"draft": draft, "error": None}
 
 

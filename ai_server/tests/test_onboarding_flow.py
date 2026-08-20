@@ -191,6 +191,19 @@ def test_ac1_a_field_that_openemr_itself_rejects_surfaces_its_message() -> None:
         run(flow.checkpoint_field("token", cursor, "help_type", "both", NOW))
 
 
+def test_checkpoint_field_with_a_stale_cursor_raises_the_documented_error_type() -> None:
+    """Mirrors test_ac3_completion_with_a_stale_cursor_raises_the_documented_error_type:
+    a cursor whose OpenEMR draft no longer exists must fail as FieldCheckpointRejected
+    -- the type this method documents -- not the draft-client's own
+    AssessmentDraftNotFoundError leaking through undocumented."""
+    server = _SyntheticOpenEmr()
+    flow = _flow(server)
+    cursor = OnboardingCursor(draft_uuid="never-created")
+
+    with pytest.raises(FieldCheckpointRejected):
+        run(flow.checkpoint_field("token", cursor, "help_type", "both", NOW))
+
+
 def test_checkpoint_field_refuses_an_identity_field() -> None:
     server = _SyntheticOpenEmr()
     flow = _flow(server)
