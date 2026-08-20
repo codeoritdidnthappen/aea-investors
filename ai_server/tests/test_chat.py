@@ -64,14 +64,17 @@ class ScriptedChatService:
             yield chunk
 
 
-async def _post_chat(app, cookie: str | None, message: str = "Hello") -> httpx.Response:
+async def _post_chat(
+    app, cookie: str | None, message: str = "Hello", origin: str | None = "https://chat.test"
+) -> httpx.Response:
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
             base_url="https://chat.test",
             cookies={"ai_session": cookie} if cookie else None,
         ) as client:
-            return await client.post("/api/chat", json={"message": message})
+            headers = {"origin": origin} if origin else None
+            return await client.post("/api/chat", json={"message": message}, headers=headers)
 
 
 # --- AC1: the UI only ever talks to this server's own AI-session-gated route -----
@@ -99,6 +102,26 @@ def test_ac1_chat_turn_requires_an_active_ai_session_cookie(tmp_path: Path) -> N
 
     bogus_cookie = asyncio.run(_post_chat(app, cookie="not-a-real-handle"))
     assert bogus_cookie.status_code == 401
+
+
+def test_ac1_chat_turn_rejects_a_missing_or_mismatched_origin(tmp_path: Path) -> None:
+    # The session cookie is SameSite=None (required for the cross-site portal
+    # iframe), so a matching Origin is the only thing standing between this route
+    # and a forged cross-site request; a CORS-simple request needs no preflight
+    # and Starlette parses the body as JSON regardless of Content-Type.
+    configured = settings(tmp_path)
+    handle = active_session_cookie(configured)
+    app = create_app(
+        configured,
+        clock=lambda: NOW,
+        chat_service=ScriptedChatService(chunks=["Hel", "lo!"]),
+    )
+
+    missing_origin = asyncio.run(_post_chat(app, cookie=handle, origin=None))
+    assert missing_origin.status_code == 403
+
+    wrong_origin = asyncio.run(_post_chat(app, cookie=handle, origin="https://attacker.test"))
+    assert wrong_origin.status_code == 403
 
 
 def test_ac1_chat_turn_accepts_a_valid_ai_session_cookie(tmp_path: Path) -> None:
