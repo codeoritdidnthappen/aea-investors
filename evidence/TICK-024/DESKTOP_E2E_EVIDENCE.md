@@ -59,9 +59,9 @@ now concretely confirmed.
 **Not fixed here** (out of scope for a verification ticket to redesign a
 render hook) -- recommend a follow-up ticket to add a proper dashboard tile,
 likely via `RenderEvent::EVENT_DASHBOARD_INJECT_CARD` (the hook
-`evidence/TICK-002/PORTAL_HOOK_EVIDENCE.md` itself already identified as the
-"documented intent" mechanism for exactly this launcher-tile use case, but
-which TICK-002/012 didn't use).
+`tickets/TICK-002-select-portal-hook.md`'s own four-row event table already
+identified as the "documented intent" mechanism for exactly this
+launcher-tile use case, but which TICK-002/012 didn't use).
 
 ## Finding 2 — the AI server's actual registered OAuth client uses staff (`user/*`) scopes, not patient (`patient/*`) scopes
 
