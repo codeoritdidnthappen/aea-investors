@@ -92,11 +92,18 @@ def create_app(
         if configured_health_service is None:
             # Same untrusted-self-signed-cert reason as auth_http_client above:
             # HealthSettings' openemr_api probe hits configured_settings.issuer
-            # (OPENEMR_OAUTH_ISSUER), which resolves to OpenEMR the same way.
-            health_http_client = httpx.AsyncClient(timeout=2.0, verify=False)
-            owned_http_clients.append(health_http_client)
+            # (OPENEMR_OAUTH_ISSUER), which resolves to OpenEMR the same way. The
+            # external_llm probe sends a live Groq API key to the public internet, so
+            # it needs its own, fully-verified client -- reusing the OpenEMR one here
+            # would silently disable TLS verification for that call too.
+            health_openemr_client = httpx.AsyncClient(timeout=2.0, verify=False)
+            health_groq_client = httpx.AsyncClient(timeout=2.0)
+            owned_http_clients.append(health_openemr_client)
+            owned_http_clients.append(health_groq_client)
             configured_health_service = default_health_service(
-                HealthSettings.from_environment(configured_settings.issuer), health_http_client
+                HealthSettings.from_environment(configured_settings.issuer),
+                health_openemr_client,
+                health_groq_client,
             )
         if configured_chat_service is None:
             chat_http_client = httpx.AsyncClient(timeout=30.0)

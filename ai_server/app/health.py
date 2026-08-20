@@ -63,13 +63,20 @@ class HealthService:
         return reachable
 
 
-def default_health_service(settings: HealthSettings, client: httpx.AsyncClient) -> HealthService:
-    """Build probes for the approved local OCR, OpenEMR, and Groq dependencies."""
+def default_health_service(
+    settings: HealthSettings, openemr_client: httpx.AsyncClient, groq_client: httpx.AsyncClient
+) -> HealthService:
+    """Build probes for the approved local OCR, OpenEMR, and Groq dependencies.
+
+    Takes separate clients because the OpenEMR probe hits a self-signed local cert
+    (verification deliberately disabled by the caller) while the Groq probe sends a
+    live API key to the public internet and must keep full TLS verification.
+    """
     return HealthService(
         {
-            "openemr_api": _http_probe(settings.openemr_url, client, {}),
+            "openemr_api": _http_probe(settings.openemr_url, openemr_client, {}),
             "ocr": _tesseract_probe,
-            "external_llm": _groq_probe(settings.groq_api_key, client),
+            "external_llm": _groq_probe(settings.groq_api_key, groq_client),
         }
     )
 
