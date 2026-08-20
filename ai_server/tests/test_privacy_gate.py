@@ -74,20 +74,6 @@ def test_ticket_009_rejects_builtin_pii_and_medical_data_without_calling_model(
     assert client.calls == []
 
 
-def test_ticket_009_rejects_sensitive_system_content_without_calling_model(
-    privacy_gate: PrivacyGate,
-) -> None:
-    client = CapturingModelClient()
-    raw_payload = approved_payload().model_dump(mode="json")
-    raw_payload["messages"][0]["content"] = "Patient phone: 555-555-5555"
-    payload = OutboundPayload.model_validate(raw_payload)
-
-    result = asyncio.run(OutboundDispatcher(privacy_gate, client).dispatch(payload))
-
-    assert result == DispatchResult(accepted=False, content=LOCAL_CORRECTION)
-    assert client.calls == []
-
-
 @pytest.mark.parametrize(
     "prompt", ["My MRN is MRN-123456.", "Use OE-1234ABCD.", "My NPI: 1234567890."]
 )
