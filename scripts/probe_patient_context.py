@@ -22,6 +22,7 @@ import argparse
 import base64
 import hashlib
 import json
+import re
 import secrets
 import ssl
 import sys
@@ -55,6 +56,11 @@ class ProbeError(Exception):
     """Raised when the probe cannot reach a definite verdict."""
 
 
+_UUID_RE = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
+
+
 @dataclass(frozen=True)
 class Outcome:
     """One attempted request, reduced to what is safe to retain."""
@@ -67,7 +73,9 @@ class Outcome:
     verdict: str
 
     def row(self) -> str:
-        return f"| {self.name} | `{self.method} {self.route}` | {self.status} | {self.verdict} |"
+        # The route embeds a patient UUID; redact it per the evidence policy below.
+        route = _UUID_RE.sub("<REDACTED_UUID>", self.route)
+        return f"| {self.name} | `{self.method} {route}` | {self.status} | {self.verdict} |"
 
 
 def _b64url(raw: bytes) -> str:
@@ -183,12 +191,35 @@ def exchange(base_url: str, client_id: str, client_secret: str, code: str, verif
     if status != 200:
         raise ProbeError(f"token exchange failed with {status}")
     payload = json.loads(raw)
-    if "patient" not in payload:
-        raise ProbeError(
-            "token response carried no `patient` claim — this is not a patient-context "
-            "token. Confirm you logged in as a portal patient, not a staff user."
-        )
+    # OpenEMR v8.3.0 does not put a top-level `patient` field in the token response
+    # (unlike the SMART launch-context convention this probe originally assumed). The
+    # authenticated identity is instead only recoverable from the id_token's `fhirUser`
+    # claim, so that is what proves — or disproves — patient binding.
+    payload["patient"] = _patient_uuid_from_id_token(payload.get("id_token", ""))
     return payload
+
+
+def _patient_uuid_from_id_token(id_token: str) -> str:
+    """Extract the FHIR Patient uuid from the id_token's `fhirUser` claim.
+
+    Raises ProbeError if the token carries no id_token, or if `fhirUser` resolves to a
+    non-Patient resource (e.g. Practitioner) — the signal that a staff account, not the
+    intended portal patient, authenticated.
+    """
+    parts = id_token.split(".")
+    if len(parts) != 3:
+        raise ProbeError("token response carried no usable id_token")
+    pad = "=" * (-len(parts[1]) % 4)
+    claims = json.loads(base64.urlsafe_b64decode(parts[1] + pad))
+    fhir_user = claims.get("fhirUser", "")
+    match = re.search(r"/Patient/([^/]+)$", fhir_user)
+    if not match:
+        raise ProbeError(
+            f"id_token's fhirUser claim is not a Patient resource ({fhir_user!r}) — "
+            "this is not a patient-context token. Confirm you logged in as a portal "
+            "patient, not a staff user."
+        )
+    return match.group(1)
 
 
 def _attempt(
@@ -200,7 +231,12 @@ def _attempt(
         headers["Content-Type"] = "application/json"
         raw = json.dumps(body).encode()
     status, _ = _request(method, f"{base_url}{route}", headers=headers, body=raw)
-    denied = status in (401, 403, 404)
+    # Only a genuine 2xx counts as allowed. A non-2xx status is a denial whether OpenEMR
+    # returns it cleanly (401/403/404) or via an uncaught exception (5xx) — either way no
+    # data was returned, and treating "not explicitly 401/403/404" as allowed previously
+    # misclassified a crash-on-deny as a successful cross-patient read.
+    allowed = 200 <= status < 300
+    denied = not allowed
     return Outcome(name, method, route, status, denied, "denied" if denied else "ALLOWED")
 
 
@@ -210,12 +246,8 @@ def run_matrix(base_url: str, token: str, own: str, other: str) -> list[Outcome]
     return [
         _attempt("read own", "GET", base_url, f"/apis/default/fhir/Patient/{own}", token),
         _attempt("read other", "GET", base_url, f"/apis/default/fhir/Patient/{other}", token),
-        _attempt(
-            "write own", "PUT", base_url, f"/apis/default/api/patient/{own}", token, edit
-        ),
-        _attempt(
-            "write other", "PUT", base_url, f"/apis/default/api/patient/{other}", token, edit
-        ),
+        _attempt("write own", "PUT", base_url, f"/apis/default/api/patient/{own}", token, edit),
+        _attempt("write other", "PUT", base_url, f"/apis/default/api/patient/{other}", token, edit),
     ]
 
 
