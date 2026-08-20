@@ -44,6 +44,12 @@ def test_ac4_detection_normalizes_case_and_whitespace() -> None:
     assert detect_distress("  I   FEEL   OVERWHELMED  ") is Trigger.GENERAL_DISTRESS
 
 
+def test_ac4_detection_normalizes_curly_apostrophes() -> None:
+    # iOS/word-processor autocorrect default; the corpus itself uses straight ones.
+    assert detect_distress("I can’t do this") is Trigger.GENERAL_DISTRESS
+    assert detect_distress("I can’t keep myself safe") is Trigger.IMMEDIATE_SAFETY
+
+
 def test_ac4_immediate_safety_takes_precedence_over_general_distress() -> None:
     message = "i feel overwhelmed and i want to die"
     assert detect_distress(message) is Trigger.IMMEDIATE_SAFETY
