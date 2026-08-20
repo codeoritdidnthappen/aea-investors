@@ -20,6 +20,13 @@ The documented should-level targets are less than 3.0 seconds p95 for chat/API a
 cancel, buildable) and a narrowed TICK-020 (reschedule only, permanently
 blocked). "Scheduling reads/writes" here means book/cancel.
 
+**Deferred (2026-08-20):** the local ai-server has a real, live Groq API key
+configured (not a mock) -- a genuine 20-VU/60s load test against `/api/chat`
+would fire several hundred real, metered LLM calls and spend real money.
+Explicit user direction: defer this ticket entirely and run the full load test
+later against the live/production site instead of the local demo stack. Not
+attempted here.
+
 ## Acceptance Criteria
 
 - [ ] Reproducible load scripts execute the stated 20-user, 60-second scenario.
