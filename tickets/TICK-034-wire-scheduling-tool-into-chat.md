@@ -9,6 +9,7 @@ depends_on: [TICK-010, TICK-031, TICK-035]
 labels: [chat, scheduling, langgraph]
 source: [FR-11, FR-12, FR-16, FR-20]
 status: done
+remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/71
 builder_commit: 8f7a750
 ---
 ## Context
