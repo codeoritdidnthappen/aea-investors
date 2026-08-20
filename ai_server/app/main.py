@@ -29,7 +29,16 @@ from ai_server.app.health import (
     default_health_service,
     unavailable_health_service,
 )
+from ai_server.app.onboarding_chat import (
+    OnboardingChatService,
+    onboarding_mode,
+    unavailable_onboarding_service,
+)
 from ai_server.llm.groq import GroqConfigurationError, GroqSettings, GroqWorkflow, HttpGroqClient
+from ai_server.onboarding.draft_client import AssessmentDraftAdapter, OpenEmrPortalSettings
+from ai_server.onboarding.flow import OnboardingFlow
+from ai_server.openemr.adapter import OpenEmrConfigurationError
+from ai_server.openemr.demographics import OpenEmrDemographicsAdapter, OpenEmrDemographicsSettings
 from ai_server.privacy.gate import PrivacyGate
 
 
@@ -50,6 +59,7 @@ def create_app(
     clock: Callable[[], datetime] = utc_now,
     health_service: HealthService | None = None,
     chat_service: ChatService | None = None,
+    onboarding_service: OnboardingChatService | None = None,
 ) -> FastAPI:
     """Create the AI server without exposing delegated credentials to the browser."""
 
@@ -57,6 +67,7 @@ def create_app(
     configured_authorization = authorization
     configured_health_service = health_service
     configured_chat_service = chat_service
+    configured_onboarding_service = onboarding_service
     configured_session_store: SessionStore | None = None
     owned_http_clients: list[httpx.AsyncClient] = []
 
@@ -67,6 +78,7 @@ def create_app(
             configured_authorization, \
             configured_health_service, \
             configured_chat_service, \
+            configured_onboarding_service, \
             configured_session_store
         if configured_settings is None:
             configured_settings = AuthSettings.from_environment()
@@ -109,6 +121,12 @@ def create_app(
             chat_http_client = httpx.AsyncClient(timeout=30.0)
             owned_http_clients.append(chat_http_client)
             configured_chat_service = _build_chat_service(chat_http_client, clock)
+        if configured_onboarding_service is None:
+            onboarding_http_client = httpx.AsyncClient(timeout=30.0)
+            owned_http_clients.append(onboarding_http_client)
+            configured_onboarding_service = _build_onboarding_service(
+                onboarding_http_client, store, clock
+            )
         yield
         for owned_client in owned_http_clients:
             await owned_client.aclose()
@@ -144,11 +162,21 @@ def create_app(
         if origin is None or origin.lower() != _origin_of(configured_settings.success_redirect_uri):
             raise AuthError("request origin is not allowed", 403)
         handle = request.cookies.get(configured_settings.cookie_name)
+        now = clock()
         valid = handle is not None and await asyncio.to_thread(
-            configured_session_store.active_session, handle, clock()
+            configured_session_store.active_session, handle, now
         )
         if not valid:
             raise AuthError("an active AI session is required", 401)
+        assert handle is not None  # narrows for the type checker; `valid` already required it
+        cursor = await asyncio.to_thread(configured_session_store.load_cursor, handle, now)
+        if onboarding_mode(cursor, turn.message):
+            onboarding = configured_onboarding_service or unavailable_onboarding_service(
+                configured_session_store, clock
+            )
+            return StreamingResponse(
+                onboarding.stream_reply(handle, turn.message), media_type="text/plain"
+            )
         service = configured_chat_service or unavailable_chat_service()
         return StreamingResponse(service.stream_reply(turn.message), media_type="text/plain")
 
@@ -198,6 +226,26 @@ def _build_chat_service(client: httpx.AsyncClient, clock: Callable[[], datetime]
         return unavailable_chat_service()
     workflow = GroqWorkflow(PrivacyGate.create(), HttpGroqClient(groq_settings, client))
     return ChatService(workflow=workflow, tool=NoActionTool(), clock=clock)
+
+
+def _build_onboarding_service(
+    client: httpx.AsyncClient, session_store: SessionStore, clock: Callable[[], datetime]
+) -> OnboardingChatService:
+    """Build the real OpenEMR-backed onboarding service, or a fixed-unavailable
+    fallback -- mirrors `_build_chat_service`'s tolerance of absent configuration, so a
+    demo missing the Portal/Standard API base URLs degrades onboarding instead of
+    failing startup.
+    """
+    try:
+        portal_settings = OpenEmrPortalSettings.from_environment()
+        demographics_settings = OpenEmrDemographicsSettings.from_environment()
+    except OpenEmrConfigurationError:
+        return unavailable_onboarding_service(session_store, clock)
+    flow = OnboardingFlow(
+        AssessmentDraftAdapter(portal_settings, client),
+        OpenEmrDemographicsAdapter(demographics_settings, client),
+    )
+    return OnboardingChatService(flow=flow, session_store=session_store, clock=clock)
 
 
 app = create_app()

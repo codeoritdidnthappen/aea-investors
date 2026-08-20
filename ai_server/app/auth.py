@@ -128,6 +128,13 @@ class OAuthTokens:
     access_token: str
     refresh_token: str
     id_token_nonce: str
+    # The bound patient's OpenEMR id, when the ID token exposed one (TICK-028's
+    # `evidence/TICK-028/BINDING_MATRIX.md`: this OpenEMR version confirms the bound
+    # patient via the ID token's `fhirUser`/`sub` claims, not a top-level `patient`
+    # token-response field). Optional and defaulted so an ID token without either
+    # claim still yields a usable session -- callers that need it (onboarding
+    # completion) check for `None` rather than this failing the whole exchange.
+    patient_uuid: str | None = None
 
 
 class OAuthClient(Protocol):
@@ -168,13 +175,20 @@ class OpenEmrOAuthClient:
             ) from exc
         if not isinstance(access_token, str) or not isinstance(refresh_token, str):
             raise AuthError("authorization server returned an invalid token response", 401)
-        nonce = await self._validated_jwt_nonce(id_token)
+        nonce, patient_uuid = await self._validated_claims(id_token)
         return OAuthTokens(
-            access_token=access_token, refresh_token=refresh_token, id_token_nonce=nonce
+            access_token=access_token,
+            refresh_token=refresh_token,
+            id_token_nonce=nonce,
+            patient_uuid=patient_uuid,
         )
 
-    async def _validated_jwt_nonce(self, token: object) -> str:
-        """Verify the OpenID Connect ID token before trusting its nonce claim."""
+    async def _validated_claims(self, token: object) -> tuple[str, str | None]:
+        """Verify the OpenID Connect ID token, then return its nonce and patient id.
+
+        The patient id is best-effort (see `OAuthTokens.patient_uuid`): its absence
+        does not fail an otherwise-valid, signature-verified token.
+        """
         header, claims, signed_data, signature = _jwt_parts(token)
         algorithm = header.get("alg")
         key_id = header.get("kid")
@@ -191,7 +205,7 @@ class OpenEmrOAuthClient:
         nonce = claims.get("nonce")
         if not isinstance(nonce, str):
             raise AuthError("authorization server returned an ID token without a nonce", 401)
-        return nonce
+        return nonce, _patient_uuid_from_claims(claims)
 
 
 def _jwt_parts(token: object) -> tuple[dict[str, object], dict[str, object], bytes, bytes]:
@@ -278,6 +292,23 @@ def _validate_id_token_claims(
         raise AuthError("authorization server returned invalid ID token claims", 401)
 
 
+def _patient_uuid_from_claims(claims: dict[str, object]) -> str | None:
+    """Extract the bound patient id from `fhirUser` (preferred) or `sub`, if either
+    claim is present (`evidence/TICK-028/BINDING_MATRIX.md`). `fhirUser` is a reference
+    like
+    `Patient/<uuid>`; only the id segment is kept. Returns `None` rather than raising --
+    every caller treats an unresolved patient id as "onboarding completion unavailable
+    for this session", not as an invalid login.
+    """
+    fhir_user = claims.get("fhirUser")
+    if isinstance(fhir_user, str) and fhir_user:
+        return fhir_user.rsplit("/", 1)[-1]
+    sub = claims.get("sub")
+    if isinstance(sub, str) and sub:
+        return sub
+    return None
+
+
 def _decode_base64url(value: str) -> bytes:
     return base64.urlsafe_b64decode(value + ("=" * (-len(value) % 4)))
 
@@ -314,7 +345,8 @@ class SessionStore:
                 """CREATE TABLE IF NOT EXISTS sessions (
                 handle_hash BLOB PRIMARY KEY, expires_at INTEGER NOT NULL, cursor TEXT NOT NULL,
                 access_nonce BLOB NOT NULL, access_ciphertext BLOB NOT NULL,
-                refresh_nonce BLOB NOT NULL, refresh_ciphertext BLOB NOT NULL)"""
+                refresh_nonce BLOB NOT NULL, refresh_ciphertext BLOB NOT NULL,
+                patient_nonce BLOB, patient_ciphertext BLOB)"""
             )
 
     def create_pending(self, now: datetime, ttl: timedelta) -> tuple[str, str, str]:
@@ -361,9 +393,16 @@ class SessionStore:
         refresh = self._cipher.encrypt(
             refresh_nonce, tokens.refresh_token.encode("utf-8"), handle_hash + b":refresh"
         )
+        patient_nonce: bytes | None = None
+        patient_ciphertext: bytes | None = None
+        if tokens.patient_uuid:
+            patient_nonce = os.urandom(12)
+            patient_ciphertext = self._cipher.encrypt(
+                patient_nonce, tokens.patient_uuid.encode("utf-8"), handle_hash + b":patient"
+            )
         with self._connect() as connection:
             connection.execute(
-                "INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     handle_hash,
                     _timestamp(now + ttl),
@@ -372,6 +411,8 @@ class SessionStore:
                     access,
                     refresh_nonce,
                     refresh,
+                    patient_nonce,
+                    patient_ciphertext,
                 ),
             )
         return handle
@@ -412,6 +453,45 @@ class SessionStore:
         if row is None or row[1] <= _timestamp(now) or not row[0]:
             return None
         return row[0]
+
+    def access_token(self, handle: str, now: datetime) -> str | None:
+        """Decrypt and return the delegated OpenEMR access token for an active session.
+
+        This is the only place the plaintext access token exists outside this call's
+        own stack frame; nothing here caches or logs it (TICK-035, onboarding turn
+        handling and any other future in-process OpenEMR caller needs a live token
+        the same way `active_session`/`load_cursor` already need a live cursor).
+        """
+        handle_hash = _hash(handle)
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT access_nonce, access_ciphertext, expires_at FROM sessions "
+                "WHERE handle_hash = ?",
+                (handle_hash,),
+            ).fetchone()
+        if row is None or row[2] <= _timestamp(now):
+            return None
+        try:
+            return self._cipher.decrypt(row[0], row[1], handle_hash + b":access").decode("utf-8")
+        except (InvalidTag, UnicodeDecodeError):
+            return None
+
+    def patient_uuid(self, handle: str, now: datetime) -> str | None:
+        """Decrypt and return the session's bound patient id, or `None` if never
+        captured (`OAuthTokens.patient_uuid`) or the session is absent/expired."""
+        handle_hash = _hash(handle)
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT patient_nonce, patient_ciphertext, expires_at FROM sessions "
+                "WHERE handle_hash = ?",
+                (handle_hash,),
+            ).fetchone()
+        if row is None or row[2] <= _timestamp(now) or row[0] is None or row[1] is None:
+            return None
+        try:
+            return self._cipher.decrypt(row[0], row[1], handle_hash + b":patient").decode("utf-8")
+        except (InvalidTag, UnicodeDecodeError):
+            return None
 
     def purge_expired(self, now: datetime) -> int:
         with self._connect() as connection:

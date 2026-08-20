@@ -114,7 +114,10 @@ def test_ac1_environment_settings_require_an_absolute_success_redirect_uri(
 
 
 def signed_id_token(
-    settings: AuthSettings, nonce: str, expires_at: int
+    settings: AuthSettings,
+    nonce: str,
+    expires_at: int,
+    extra_claims: dict[str, object] | None = None,
 ) -> tuple[str, dict[str, object]]:
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     public_numbers = private_key.public_key().public_numbers()
@@ -123,7 +126,13 @@ def signed_id_token(
     ).rstrip(b"=")
     claims = base64.urlsafe_b64encode(
         json.dumps(
-            {"iss": settings.issuer, "aud": settings.client_id, "exp": expires_at, "nonce": nonce}
+            {
+                "iss": settings.issuer,
+                "aud": settings.client_id,
+                "exp": expires_at,
+                "nonce": nonce,
+                **(extra_claims or {}),
+            }
         ).encode()
     ).rstrip(b"=")
     signed_data = b".".join((header, claims))
@@ -170,6 +179,74 @@ def test_ac1_code_exchange_validates_signed_id_token(tmp_path: Path) -> None:
         async with httpx.AsyncClient(transport=httpx.MockTransport(token_response)) as client:
             tokens = await OpenEmrOAuthClient(configured, client).exchange("code", "verifier")
         assert tokens.id_token_nonce == "expected"
+        # No fhirUser/sub claim on this token -- TICK-028 found this OpenEMR version
+        # carries the bound patient id there, not a top-level `patient` field; its
+        # absence must not fail an otherwise valid exchange (TICK-035).
+        assert tokens.patient_uuid is None
+
+    asyncio.run(scenario())
+
+
+def test_ac1_code_exchange_extracts_patient_uuid_from_the_fhir_user_claim(
+    tmp_path: Path,
+) -> None:
+    """TICK-035: `evidence/TICK-028/BINDING_MATRIX.md` proved the bound patient is
+    confirmed via the ID token's `fhirUser`/`sub` claims; `fhirUser` (a
+    `Patient/<uuid>` reference) is preferred when present."""
+
+    async def scenario() -> None:
+        configured = settings(tmp_path)
+        id_token, jwks = signed_id_token(
+            configured,
+            "expected",
+            int(utc_now().timestamp()) + 60,
+            extra_claims={"fhirUser": "Patient/synthetic-patient-uuid", "sub": "synthetic-sub"},
+        )
+
+        async def token_response(request: httpx.Request) -> httpx.Response:
+            if request.url == httpx.URL(configured.jwks_url):
+                return httpx.Response(200, json=jwks)
+            return httpx.Response(
+                200,
+                json={
+                    "access_token": "synthetic-access-token",
+                    "refresh_token": "synthetic-refresh-token",
+                    "id_token": id_token,
+                },
+            )
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(token_response)) as client:
+            tokens = await OpenEmrOAuthClient(configured, client).exchange("code", "verifier")
+        assert tokens.patient_uuid == "synthetic-patient-uuid"
+
+    asyncio.run(scenario())
+
+
+def test_ac1_code_exchange_falls_back_to_the_sub_claim_for_patient_uuid(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        configured = settings(tmp_path)
+        id_token, jwks = signed_id_token(
+            configured,
+            "expected",
+            int(utc_now().timestamp()) + 60,
+            extra_claims={"sub": "synthetic-sub-patient-uuid"},
+        )
+
+        async def token_response(request: httpx.Request) -> httpx.Response:
+            if request.url == httpx.URL(configured.jwks_url):
+                return httpx.Response(200, json=jwks)
+            return httpx.Response(
+                200,
+                json={
+                    "access_token": "synthetic-access-token",
+                    "refresh_token": "synthetic-refresh-token",
+                    "id_token": id_token,
+                },
+            )
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(token_response)) as client:
+            tokens = await OpenEmrOAuthClient(configured, client).exchange("code", "verifier")
+        assert tokens.patient_uuid == "synthetic-sub-patient-uuid"
 
     asyncio.run(scenario())
 
@@ -411,3 +488,43 @@ def test_save_cursor_is_a_no_op_for_an_unknown_or_expired_session(tmp_path: Path
     store.save_cursor("unknown-handle", "draft-1", NOW)
 
     assert database_row(configured.database_path, "SELECT count(*) FROM sessions") == (0,)
+
+
+def test_access_token_round_trips_and_respects_expiry(tmp_path: Path) -> None:
+    """TICK-035: `OnboardingFlow` needs the caller's delegated access token per call;
+    this is the only place it's ever decrypted back to plaintext."""
+    configured = settings(tmp_path)
+    store = SessionStore(configured.database_path, configured.encryption_key)
+    store.initialize()
+    handle = store.create_session(
+        OAuthTokens("synthetic-access-token", "synthetic-refresh-token", "nonce"),
+        NOW,
+        timedelta(minutes=30),
+    )
+
+    assert store.access_token(handle, NOW) == "synthetic-access-token"
+    assert store.access_token("unknown-handle", NOW) is None
+    assert store.access_token(handle, NOW + timedelta(hours=1)) is None
+
+
+def test_patient_uuid_round_trips_and_defaults_to_none_when_never_captured(
+    tmp_path: Path,
+) -> None:
+    configured = settings(tmp_path)
+    store = SessionStore(configured.database_path, configured.encryption_key)
+    store.initialize()
+    bound_handle = store.create_session(
+        OAuthTokens("access", "refresh", "nonce", patient_uuid="synthetic-patient-uuid"),
+        NOW,
+        timedelta(minutes=30),
+    )
+    unbound_handle = store.create_session(
+        OAuthTokens("access", "refresh", "nonce"),
+        NOW,
+        timedelta(minutes=30),
+    )
+
+    assert store.patient_uuid(bound_handle, NOW) == "synthetic-patient-uuid"
+    assert store.patient_uuid(unbound_handle, NOW) is None
+    assert store.patient_uuid("unknown-handle", NOW) is None
+    assert store.patient_uuid(bound_handle, NOW + timedelta(hours=1)) is None
