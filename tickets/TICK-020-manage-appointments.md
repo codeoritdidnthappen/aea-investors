@@ -5,10 +5,9 @@ type: feature
 epic: EPIC-07
 priority: P1
 estimate: L
-depends_on: [TICK-018, TICK-019]
+depends_on: [TICK-018, TICK-019, TICK-034, TICK-036]
 labels: [scheduling, openemr]
 source: [FR-13, FR-20, FR-28, NFR-11]
-depends_on: [TICK-018, TICK-019, TICK-034, TICK-036]
 status: todo
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/21
 ---
