@@ -8,8 +8,9 @@ estimate: XS
 depends_on: [TICK-017]
 labels: [onboarding]
 source: [FR-30]
-status: todo
+status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/55
+builder_commit: 214b589
 ---
 
 ## Context
