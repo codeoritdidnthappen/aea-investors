@@ -49,12 +49,32 @@ class AuthSettings:
     cookie_name: str = "ai_session"
     session_ttl: timedelta = timedelta(hours=8)
     state_ttl: timedelta = timedelta(minutes=10)
+    # Patient-context (`patient/*`) only -- never `user/*` (TICK-033). A `user/*` scope
+    # forces OpenEMR's registration flow to treat this confidential client as needing
+    # the full staff resource-permission consent screen; a genuine patient should never
+    # see that for a scheduling chat assistant (evidence/TICK-024/DESKTOP_E2E_EVIDENCE.md,
+    # finding 2). `api:oemr`/`api:fhir`/`api:port` are the bare umbrella scopes the
+    # Standard/FHIR/Portal API surfaces require; the rest map one-to-one to what this
+    # server actually calls on the patient's behalf: `patient/Patient.read`
+    # (`ai_server/openemr/demographics.py`-adjacent demographics reads),
+    # `patient/Appointment.read` (`ai_server/openemr/adapter.py`'s FHIR appointment
+    # list), `patient/appointment.u` (`ai_server/scheduling/cancel.py`'s module-added
+    # cancel route), and `patient/assessment.{c,r,u}` (`ai_server/onboarding/
+    # draft_client.py`'s module-added assessment-draft route). See
+    # evidence/TICK-033/OAUTH_SCOPE_EVIDENCE.md for the live proof and two related,
+    # unfixed upstream findings this scope change surfaced.
     scopes: tuple[str, ...] = (
         "openid",
         "offline_access",
         "api:oemr",
-        "user/patient.crus",
-        "user/appointment.cruds",
+        "api:fhir",
+        "api:port",
+        "patient/Patient.read",
+        "patient/Appointment.read",
+        "patient/appointment.u",
+        "patient/assessment.c",
+        "patient/assessment.r",
+        "patient/assessment.u",
     )
 
     @classmethod

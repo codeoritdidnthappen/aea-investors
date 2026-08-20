@@ -54,8 +54,12 @@ will warn about the untrusted local development certificate the first time — t
 is expected, see step 8) with `OE_USER`/`OE_PASS` from `.env`, then register a
 confidential OAuth client (Admin > System > API Clients, or
 `POST /oauth2/default/registration`) with redirect URI `OPENEMR_OAUTH_REDIRECT_URI`
-and the scopes in `ai_server/app/auth.py` (`AuthSettings.scopes`). Copy the issued
-client ID/secret into `.env`, then:
+and the scopes in `ai_server/app/auth.py` (`AuthSettings.scopes`) — `patient/*` only,
+never `user/*` (TICK-033: a `user/*` scope makes OpenEMR show a genuine patient a
+staff-style resource-permission consent screen at login, which this product must
+never do). A confidential client registered with only `patient/*` scopes is enabled
+automatically; no separate manual "Enable" step in Admin > System > API Clients is
+needed for this client. Copy the issued client ID/secret into `.env`, then:
 
 ```sh
 docker compose up -d ai-server
