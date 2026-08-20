@@ -528,3 +528,33 @@ def test_patient_uuid_round_trips_and_defaults_to_none_when_never_captured(
     assert store.patient_uuid(unbound_handle, NOW) is None
     assert store.patient_uuid("unknown-handle", NOW) is None
     assert store.patient_uuid(bound_handle, NOW + timedelta(hours=1)) is None
+
+
+def test_initialize_migrates_a_sessions_table_predating_patient_columns(
+    tmp_path: Path,
+) -> None:
+    """Confirmed live: CREATE TABLE IF NOT EXISTS is a no-op against a `sessions`
+    table that already exists from before patient_nonce/patient_ciphertext were
+    added, so create_session()'s 9-value INSERT crashed with sqlite3.OperationalError
+    against a pre-existing 7-column table on the very first login. `initialize()`
+    must add the missing columns instead of silently leaving the old schema."""
+    configured = settings(tmp_path)
+    with sqlite3.connect(configured.database_path) as connection:
+        connection.execute(
+            """CREATE TABLE sessions (
+            handle_hash BLOB PRIMARY KEY, expires_at INTEGER NOT NULL, cursor TEXT NOT NULL,
+            access_nonce BLOB NOT NULL, access_ciphertext BLOB NOT NULL,
+            refresh_nonce BLOB NOT NULL, refresh_ciphertext BLOB NOT NULL)"""
+        )
+
+    store = SessionStore(configured.database_path, configured.encryption_key)
+    store.initialize()
+
+    handle = store.create_session(
+        OAuthTokens("access", "refresh", "nonce", patient_uuid="synthetic-patient-uuid"),
+        NOW,
+        timedelta(minutes=30),
+    )
+
+    assert store.access_token(handle, NOW) == "access"
+    assert store.patient_uuid(handle, NOW) == "synthetic-patient-uuid"
