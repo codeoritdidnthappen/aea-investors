@@ -10,7 +10,7 @@ labels: [ocr, privacy, tesseract]
 source: [FR-6, FR-7, FR-21, FR-22, FR-23, FR-25, NFR-23, NFR-29]
 status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/15
-builder_commit: 92afe68
+builder_commit: 49474ac
 ---
 ## Context
 

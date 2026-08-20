@@ -10,7 +10,7 @@ labels: [chat, frontend, accessibility]
 source: [FR-4, FR-18, FR-19, NFR-7, NFR-19]
 status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/14
-builder_commit: 9c4d778
+builder_commit: 5889ea3
 ---
 ## Context
 

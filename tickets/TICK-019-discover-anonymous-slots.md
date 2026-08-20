@@ -10,7 +10,7 @@ labels: [scheduling, privacy, llm]
 source: [FR-10, FR-11, FR-20, NFR-5, NFR-12]
 status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/20
-builder_commit: 7aef40e
+builder_commit: d77cb99
 ---
 ## Context
 
