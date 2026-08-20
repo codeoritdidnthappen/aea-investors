@@ -89,6 +89,20 @@ class GroqClient(Protocol):
         """Stream a final response after an authoritative tool result exists."""
 
 
+def _strict_schema(schema: dict[str, object]) -> dict[str, object]:
+    """Satisfy Groq/OpenAI strict structured-output mode's `required` rule.
+
+    Strict mode has no notion of an optional property (confirmed live: Groq 400s
+    with "every key in properties" must be `required`, even though Pydantic only
+    lists non-default fields there); a nullable type union is how an optional
+    field is expressed instead, which PlanningOutput's `slot_token` already is.
+    """
+    properties = schema.get("properties")
+    if isinstance(properties, dict):
+        schema = {**schema, "required": list(properties.keys())}
+    return schema
+
+
 class HttpGroqClient:
     """OpenAI-compatible Groq transport; credentials never leave this server."""
 
@@ -166,7 +180,7 @@ class HttpGroqClient:
                 "json_schema": {
                     "name": "scheduling_plan",
                     "strict": True,
-                    "schema": PlanningOutput.model_json_schema(),
+                    "schema": _strict_schema(PlanningOutput.model_json_schema()),
                 },
             }
         return body
@@ -231,9 +245,7 @@ class GroqWorkflow:
             yield UNAVAILABLE_RESPONSE
 
     def _safe(self, payload: OutboundPayload) -> bool:
-        return not any(
-            self._gate.has_sensitive_text(content) for content in payload.message_contents()
-        )
+        return not self._gate.has_sensitive_text(payload.user_message_content())
 
     @staticmethod
     def _final_payload(
