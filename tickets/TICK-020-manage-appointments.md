@@ -8,18 +8,19 @@ estimate: L
 depends_on: [TICK-018, TICK-019]
 labels: [scheduling, openemr]
 source: [FR-13, FR-20, FR-28, NFR-11]
-status: blocked
+depends_on: [TICK-018, TICK-019, TICK-034, TICK-036]
+status: todo
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/21
-blocked_reason: "Narrowed 2026-08-20 to reschedule only (see note below): OpenEMR v8.3.0's AppointmentService has no update method for an existing appointment's date/time/duration -- only ~150 lines of inline SQL in the legacy interface/main/calendar/add_edit_event.php page, tangled with recurrence/multi-provider branching, not a callable service. Implementing reschedule would mean new raw pc_event writes, exactly the workaround evidence/TICK-001/ENDPOINT_MATRIX.md already rejects. Booking and cancel-by-status, this ticket's other two parts, are NOT blocked -- see TICK-031."
 ---
 ## Context
 
 Appointment writes occur only after a deterministic OpenEMR call; the assistant may not claim success before that response.
 
-`depends_on` still includes TICK-019 after the reschedule-only narrowing: moving an
-existing appointment to a new time needs TICK-019's anonymous-slot discovery to find
-a genuinely open target slot, the same as booking does, not just TICK-018's read
-adapter.
+`depends_on` still includes TICK-019: moving an existing appointment to a new
+time needs TICK-019's anonymous-slot discovery to find a genuinely open
+target slot, the same as booking does, not just TICK-018's read adapter. Now
+also depends on TICK-034 (booking) and TICK-036 (cancellation), both done --
+see "Re-scoped" below.
 
 ## Scope narrowed (2026-08-20)
 
@@ -27,17 +28,56 @@ This ticket bundled book + reschedule + cancel. Investigation (mirroring TICK-01
 own gap-resolution) found booking and cancel-by-status are both buildable --
 `AppointmentService::insert()` and `AppointmentService::updateAppointmentStatus()`
 are real, callable OpenEMR business logic, the same class of mechanism TICK-017
-used. Split out as **TICK-031** (`status: todo`, not yet built). Reschedule alone
-has no such call path and stays blocked here; see `blocked_reason`.
+used. Split out as **TICK-031** (built as TICK-034/036). Reschedule alone had
+no such call path and stayed blocked here -- OpenEMR v8.3.0's AppointmentService
+has no update method for an existing appointment's date/time/duration, only
+~150 lines of inline SQL in the legacy `interface/main/calendar/add_edit_event.php`
+page, not a callable service; implementing an in-place reschedule would mean
+new raw `pc_event` writes, exactly the workaround `evidence/TICK-001/ENDPOINT_MATRIX.md`
+rejects.
+
+## Re-scoped (2026-08-20): reschedule as cancel-then-rebook
+
+Re-examined now that TICK-034 (booking) and TICK-036 (cancellation) both
+ship real, callable OpenEMR business logic. FR-28 requires appointment
+actions to "use the booking, rescheduling, cancellation, notice, and
+eligibility rules already enforced by OpenEMR" -- since OpenEMR has no
+distinct reschedule-specific enforcement to defer to, composing the two
+rules it *does* enforce (booking, cancellation) is a faithful reading of
+FR-28, not a workaround. FR-13 only requires "reschedule an existing
+appointment to an open slot" -- it does not require preserving the original
+appointment's OpenEMR id, so a new appointment record for the new slot is an
+acceptable outcome.
+
+**This is not atomic across the two OpenEMR calls** (they are separate REST
+requests, not one DB transaction) -- the acceptance criteria below exist
+specifically to make the partial-failure case (old appointment cancelled,
+new one fails to book) honest rather than silently lossy.
 
 ## Acceptance Criteria
 
-- [ ] A patient can reschedule an existing appointment through a deterministic
-      OpenEMR call, with no invented commitment on conflict.
+- [ ] A patient can reschedule an existing appointment by composing the real
+      `CancellationService.cancel()` (TICK-036) and `BookingService`/booking
+      call (TICK-034) -- no new raw SQL, no new OpenEMR write path.
+- [ ] The new slot is booked and confirmed by OpenEMR *before* the original
+      appointment is cancelled, so a slot that's no longer open (already
+      taken, stale token, etc.) never leaves the patient with both
+      appointments cancelled and nothing rebooked.
+- [ ] If cancelling the original appointment fails after the new one was
+      successfully booked, the patient is told plainly that the new
+      appointment is confirmed but the old one may still be active, and to
+      contact the clinic if it isn't cancelled -- never silently drop or
+      paper over that state.
+- [ ] The assistant never claims a reschedule succeeded before both real
+      OpenEMR calls it depends on have actually returned success.
 
 ## Testing
 
-Run synthetic OpenEMR end-to-end reschedule operations and stale-conflict tests against the local pinned Docker stack. CI must be green.
+Run synthetic OpenEMR end-to-end reschedule operations against the local
+pinned Docker stack, including: happy path (book-then-cancel both succeed),
+stale/conflicting target slot (book fails, original appointment untouched),
+and cancellation failure after a successful rebook (both real OpenEMR
+responses, not simulated). CI must be green.
 
 ## Out of Scope
 
