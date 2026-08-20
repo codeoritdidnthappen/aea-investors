@@ -8,8 +8,9 @@ estimate: M
 depends_on: [TICK-031, TICK-023]
 labels: [performance, k6, verification]
 source: [NFR-13, NFR-14]
-status: todo
+status: blocked
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/27
+blocked_reason: "Deferred 2026-08-20 per explicit user direction: the local ai-server has a real, live Groq API key (not a mock); a genuine 20-VU/60s load test against /api/chat would spend real money hitting it several hundred times. Run the full load test later against the live/production site instead of locally. Not an implementation blocker -- unblock by re-scoping to production or by explicit re-authorization to spend against the local key."
 ---
 
 ## Context
