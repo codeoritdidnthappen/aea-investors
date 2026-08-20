@@ -249,16 +249,19 @@ def test_reschedule_has_no_callable_path_in_ai_server_scheduling() -> None:
 
 
 def test_reschedule_is_documented_as_not_exposed_not_applicable() -> None:
-    """TICK-020 (reschedule) stays permanently blocked -- no OpenEMR service method
-    exists (`blocked_reason` in its own ticket file) -- and this ticket's own AC says
-    reschedule must be documented as not exposed/not applicable rather than verified.
-    Checking the committed files directly (not a hand-copied assumption) keeps this
-    test honest if either one is ever edited.
+    """TICK-020 (reschedule) is not yet built: re-scoped 2026-08-20 to a
+    cancel-then-rebook plan that explicitly depends on TICK-039 landing first
+    (`depends_on` in its own ticket file), because no OpenEMR service method for an
+    in-place reschedule exists on this pinned release either way. This ticket's own
+    AC says reschedule must be documented as not exposed/not applicable rather than
+    verified until then. Checking the committed files directly (not a hand-copied
+    assumption) keeps this test honest if either one is ever edited.
     """
     tick_020 = (_REPO_ROOT / "tickets" / "TICK-020-manage-appointments.md").read_text(
         encoding="utf-8"
     )
-    assert "status: blocked" in tick_020
+    assert "status: todo" in tick_020
+    assert "TICK-039" in tick_020
     assert "no OpenEMR service method exists" in tick_020 or "no update method" in tick_020
 
     matrix = (_REPO_ROOT / "evidence" / "TICK-021" / "PARITY_MATRIX.md").read_text(encoding="utf-8")

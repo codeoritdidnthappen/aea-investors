@@ -172,7 +172,7 @@ class HttpGroqClient:
     ) -> dict[str, object]:
         body: dict[str, object] = {
             "model": GROQ_MODEL,
-            "messages": [message.model_dump() for message in payload.messages],
+            "messages": HttpGroqClient._wire_messages(payload),
             "stream": stream,
         }
         if structured:
@@ -185,6 +185,42 @@ class HttpGroqClient:
                 },
             }
         return body
+
+    @staticmethod
+    def _wire_messages(payload: OutboundPayload) -> list[dict[str, str]]:
+        """Fold `scheduling_context`/`scheduling_rules` into the system message text
+        actually sent to Groq (TICK-039).
+
+        `OutboundPayload.messages` is the architecture-approved *internal* contract --
+        exactly a system then a user message -- that the privacy gate and every other
+        caller of this payload still rely on unchanged. `scheduling_context`/
+        `scheduling_rules` live as separate top-level fields on that same payload
+        (mirroring ARCHITECTURE.md's "Approved external request shape" example), but
+        two live findings ruled out sending them as sibling top-level JSON keys in the
+        actual Groq request body: Groq's real chat completions endpoint 400s on any
+        top-level property it does not recognize (confirmed live: `{"error":{"message":
+        "property 'scheduling_context' is unsupported", ...}}`), and even if it
+        tolerated them, an OpenAI-compatible completions endpoint only ever feeds
+        `messages[].content` to the model -- an unrecognized sibling key is never part
+        of the prompt regardless. This was the actual root cause of TICK-039: with only
+        the fixed `messages` previously sent, Groq correctly planned `intent="cancel"`
+        from the user's text but always returned `appointment_token=null` because it
+        was never given `current_appointments` to select from, so `BookingTool.
+        execute()`'s `plan.appointment_token is not None` check always fell through to
+        `NoActionTool` -- not a prompt-following gap. Appending the same data as JSON
+        text on the system message is the one channel that reaches the model;
+        confirmed live it lets the model resolve a real appointment_token.
+        """
+        system_message, user_message = payload.messages
+        system_content = (
+            f"{system_message.content}\n\n"
+            f"scheduling_context: {payload.scheduling_context.model_dump_json()}\n\n"
+            f"scheduling_rules: {payload.scheduling_rules.model_dump_json()}"
+        )
+        return [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": user_message.content},
+        ]
 
     @staticmethod
     def _content(response: object) -> str:
