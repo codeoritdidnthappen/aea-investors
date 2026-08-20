@@ -8,7 +8,7 @@ estimate: M
 depends_on: [TICK-017, TICK-035]
 labels: [auth, openemr, oauth]
 source: [FR-5, FR-8, FR-27, NFR-25]
-status: todo
+status: done
 ---
 
 ## Context
@@ -76,22 +76,95 @@ authorize+token exchange) before attempting a fix.
 bug -- not yet verified live, since onboarding failed first and cancellation
 was not reached this pass.
 
+## Root Cause (confirmed 2026-08-20, live)
+
+Neither remaining hypothesis above was right. The actual drop happens on the
+consent screen itself, client-side, before the approval POST is even sent.
+
+`templates/oauth2/scope-authorize.html.twig` is not a custom file in this
+project -- it is OpenEMR 8.3.0's own real, upstream template (merged via
+openemr/openemr#9457 and #9466, "granular scopes", closing issue #8639;
+confirmed against the real `v8_3_0` tag on GitHub). Its `reconstructScopes()`
+JS has two independent bugs that only manifest for a `RestApiScopeEvent`
+module scope like `assessment`, never for this app's core FHIR scopes:
+
+1. `reconstructV2Scope()` only emits a scope input via its restricted-category
+   loop or its `unrestricted`-flagged else-branch. A resource with **no**
+   restriction sub-categories and `isUnrestricted=false` (the module's
+   server-side scope-structuring code apparently defaults unrecognized custom
+   resources to `false`) falls into neither branch -- its checkbox displays
+   checked, but nothing is ever added to the submitted form. Confirmed via a
+   client-side interceptor on `form.submit()`: before the fix, `assessment`
+   never appeared in the POST body at all.
+2. Once made to emit something, the original code joined every checked
+   action into one combined string per resource (e.g. `patient/assessment.cru`
+   for create+read+update). OpenEMR's `ResourceScopeEntityList::containsScope()`
+   (`src/Common/Auth/OpenIDConnect/Entities/ResourceScopeEntityList.php`)
+   checks each of a resource's *individually registered* scope entities on
+   its own and never unions their permissions across entries. Since the
+   module registers `patient/assessment.c`, `.r`, `.u` as three separate
+   single-action `addScope()` calls (`AssessmentDraftController::addScopes()`),
+   no single registered entity alone covers a combined `.cru` request, so it
+   silently failed `containsScope()` in `AuthorizationController::
+   updateAuthRequestWithUserApprovedScopes()` and never made it into the
+   persisted `AuthorizationRequest`, `finalizeScopes()`, or the issued token.
+   Confirmed by reading `ScopeEntity::containsScope()`,
+   `ScopeValidatorFactory::buildScopeValidatorArray()`, and
+   `ResourceScopeEntityList` directly, then reproducing exactly this failure
+   live with the first (action-joining) version of the fix.
+
+Fix: `reconstructV2Scope()` now emits one atomic `${context}/${resource}.${action}`
+scope string per checked action (never joined), and resources with no
+restriction options honor the master checkbox directly instead of falling
+into the restricted-only branch. This is strictly compatible with core FHIR
+resources too (an atomic single-action scope is always contained by a
+resource whose scopes happen to be registered pre-combined), so nothing that
+worked before regresses.
+
+Since this is a genuine bug in the pinned release's own vendor file rather
+than anything this project authored, the fix is a targeted override, not a
+modification of the checked-out image: the patched file lives at
+`openemr_overrides/templates/oauth2/scope-authorize.html.twig` and is
+bind-mounted read-only over the vendor path in `deploy/local/docker-compose.yml`,
+the same pattern already used for `openemr_modules/aeai-portal-chat` (TICK-012).
+No core file inside the container/image itself was edited in place.
+
+Live proof: a real `/oauth/launch` login as Avery, through consent, to a real
+onboarding-start chat turn, produced `POST /apis/dispatch.php/default/portal/patient/assessment`
+returning **201** (previously: 401, `"scope patient/assessment.c not in
+access token"`), and inserted a real `draft` row into `aeai_assessment_draft`
+for the correct `patient_uuid`. The scope-drop bug is conclusively fixed.
+
+A **separate, new bug** surfaced during this same verification pass: the AI
+server's own response handling (`ai_server/onboarding/draft_client.py`) fails
+to parse that 201 response (`OpenEMR returned an invalid assessment draft
+response`) even though the OpenEMR-side row is correct -- filed as TICK-038,
+out of scope for this ticket.
+
+Cancellation's `patient/appointment.u` (TICK-036) was **not** independently
+broken -- it only ever has one checked action, so the join-based bug never
+applied to it; it should be unaffected by both the bug and this fix, but has
+still not been verified live end-to-end (separate from this ticket).
+
 ## Acceptance Criteria
 
-- [ ] Root cause is confirmed with direct evidence (not just the two
+- [x] Root cause is confirmed with direct evidence (not just the two
       remaining hypotheses above) for why a custom `RestApiScopeEvent`
       scope is absent from an issued access token despite being consented
       and present on the client's registration.
-- [ ] A genuine patient login through the real `/oauth/launch` flow, followed
+- [x] A genuine patient login through the real `/oauth/launch` flow, followed
       by a real onboarding-start turn, succeeds in creating an assessment
       draft through `POST /portal/patient/assessment` -- proven live, not
-      just against a raw HTTP probe.
+      just against a raw HTTP probe. (OpenEMR-side creation confirmed live;
+      the AI server's own response parsing hits a separate bug, TICK-038.)
 - [ ] The same live proof for cancellation's `patient/appointment.u` scope
-      (TICK-036), confirming whether it was independently affected.
-- [ ] No core OpenEMR file is modified to fix this (ADR/ARCHITECTURE.md's
+      (TICK-036), confirming whether it was independently affected. (Reasoned
+      to be unaffected -- see Root Cause -- but not yet proven live.)
+- [x] No core OpenEMR file is modified to fix this (ADR/ARCHITECTURE.md's
       standing constraint); the fix lives in the module's own registration
       code, an AI-server-side workaround, or documents a genuine, unfixable
-      platform limitation if that's what's found.
+      platform limitation if that's what's found. (Bind-mounted override,
+      not an in-place edit to the checked-out vendor file.)
 
 ## Testing
 

@@ -53,6 +53,11 @@ services:
       # The patient-portal AI chat entry (TICK-012), bind-mounted read-only into the
       # pinned image's custom-module directory rather than baking a forked image.
       - ../../openemr_modules/aeai-portal-chat:/var/www/localhost/htdocs/openemr/interface/modules/custom_modules/aeai-portal-chat:ro
+      # TICK-037: a targeted patch to a bug in this pinned release's own OAuth
+      # consent-screen template (see openemr_overrides/templates/oauth2/scope-authorize.html.twig
+      # for the full explanation), not a custom feature -- same bind-mount-over-vendor-path
+      # approach as the module mount above, applied to a single core file instead.
+      - ../../openemr_overrides/templates/oauth2/scope-authorize.html.twig:/var/www/localhost/htdocs/openemr/templates/oauth2/scope-authorize.html.twig:ro
     healthcheck:
       test:
         [
