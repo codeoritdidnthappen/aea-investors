@@ -24,9 +24,10 @@ among the 10 dashboard buttons, and the section isn't part of the accordion
 page, requiring ~600px of scroll past a fully-rendered dashboard with no
 visual cue anything is below.
 
-`evidence/TICK-002/PORTAL_HOOK_EVIDENCE.md` already identified `RenderEvent::
-EVENT_DASHBOARD_INJECT_CARD` as the documented-intent mechanism for exactly
-this launcher-tile use case; TICK-002/012 used `EVENT_SECTION_RENDER_POST`
+`tickets/TICK-002-select-portal-hook.md`'s own four-row event table already
+identified `RenderEvent::EVENT_DASHBOARD_INJECT_CARD` as the documented-intent
+mechanism for exactly this launcher-tile use case; TICK-002/012 used
+`EVENT_SECTION_RENDER_POST`
 instead, which doesn't create a tile.
 
 ## Acceptance Criteria
