@@ -277,6 +277,9 @@ def test_ac3_callback_sets_only_secure_httponly_ai_session_cookie(tmp_path: Path
         assert callback.headers["location"] == configured.success_redirect_uri
         assert "httponly" in cookie
         assert "secure" in cookie
+        # The chat page is embedded as a cross-site iframe (TICK-012): samesite=lax
+        # would silently withhold this cookie from the iframe's own fetch call.
+        assert "samesite=none" in cookie
         assert "synthetic-access-token" not in cookie
         assert "synthetic-refresh-token" not in cookie
 

@@ -133,7 +133,14 @@ def create_app(
             handle,
             httponly=True,
             secure=True,
-            samesite="lax",
+            # The chat page is embedded as a cross-site iframe inside the OpenEMR
+            # portal (TICK-012): browsers compute SameSite against the top-level
+            # document's site, so Lax would silently withhold this cookie from the
+            # iframe's own fetch("/api/chat") call. `secure=True` is required for
+            # None, and /api/chat only accepts an application/json POST body with
+            # no permissive CORS policy configured, so a cross-site page still
+            # can't complete a forged request (the preflight has nothing to pass).
+            samesite="none",
             path="/",
         )
         return response
