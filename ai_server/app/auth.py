@@ -164,11 +164,9 @@ class OpenEmrOAuthClient:
         if jwks_response.status_code != 200:
             raise AuthError("authorization server keys are unavailable", 401)
         jwks: object = jwks_response.json()
-        key = _jwks_key(jwks, key_id)
-        try:
-            key.verify(signature, signed_data, padding.PKCS1v15(), hashes.SHA256())
-        except InvalidSignature as exc:
-            raise AuthError("authorization server returned an invalid ID token", 401) from exc
+        keys = _jwks_keys(jwks, key_id)
+        if not _verify_with_any_key(keys, signature, signed_data):
+            raise AuthError("authorization server returned an invalid ID token", 401)
         _validate_id_token_claims(claims, self._settings, utc_now())
         nonce = claims.get("nonce")
         if not isinstance(nonce, str):
@@ -193,20 +191,19 @@ def _jwt_parts(token: object) -> tuple[dict[str, object], dict[str, object], byt
     return header, claims, f"{parts[0]}.{parts[1]}".encode("ascii"), signature
 
 
-def _jwks_key(jwks: object, key_id: str | None) -> rsa.RSAPublicKey:
+def _jwks_keys(jwks: object, key_id: str | None) -> list[rsa.RSAPublicKey]:
     if not isinstance(jwks, dict) or not isinstance(jwks.get("keys"), list):
         raise AuthError("authorization server returned invalid signing keys", 401)
     candidates = jwks["keys"]
-    # OpenEMR's OIDC responses omit `kid` from both the ID token header and its
-    # single-entry JWKS (confirmed live: steverhoades/oauth2-openid-connect-server's
-    # IdTokenResponse only sets `kid` when constructed with a $keyIdentifier, which
-    # OpenEMR never passes). Without a kid to match on, the only key-selection that
-    # stays unambiguous is exactly one published key.
-    if key_id is None:
-        if len(candidates) != 1:
-            raise AuthError("authorization server signing key was not found", 401)
-    else:
+    # OpenEMR's OIDC responses omit `kid` from both the ID token header and its JWKS
+    # (confirmed live: steverhoades/oauth2-openid-connect-server's IdTokenResponse
+    # only sets `kid` when constructed with a $keyIdentifier, which OpenEMR never
+    # passes). Without a kid to filter by, collect every published RSA key and let
+    # the caller's signature check -- not a count -- decide which one actually
+    # signed this token; that stays correct through a key rotation too.
+    if key_id is not None:
         candidates = [c for c in candidates if isinstance(c, dict) and c.get("kid") == key_id]
+    keys: list[rsa.RSAPublicKey] = []
     for candidate in candidates:
         if not isinstance(candidate, dict):
             continue
@@ -217,15 +214,29 @@ def _jwks_key(jwks: object, key_id: str | None) -> rsa.RSAPublicKey:
             or not isinstance(modulus, str)
             or not isinstance(exponent, str)
         ):
-            break
+            continue
         try:
-            return rsa.RSAPublicNumbers(
-                int.from_bytes(_decode_base64url(exponent), "big"),
-                int.from_bytes(_decode_base64url(modulus), "big"),
-            ).public_key()
+            keys.append(
+                rsa.RSAPublicNumbers(
+                    int.from_bytes(_decode_base64url(exponent), "big"),
+                    int.from_bytes(_decode_base64url(modulus), "big"),
+                ).public_key()
+            )
         except (ValueError, binascii.Error) as exc:
             raise AuthError("authorization server returned an invalid signing key", 401) from exc
-    raise AuthError("authorization server signing key was not found", 401)
+    if not keys:
+        raise AuthError("authorization server signing key was not found", 401)
+    return keys
+
+
+def _verify_with_any_key(keys: list[rsa.RSAPublicKey], signature: bytes, signed_data: bytes) -> bool:
+    for key in keys:
+        try:
+            key.verify(signature, signed_data, padding.PKCS1v15(), hashes.SHA256())
+            return True
+        except InvalidSignature:
+            continue
+    return False
 
 
 def _validate_id_token_claims(
