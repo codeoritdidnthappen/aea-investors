@@ -1,9 +1,10 @@
-"""Tests for wiring the real booking tool into `ChatService` (TICK-034 AC5).
+"""Tests for wiring the real booking/cancellation tool into `ChatService` (TICK-034
+AC5, TICK-036).
 
 `_build_scheduling_tool` mirrors `_build_onboarding_service`'s tolerance of absent
-OpenEMR configuration: every environment missing the Standard API/FHIR base URLs or
-the admin-configured booking fields gets today's fixed no-action tool and no slot
-discovery, instead of a startup failure.
+OpenEMR configuration: every environment missing the Standard/FHIR/Portal API base
+URLs or the admin-configured booking fields gets today's fixed no-action tool and no
+slot/appointment discovery, instead of a startup failure.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ import pytest
 from ai_server.app.chat import BookingTool, NoActionTool
 from ai_server.app.main import _build_chat_service, _build_scheduling_tool
 from ai_server.llm.groq import PlanningOutput
+from ai_server.scheduling.appointments import AppointmentDiscoveryService
 from ai_server.scheduling.slots import SlotDiscoveryService
 
 NOW = datetime(2026, 8, 25, 9, 0, tzinfo=timezone.utc)
@@ -24,6 +26,7 @@ NOW = datetime(2026, 8, 25, 9, 0, tzinfo=timezone.utc)
 _REQUIRED_ENV = {
     "OPENEMR_API_BASE_URL": "https://openemr.test/apis/default/api",
     "OPENEMR_FHIR_BASE_URL": "https://openemr.test/apis/default/fhir",
+    "OPENEMR_PORTAL_BASE_URL": "https://openemr.test/apis/default",
     "AI_BOOKING_CATEGORY_ID": "5",
     "AI_BOOKING_TITLE": "Office Visit",
     "AI_BOOKING_FACILITY_ID": "9",
@@ -46,9 +49,10 @@ def test_missing_openemr_settings_falls_back_to_the_no_action_tool_and_no_discov
     _clear_env(monkeypatch)
     client = httpx.AsyncClient()
 
-    factory, discovery = _build_scheduling_tool(client)
+    factory, slot_discovery, appointment_discovery = _build_scheduling_tool(client)
 
-    assert discovery is None
+    assert slot_discovery is None
+    assert appointment_discovery is None
     tool = factory("token", "patient-uuid", NOW)
     assert isinstance(tool, NoActionTool)
     result = run(tool.execute(PlanningOutput(intent="book", slot_token="slot_" + "a" * 20)))
@@ -59,11 +63,31 @@ def test_missing_only_the_booking_fields_still_falls_back(monkeypatch: pytest.Mo
     _clear_env(monkeypatch)
     monkeypatch.setenv("OPENEMR_API_BASE_URL", _REQUIRED_ENV["OPENEMR_API_BASE_URL"])
     monkeypatch.setenv("OPENEMR_FHIR_BASE_URL", _REQUIRED_ENV["OPENEMR_FHIR_BASE_URL"])
+    monkeypatch.setenv("OPENEMR_PORTAL_BASE_URL", _REQUIRED_ENV["OPENEMR_PORTAL_BASE_URL"])
     client = httpx.AsyncClient()
 
-    factory, discovery = _build_scheduling_tool(client)
+    factory, slot_discovery, appointment_discovery = _build_scheduling_tool(client)
 
-    assert discovery is None
+    assert slot_discovery is None
+    assert appointment_discovery is None
+    assert isinstance(factory("token", "patient-uuid", NOW), NoActionTool)
+
+
+def test_missing_only_the_portal_base_url_still_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    """TICK-036: cancellation's `AppointmentCancelAdapter` needs the Portal API base
+    URL too; absent it, the whole scheduling tool (including booking) stays disabled,
+    the same all-or-nothing tolerance `_build_scheduling_tool` already gives every
+    other required setting."""
+    _clear_env(monkeypatch)
+    for name, value in _REQUIRED_ENV.items():
+        if name != "OPENEMR_PORTAL_BASE_URL":
+            monkeypatch.setenv(name, value)
+    client = httpx.AsyncClient()
+
+    factory, slot_discovery, appointment_discovery = _build_scheduling_tool(client)
+
+    assert slot_discovery is None
+    assert appointment_discovery is None
     assert isinstance(factory("token", "patient-uuid", NOW), NoActionTool)
 
 
@@ -75,9 +99,10 @@ def test_every_required_setting_present_builds_the_real_tool_and_discovery(
         monkeypatch.setenv(name, value)
     client = httpx.AsyncClient()
 
-    factory, discovery = _build_scheduling_tool(client)
+    factory, slot_discovery, appointment_discovery = _build_scheduling_tool(client)
 
-    assert isinstance(discovery, SlotDiscoveryService)
+    assert isinstance(slot_discovery, SlotDiscoveryService)
+    assert isinstance(appointment_discovery, AppointmentDiscoveryService)
     tool = factory("token", "patient-uuid", NOW)
     assert isinstance(tool, BookingTool)
     assert tool.appointment_request.category_id == "5"
@@ -99,14 +124,33 @@ def test_the_same_slot_store_backs_both_discovery_and_the_booking_tool(
         monkeypatch.setenv(name, value)
     client = httpx.AsyncClient()
 
-    factory, discovery = _build_scheduling_tool(client)
-    assert discovery is not None
+    factory, slot_discovery, _ = _build_scheduling_tool(client)
+    assert slot_discovery is not None
     tool = factory("token", "patient-uuid", NOW)
     assert isinstance(tool, BookingTool)
 
     # `discovery` issues tokens via its own `AnonymousSlotStore`; `tool.booking`
     # resolves them via `BookingService`'s. They must be the same store.
-    assert discovery._store is tool.booking._store  # type: ignore[attr-defined]
+    assert slot_discovery._store is tool.booking._store  # type: ignore[attr-defined]
+
+
+def test_the_same_appointment_store_backs_both_discovery_and_the_cancellation_tool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An appointment token `current_appointments` issues in one turn must resolve in
+    a later turn's `cancel` call: both must share one `AnonymousAppointmentStore`
+    instance (TICK-036)."""
+    _clear_env(monkeypatch)
+    for name, value in _REQUIRED_ENV.items():
+        monkeypatch.setenv(name, value)
+    client = httpx.AsyncClient()
+
+    factory, _, appointment_discovery = _build_scheduling_tool(client)
+    assert appointment_discovery is not None
+    tool = factory("token", "patient-uuid", NOW)
+    assert isinstance(tool, BookingTool)
+
+    assert appointment_discovery._store is tool.cancellation._store  # type: ignore[attr-defined]
 
 
 def test_build_chat_service_falls_back_to_unavailable_without_groq_settings(
@@ -135,6 +179,7 @@ def test_build_chat_service_wires_the_real_tool_when_groq_and_openemr_settings_p
 
     assert service.workflow is not None
     assert service.slot_discovery is not None
+    assert service.appointment_discovery is not None
     tool = service.tool_factory("token", "patient-uuid", NOW)
     assert isinstance(tool, BookingTool)
 

@@ -63,6 +63,7 @@ class PlanningOutput(BaseModel):
 
     intent: Literal["information", "book", "reschedule", "cancel"]
     slot_token: str | None = Field(default=None, pattern="^slot_[A-Za-z0-9_-]{1,64}$")
+    appointment_token: str | None = Field(default=None, pattern="^appt_[A-Za-z0-9_-]{1,64}$")
 
 
 @dataclass(frozen=True)

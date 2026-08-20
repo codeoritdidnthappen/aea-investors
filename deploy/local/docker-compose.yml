@@ -122,13 +122,15 @@ services:
       LLM_PROVIDER: ${LLM_PROVIDER:-groq}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
       GROQ_ZDR_VERIFIED_ON: ${GROQ_ZDR_VERIFIED_ON:-}
-      # Real appointment booking (TICK-034): optional, same tolerance as GROQ_API_KEY
-      # above -- absent, the chat tool falls back to its fixed no-action summary
-      # instead of failing startup. AI_BOOKING_* are this office's admin-configured
-      # appointment fields (ai_server/app/chat.py, BookingToolSettings); they have no
-      # discoverable default (ai_server/scheduling/booking.py, AppointmentRequest).
+      # Real appointment booking (TICK-034) and cancellation (TICK-036): optional,
+      # same tolerance as GROQ_API_KEY above -- absent, the chat tool falls back to
+      # its fixed no-action summary instead of failing startup. AI_BOOKING_* are this
+      # office's admin-configured appointment fields (ai_server/app/chat.py,
+      # BookingToolSettings); they have no discoverable default
+      # (ai_server/scheduling/booking.py, AppointmentRequest).
       OPENEMR_API_BASE_URL: ${OPENEMR_API_BASE_URL:-}
       OPENEMR_FHIR_BASE_URL: ${OPENEMR_FHIR_BASE_URL:-}
+      OPENEMR_PORTAL_BASE_URL: ${OPENEMR_PORTAL_BASE_URL:-}
       AI_BOOKING_CATEGORY_ID: ${AI_BOOKING_CATEGORY_ID:-}
       AI_BOOKING_TITLE: ${AI_BOOKING_TITLE:-}
       AI_BOOKING_FACILITY_ID: ${AI_BOOKING_FACILITY_ID:-}

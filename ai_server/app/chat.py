@@ -25,6 +25,7 @@ from ai_server.llm.groq import (
 )
 from ai_server.openemr.adapter import OpenEmrConfigurationError, OpenEmrRequestError
 from ai_server.privacy.gate import (
+    AnonymousAppointment,
     AnonymousSlot,
     OutboundMessage,
     OutboundPayload,
@@ -32,28 +33,38 @@ from ai_server.privacy.gate import (
     SchedulingContext,
     SchedulingRules,
 )
+from ai_server.scheduling.appointments import AppointmentDiscoveryService
 from ai_server.scheduling.booking import AppointmentRequest, BookingService, SlotBookingError
+from ai_server.scheduling.cancel import (
+    AppointmentAlreadyCancelledError,
+    AppointmentNotFoundError,
+    CancellationService,
+    StaleAppointmentTokenError,
+)
 from ai_server.scheduling.slots import CandidateSlot, SlotDiscoveryService
 
 SYSTEM_PROMPT = (
     "You help a patient discuss scheduling for this clinic. Use only the office hours, "
-    "closures, and open slots given in scheduling_context, and only the actions allowed "
-    "by scheduling_rules -- never state or imply that an appointment was booked, "
-    "rescheduled, or cancelled; that can only be confirmed by OpenEMR, not by you. If "
-    "every scheduling action is disabled, say so and do not propose one. Do not give "
-    "clinical or treatment advice; if asked, say you can only help with scheduling."
+    "closures, open slots, and current appointments given in scheduling_context, and "
+    "only the actions allowed by scheduling_rules -- never state or imply that an "
+    "appointment was booked, rescheduled, or cancelled; that can only be confirmed by "
+    "OpenEMR, not by you. To cancel, reference one of the caller's own current "
+    "appointments by its appointment_token; never invent or ask the patient for an "
+    "appointment id. If every scheduling action is disabled, say so and do not propose "
+    "one. Do not give clinical or treatment advice; if asked, say you can only help "
+    "with scheduling."
 )
 
-# No authoritative scheduling tool is wired yet (booking/rescheduling/cancellation
-# live behind separate, still-blocked tickets), so every request is sent with every
-# scheduling action disabled. This keeps the model from ever describing a booking,
-# reschedule, or cancellation as real (FR-20) while the underlying capability doesn't
-# exist yet.
+# Rescheduling has no OpenEMR service method (TICK-020 is permanently blocked), so
+# that action stays disabled regardless of tool wiring. Cancellation is now wired to a
+# real `AuthoritativeTool` implementation (TICK-036), so it is enabled here; the model
+# still only learns actual appointments to reference from scheduling_context's
+# current_appointments, never from anything client- or model-supplied.
 _SCHEDULING_RULES = SchedulingRules(
     minimum_booking_notice_minutes=1440,
     booking_enabled=False,
     rescheduling_enabled=False,
-    cancellation_enabled=False,
+    cancellation_enabled=True,
 )
 _TIMEZONE = "America/Chicago"
 
@@ -70,13 +81,13 @@ NO_ACTION_SUMMARY = "No scheduling action is available yet in this demo."
 class NoActionTool(AuthoritativeTool):
     """The fallback `AuthoritativeTool` for every intent `BookingTool` cannot perform.
 
-    Rescheduling has no OpenEMR service method (TICK-020 is permanently blocked) and
-    cancellation needs its own anonymous appointment-targeting token that does not
-    exist yet (TICK-036), so this tool performs no OpenEMR operation and reports none
-    occurred. `BookingTool` also delegates here for a `book` intent missing a
-    `slot_token`, and `_build_scheduling_tool` (`ai_server/app/main.py`) uses this as
-    the whole tool for any environment missing the OpenEMR settings booking needs
-    (TICK-034 AC3/AC5).
+    Rescheduling has no OpenEMR service method (TICK-020 is permanently blocked), so
+    this tool performs no OpenEMR operation and reports none occurred. `BookingTool`
+    also delegates here for a `book` intent missing a `slot_token`, a `cancel` intent
+    missing an `appointment_token`, or either intent missing this turn's delegated
+    session credentials, and `_build_scheduling_tool` (`ai_server/app/main.py`) uses
+    this as the whole tool for any environment missing the OpenEMR settings booking or
+    cancellation need (TICK-034 AC3/AC5, TICK-036).
     """
 
     async def execute(self, plan: PlanningOutput) -> AuthoritativeToolResult:
@@ -86,8 +97,9 @@ class NoActionTool(AuthoritativeTool):
 
 @dataclass(frozen=True)
 class BookingTool(AuthoritativeTool):
-    """Executes a `book` plan through `BookingService`; everything else falls back to
-    `NoActionTool` (TICK-034 AC3).
+    """Executes a `book` plan through `BookingService` and a `cancel` plan through
+    `CancellationService`; everything else falls back to `NoActionTool` (TICK-034 AC3,
+    TICK-036 AC4).
 
     `access_token`/`patient_id` are this turn's already-delegated OpenEMR credentials
     (`SessionStore.access_token`/`patient_uuid`, `ai_server/app/main.py`'s `/api/chat`
@@ -96,19 +108,27 @@ class BookingTool(AuthoritativeTool):
     OpenEMR patient UUID: `ai_server/openemr/demographics.py`'s already-proven-live
     `PUT /patient/{uuid}` establishes that this Standard API accepts the UUID as the
     `pid` path segment, so `BookingService.book`'s `patient_id` argument reuses it the
-    same way, rather than resolving a second, numeric patient id this module has no
-    endpoint to look up.
+    same way, and `CancellationService.cancel`'s `patient_id` argument reuses it again
+    as the binding identity `AnonymousAppointmentStore` issued the caller's
+    `appointment_token`s under, rather than resolving a second, numeric patient id this
+    module has no endpoint to look up.
     """
 
     booking: BookingService
+    cancellation: CancellationService
     appointment_request: AppointmentRequest
     access_token: str | None
     patient_id: str | None
     now: datetime
 
     async def execute(self, plan: PlanningOutput) -> AuthoritativeToolResult:
-        if plan.intent != "book" or plan.slot_token is None:
-            return await NoActionTool().execute(plan)
+        if plan.intent == "book" and plan.slot_token is not None:
+            return await self._execute_book(plan.slot_token)
+        if plan.intent == "cancel" and plan.appointment_token is not None:
+            return await self._execute_cancel(plan.appointment_token)
+        return await NoActionTool().execute(plan)
+
+    async def _execute_book(self, slot_token: str) -> AuthoritativeToolResult:
         if self.access_token is None or self.patient_id is None:
             # No delegated session credentials for this turn (e.g. the session's
             # patient id was never captured, TICK-028) -- no OpenEMR call is possible.
@@ -117,7 +137,7 @@ class BookingTool(AuthoritativeTool):
             booked = await self.booking.book(
                 self.access_token,
                 self.patient_id,
-                plan.slot_token,
+                slot_token,
                 self.appointment_request,
                 self.now,
             )
@@ -139,6 +159,40 @@ class BookingTool(AuthoritativeTool):
             public_summary=(
                 "Booked and confirmed by OpenEMR: appointment "
                 f"{booked.id}, {booked.starts_at.isoformat()} to {booked.ends_at.isoformat()}."
+            )
+        )
+
+    async def _execute_cancel(self, appointment_token: str) -> AuthoritativeToolResult:
+        if self.access_token is None or self.patient_id is None:
+            # No delegated session credentials for this turn -- no OpenEMR call is
+            # possible, same as booking above.
+            return AuthoritativeToolResult(public_summary=NO_ACTION_SUMMARY)
+        try:
+            cancelled = await self.cancellation.cancel(
+                self.access_token, self.patient_id, appointment_token, self.now
+            )
+        except StaleAppointmentTokenError:
+            return AuthoritativeToolResult(
+                public_summary=(
+                    "That appointment reference is no longer valid. Please ask to see "
+                    "your current appointments again and choose one to cancel."
+                )
+            )
+        except AppointmentAlreadyCancelledError:
+            return AuthoritativeToolResult(
+                public_summary="That appointment has already been cancelled."
+            )
+        except (AppointmentNotFoundError, OpenEmrRequestError):
+            return AuthoritativeToolResult(
+                public_summary=(
+                    "OpenEMR could not confirm that cancellation just now, so the "
+                    "appointment was not cancelled. Please try again."
+                )
+            )
+        return AuthoritativeToolResult(
+            public_summary=(
+                "Cancelled and confirmed by OpenEMR: appointment "
+                f"{cancelled.id} is now {cancelled.status}."
             )
         )
 
@@ -228,6 +282,7 @@ class ChatService:
     workflow: GroqWorkflow | None
     tool_factory: ToolFactory
     slot_discovery: SlotDiscoveryService | None = None
+    appointment_discovery: AppointmentDiscoveryService | None = None
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
 
     async def stream_reply(
@@ -243,13 +298,13 @@ class ChatService:
             yield UNAVAILABLE_RESPONSE
             return
         now = self.clock()
-        payload = await self._payload(message, access_token, now)
+        payload = await self._payload(message, access_token, patient_id, now)
         tool = self.tool_factory(access_token, patient_id, now)
         async for chunk in self.workflow.respond(payload, tool):
             yield chunk
 
     async def _payload(
-        self, message: str, access_token: str | None, now: datetime
+        self, message: str, access_token: str | None, patient_id: str | None, now: datetime
     ) -> OutboundPayload:
         open_slots: list[AnonymousSlot] = []
         if self.slot_discovery is not None and access_token is not None:
@@ -257,6 +312,21 @@ class ChatService:
             open_slots = [
                 AnonymousSlot(slot_token=t.slot_token, starts_at=t.starts_at, ends_at=t.ends_at)
                 for t in tokens
+            ]
+        current_appointments: list[AnonymousAppointment] = []
+        if (
+            self.appointment_discovery is not None
+            and access_token is not None
+            and patient_id is not None
+        ):
+            appointment_tokens = await self.appointment_discovery.current_appointments(
+                access_token, patient_id, now
+            )
+            current_appointments = [
+                AnonymousAppointment(
+                    appointment_token=t.appointment_token, starts_at=t.starts_at, ends_at=t.ends_at
+                )
+                for t in appointment_tokens
             ]
         return OutboundPayload(
             model="openai/gpt-oss-120b",
@@ -270,6 +340,7 @@ class ChatService:
                 office_hours=[],
                 closures=[],
                 open_slots=open_slots,
+                current_appointments=current_appointments,
             ),
             scheduling_rules=_SCHEDULING_RULES,
             response_format=ResponseFormat(type="json_schema", schema_version="1"),

@@ -48,11 +48,13 @@ from ai_server.openemr.adapter import (
 )
 from ai_server.openemr.demographics import OpenEmrDemographicsAdapter, OpenEmrDemographicsSettings
 from ai_server.privacy.gate import PrivacyGate
+from ai_server.scheduling.appointments import AnonymousAppointmentStore, AppointmentDiscoveryService
 from ai_server.scheduling.booking import (
     BookingService,
     OpenEmrBookingAdapter,
     OpenEmrBookingSettings,
 )
+from ai_server.scheduling.cancel import AppointmentCancelAdapter, CancellationService
 from ai_server.scheduling.slots import AnonymousSlotStore, SlotDiscoveryService
 
 
@@ -254,46 +256,60 @@ def _build_chat_service(
     except GroqConfigurationError:
         return unavailable_chat_service()
     workflow = GroqWorkflow(PrivacyGate.create(), HttpGroqClient(groq_settings, client))
-    tool_factory, slot_discovery = _build_scheduling_tool(openemr_client)
+    tool_factory, slot_discovery, appointment_discovery = _build_scheduling_tool(openemr_client)
     return ChatService(
-        workflow=workflow, tool_factory=tool_factory, slot_discovery=slot_discovery, clock=clock
+        workflow=workflow,
+        tool_factory=tool_factory,
+        slot_discovery=slot_discovery,
+        appointment_discovery=appointment_discovery,
+        clock=clock,
     )
 
 
 def _build_scheduling_tool(
     client: httpx.AsyncClient,
-) -> tuple[ToolFactory, SlotDiscoveryService | None]:
-    """Build the real booking tool and slot discovery, or the no-op fallback.
+) -> tuple[ToolFactory, SlotDiscoveryService | None, AppointmentDiscoveryService | None]:
+    """Build the real booking/cancellation tool and slot/appointment discovery, or the
+    no-op fallback.
 
     Mirrors `_build_chat_service`'s/`_build_onboarding_service`'s tolerance of absent
-    OpenEMR configuration (TICK-034 AC5): every environment missing the Standard
-    API/FHIR base URLs or the admin-configured booking fields keeps today's fixed
-    no-action tool and an empty `open_slots` instead of failing startup.
+    OpenEMR configuration (TICK-034 AC5, TICK-036): every environment missing the
+    Standard/FHIR/Portal API base URLs or the admin-configured booking fields keeps
+    today's fixed no-action tool and empty `open_slots`/`current_appointments` instead
+    of failing startup.
     """
     try:
         booking_settings = OpenEmrBookingSettings.from_environment()
         schedule_settings = OpenEmrScheduleSettings.from_environment()
         booking_tool_settings = BookingToolSettings.from_environment()
+        portal_settings = OpenEmrPortalSettings.from_environment()
     except OpenEmrConfigurationError:
-        return no_action_tool_factory(), None
-    # One store shared by discovery (issues tokens) and booking (resolves them), so a
-    # token issued in an earlier turn's open_slots can still be booked in a later one.
-    store = AnonymousSlotStore()
-    booking_service = BookingService(store, OpenEmrBookingAdapter(booking_settings, client))
+        return no_action_tool_factory(), None, None
+    # One slot store shared by discovery (issues tokens) and booking (resolves them),
+    # and one appointment store shared by appointment discovery and cancellation, so a
+    # token issued in an earlier turn can still be booked/cancelled in a later one.
+    slot_store = AnonymousSlotStore()
+    appointment_store = AnonymousAppointmentStore()
+    booking_service = BookingService(slot_store, OpenEmrBookingAdapter(booking_settings, client))
+    cancellation_service = CancellationService(
+        appointment_store, AppointmentCancelAdapter(portal_settings, client)
+    )
     schedule_adapter = OpenEmrScheduleAdapter(schedule_settings, client)
-    discovery = SlotDiscoveryService(NoMappedCandidateSource(), schedule_adapter, store)
+    slot_discovery = SlotDiscoveryService(NoMappedCandidateSource(), schedule_adapter, slot_store)
+    appointment_discovery = AppointmentDiscoveryService(schedule_adapter, appointment_store)
     appointment_request = booking_tool_settings.appointment_request()
 
     def factory(access_token: str | None, patient_id: str | None, now: datetime) -> BookingTool:
         return BookingTool(
             booking=booking_service,
+            cancellation=cancellation_service,
             appointment_request=appointment_request,
             access_token=access_token,
             patient_id=patient_id,
             now=now,
         )
 
-    return factory, discovery
+    return factory, slot_discovery, appointment_discovery
 
 
 def _build_onboarding_service(

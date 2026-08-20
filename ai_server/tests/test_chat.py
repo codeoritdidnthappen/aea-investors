@@ -24,6 +24,7 @@ from ai_server.app.chat import (
 from ai_server.app.main import create_app
 from ai_server.llm.groq import UNAVAILABLE_RESPONSE, GroqWorkflow
 from ai_server.privacy.gate import OutboundPayload, PrivacyGate
+from ai_server.scheduling.appointments import AnonymousAppointmentToken
 from ai_server.scheduling.slots import AnonymousSlotToken
 
 NOW = datetime(2026, 8, 20, 12, 0, tzinfo=timezone.utc)
@@ -242,9 +243,13 @@ def test_ac3_no_action_tool_never_claims_a_scheduling_success() -> None:
     assert "confirmed" not in summary.lower()
 
 
-def test_ac3_chat_service_disables_every_scheduling_action_pending_a_real_tool(
+def test_ac3_chat_service_disables_booking_and_reschedule_pending_a_real_tool(
     tmp_path: Path,
 ) -> None:
+    """Rescheduling has no OpenEMR service method (TICK-020, permanently blocked);
+    booking's own `scheduling_rules` flag is unchanged by this ticket. Cancellation is
+    now wired to a real tool (TICK-036), so it is no longer disabled here -- see
+    `test_tick036_cancellation_is_enabled_now_that_a_real_tool_exists` below."""
     del tmp_path
     captured: list[OutboundPayload] = []
 
@@ -268,7 +273,28 @@ def test_ac3_chat_service_disables_every_scheduling_action_pending_a_real_tool(
     rules = captured[0].scheduling_rules
     assert rules.booking_enabled is False
     assert rules.rescheduling_enabled is False
-    assert rules.cancellation_enabled is False
+
+
+def test_tick036_cancellation_is_enabled_now_that_a_real_tool_exists() -> None:
+    captured: list[OutboundPayload] = []
+
+    class CapturingWorkflow(GroqWorkflow):
+        def __init__(self) -> None:
+            super().__init__(PrivacyGate.create(), client=None)  # type: ignore[arg-type]
+
+        async def respond(self, payload, tool):  # type: ignore[override]
+            captured.append(payload)
+            yield "ok"
+
+    service = ChatService(
+        workflow=CapturingWorkflow(), tool_factory=no_action_tool_factory(), clock=lambda: NOW
+    )
+
+    async def run() -> list[str]:
+        return [chunk async for chunk in service.stream_reply("Can you cancel my appointment?")]
+
+    assert asyncio.run(run()) == ["ok"]
+    assert captured[0].scheduling_rules.cancellation_enabled is True
 
 
 # --- TICK-034: real access token/patient id threading and open-slot wiring --------
@@ -354,6 +380,98 @@ def test_tick034_open_slots_stay_empty_and_discovery_is_never_called_with_no_acc
     assert asyncio.run(run()) == ["ok"]
     assert discovery.calls == []
     assert captured[0].scheduling_context.open_slots == []
+
+
+# --- TICK-036: current-appointment discovery wiring --------------------------------
+
+
+class FakeAppointmentDiscovery:
+    """An `AppointmentDiscoveryService`-shaped double recording every call it receives."""
+
+    def __init__(self, tokens: list[AnonymousAppointmentToken]) -> None:
+        self._tokens = tokens
+        self.calls: list[tuple[str, str, datetime]] = []
+
+    async def current_appointments(
+        self, access_token: str, patient_id: str, now: datetime
+    ) -> list[AnonymousAppointmentToken]:
+        self.calls.append((access_token, patient_id, now))
+        return self._tokens
+
+
+def test_tick036_payload_populates_current_appointments_from_appointment_discovery() -> None:
+    captured: list[OutboundPayload] = []
+
+    class CapturingWorkflow(GroqWorkflow):
+        def __init__(self) -> None:
+            super().__init__(PrivacyGate.create(), client=None)  # type: ignore[arg-type]
+
+        async def respond(self, payload, tool):  # type: ignore[override]
+            captured.append(payload)
+            yield "ok"
+
+    issued = AnonymousAppointmentToken(
+        appointment_token="appt_" + "a" * 20,
+        starts_at=NOW + timedelta(hours=2),
+        ends_at=NOW + timedelta(hours=2, minutes=30),
+    )
+    discovery = FakeAppointmentDiscovery([issued])
+    service = ChatService(
+        workflow=CapturingWorkflow(),
+        tool_factory=no_action_tool_factory(),
+        appointment_discovery=discovery,
+        clock=lambda: NOW,
+    )
+
+    async def run() -> list[str]:
+        return [
+            chunk
+            async for chunk in service.stream_reply(
+                "What appointments do I have?",
+                access_token="delegated-token",
+                patient_id="patient-uuid",
+            )
+        ]
+
+    assert asyncio.run(run()) == ["ok"]
+    assert discovery.calls == [("delegated-token", "patient-uuid", NOW)]
+    current_appointments = captured[0].scheduling_context.current_appointments
+    assert len(current_appointments) == 1
+    assert current_appointments[0].appointment_token == issued.appointment_token
+    assert current_appointments[0].starts_at == issued.starts_at
+    assert current_appointments[0].ends_at == issued.ends_at
+
+
+def test_tick036_current_appointments_stay_empty_without_a_bound_patient_id() -> None:
+    captured: list[OutboundPayload] = []
+
+    class CapturingWorkflow(GroqWorkflow):
+        def __init__(self) -> None:
+            super().__init__(PrivacyGate.create(), client=None)  # type: ignore[arg-type]
+
+        async def respond(self, payload, tool):  # type: ignore[override]
+            captured.append(payload)
+            yield "ok"
+
+    discovery = FakeAppointmentDiscovery([])
+    service = ChatService(
+        workflow=CapturingWorkflow(),
+        tool_factory=no_action_tool_factory(),
+        appointment_discovery=discovery,
+        clock=lambda: NOW,
+    )
+
+    async def run() -> list[str]:
+        return [
+            chunk
+            async for chunk in service.stream_reply(
+                "Hello", access_token="delegated-token", patient_id=None
+            )
+        ]
+
+    assert asyncio.run(run()) == ["ok"]
+    assert discovery.calls == []
+    assert captured[0].scheduling_context.current_appointments == []
 
 
 def test_tick034_tool_factory_receives_this_turns_access_token_and_patient_id() -> None:

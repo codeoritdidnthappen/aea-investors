@@ -15,16 +15,25 @@ holds for the current session, never an OpenEMR-trusted identity.
 Cancellation is always a status update (`evidence/TICK-001/ENDPOINT_MATRIX.md`, "Cancel
 by status, retain history"; ARCHITECTURE.md ADR-4) -- this client has no delete method
 and cannot express one.
+
+`CancellationService` (TICK-036) is the only caller allowed to supply a real OpenEMR
+appointment id to this adapter: it always resolves an anonymous appointment token
+through `AnonymousAppointmentStore.resolve()` first, exactly the same discipline
+`ai_server.scheduling.booking.BookingService` already uses for slot tokens (TICK-019),
+so a cancel request can never carry a client- or model-supplied OpenEMR identifier
+(FR-20).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 
 import httpx
 
 from ai_server.onboarding.draft_client import OpenEmrPortalSettings
 from ai_server.openemr.adapter import OpenEmrRequestError
+from ai_server.scheduling.appointments import AnonymousAppointmentStore, AppointmentTokenError
 
 _APPOINTMENT_PATH = "/portal/patient/appointment"
 
@@ -35,6 +44,10 @@ class AppointmentNotFoundError(Exception):
 
 class AppointmentAlreadyCancelledError(Exception):
     """Raised for a 409: the appointment was already cancelled."""
+
+
+class StaleAppointmentTokenError(Exception):
+    """Raised when an appointment token cannot be resolved; no OpenEMR request was made."""
 
 
 @dataclass(frozen=True)
@@ -107,3 +120,37 @@ def _cancelled_from_response(response: httpx.Response) -> CancelledAppointment:
     if not isinstance(identifier, str) or not isinstance(status, str):
         raise OpenEmrRequestError("OpenEMR returned an invalid cancellation response")
     return CancelledAppointment(id=identifier, status=status)
+
+
+class CancellationService:
+    """Resolve an appointment token to its real OpenEMR id, then cancel through OpenEMR.
+
+    Mirrors `ai_server.scheduling.booking.BookingService`'s discipline (TICK-019/
+    TICK-031): the token store enforces single-use, patient-bound consumption
+    (`AnonymousAppointmentStore.resolve`, TICK-036), so no client- or model-supplied
+    appointment id ever reaches `AppointmentCancelAdapter`, and a stale, already-used,
+    or cross-patient token fails with no OpenEMR request made (AC4).
+    """
+
+    def __init__(self, store: AnonymousAppointmentStore, adapter: AppointmentCancelAdapter) -> None:
+        self._store = store
+        self._adapter = adapter
+
+    async def cancel(
+        self, access_token: str, patient_id: str, appointment_token: str, now: datetime
+    ) -> CancelledAppointment:
+        """Cancel the genuine appointment behind `appointment_token`, or fail with no
+        OpenEMR write.
+
+        Raises `StaleAppointmentTokenError` for an unknown, expired, already-used, or
+        cross-patient token -- OpenEMR is never called in that case. Raises
+        `AppointmentNotFoundError`/`AppointmentAlreadyCancelledError`/
+        `OpenEmrRequestError` if OpenEMR itself refuses or fails the request. Either
+        way, a caller only ever receives a `CancelledAppointment` once OpenEMR has
+        actually confirmed the status change (FR-20).
+        """
+        try:
+            appointment_id = self._store.resolve(appointment_token, patient_id, now)
+        except AppointmentTokenError as exc:
+            raise StaleAppointmentTokenError(str(exc)) from exc
+        return await self._adapter.cancel(access_token, appointment_id)

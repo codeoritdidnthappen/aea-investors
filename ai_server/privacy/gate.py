@@ -50,6 +50,17 @@ class AnonymousSlot(BaseModel):
     ends_at: AwareDatetime
 
 
+class AnonymousAppointment(BaseModel):
+    """A short-lived token referencing one of the caller's own appointments, with no
+    OpenEMR identifier (TICK-036, mirrors `AnonymousSlot`)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    appointment_token: str = Field(pattern="^appt_[A-Za-z0-9_-]{1,64}$")
+    starts_at: AwareDatetime
+    ends_at: AwareDatetime
+
+
 class SchedulingContext(BaseModel):
     """Approved, non-patient scheduling context for a model request."""
 
@@ -60,6 +71,7 @@ class SchedulingContext(BaseModel):
     office_hours: list[OfficeHours] = Field(default_factory=list)
     closures: list[Closure] = Field(default_factory=list)
     open_slots: list[AnonymousSlot] = Field(default_factory=list)
+    current_appointments: list[AnonymousAppointment] = Field(default_factory=list)
 
 
 class SchedulingRules(BaseModel):
