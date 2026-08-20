@@ -16,6 +16,11 @@ blocked_reason: "Narrowed 2026-08-20 to reschedule only (see note below): OpenEM
 
 Appointment writes occur only after a deterministic OpenEMR call; the assistant may not claim success before that response.
 
+`depends_on` still includes TICK-019 after the reschedule-only narrowing: moving an
+existing appointment to a new time needs TICK-019's anonymous-slot discovery to find
+a genuinely open target slot, the same as booking does, not just TICK-018's read
+adapter.
+
 ## Scope narrowed (2026-08-20)
 
 This ticket bundled book + reschedule + cancel. Investigation (mirroring TICK-017's
