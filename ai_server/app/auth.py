@@ -348,6 +348,15 @@ class SessionStore:
                 refresh_nonce BLOB NOT NULL, refresh_ciphertext BLOB NOT NULL,
                 patient_nonce BLOB, patient_ciphertext BLOB)"""
             )
+            # `CREATE TABLE IF NOT EXISTS` above is a no-op against a `sessions` table
+            # that already exists from before patient_nonce/patient_ciphertext were
+            # added (confirmed live: create_session's 9-value INSERT against a
+            # pre-existing 7-column table raised sqlite3.OperationalError on the very
+            # first login after this column pair shipped) -- add them if missing.
+            existing_columns = {row[1] for row in connection.execute("PRAGMA table_info(sessions)")}
+            for column in ("patient_nonce", "patient_ciphertext"):
+                if column not in existing_columns:
+                    connection.execute(f"ALTER TABLE sessions ADD COLUMN {column} BLOB")
 
     def create_pending(self, now: datetime, ttl: timedelta) -> tuple[str, str, str]:
         state = secrets.token_urlsafe(32)
