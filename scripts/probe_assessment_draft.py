@@ -293,24 +293,46 @@ def main() -> int:
     )
     _check(results, "A checkpoints a new field", status, 200, both_present, body)
 
-    # 5. NEGATIVE: patient B attempts to read patient A's draft.
+    # 5. Switching contact method without resending contact_value must give an
+    # honest "required" error, not re-validate the stale phone-shaped value that
+    # was never entered for method=email (this is the ONBOARDING_CONTRACT.md-facing
+    # bug a review round caught: a normal incremental checkpoint was rejected with
+    # a misleading format error).
+    status, body = api("PUT", path, token_a, {"preferred_contact_method": "phone"})
+    _check(results, "A switches contact method alone (must fail honestly)", status, 400, True, body)
+
+    # 6. accommodation_detail is optional even with other_accommodation selected
+    # (ONBOARDING_CONTRACT.md row 9) -- must succeed with no detail supplied.
+    status, body = api("PUT", path, token_a, {"accommodations": ["other_accommodation"]})
+    no_detail_required = "error" not in body
+    _check(
+        results, "A selects other_accommodation with no detail",
+        status, 200, no_detail_required, body,
+    )
+
+    # 7. A non-array accommodations value must be rejected, not silently coerced to
+    # an empty list (which would silently wipe a previously saved selection).
+    status, body = api("PUT", path, token_a, {"accommodations": "language_interpreter"})
+    _check(results, "A submits non-array accommodations (must fail)", status, 400, True, body)
+
+    # 8. NEGATIVE: patient B attempts to read patient A's draft.
     status, body = api("GET", path, token_b)
     _check(results, "B reads A's draft (must fail)", status, 404, True, body)
 
-    # 6. NEGATIVE: patient B attempts to write patient A's draft.
+    # 9. NEGATIVE: patient B attempts to write patient A's draft.
     status, body = api("PUT", path, token_b, {"help_type": "both"})
     _check(results, "B writes A's draft (must fail)", status, 404, True, body)
 
-    # 7. Validation: reject an invalid enum value.
+    # 10. Validation: reject an invalid enum value.
     invalid = {"help_type": "not-a-real-option"}
     status, body = api("POST", "/portal/patient/assessment", token_a, invalid)
     _check(results, "A submits invalid help_type (must fail)", status, 400, True, body)
 
-    # 8. Completion requires all required fields; attempt with only 2 of 4 present.
+    # 11. Completion requires all required fields; attempt with only 2 of 4 present.
     status, body = api("PUT", path, token_a, {"status": "completed"})
     _check(results, "A completes with missing required fields (must fail)", status, 400, True, body)
 
-    # 9. Fill remaining required fields and complete for real.
+    # 12. Fill remaining required fields and complete for real.
     status, body = api(
         "PUT", path, token_a,
         {"visit_format": "video", "visit_time_window": "no_preference", "status": "completed"},
@@ -318,7 +340,7 @@ def main() -> int:
     completed = body.get("status") == "completed"
     _check(results, "A completes with all required fields", status, 200, completed, body)
 
-    # 10. Completed drafts are immutable.
+    # 13. Completed drafts are immutable.
     status, body = api("PUT", path, token_a, {"help_type": "both"})
     _check(results, "A edits a completed draft (must fail)", status, 409, True, body)
 

@@ -97,7 +97,21 @@ class AssessmentDraftService
             return $this->errorResponse(409, 'this assessment is already completed and cannot be edited');
         }
         $requestedCompletion = ($body['status'] ?? null) === 'completed';
-        $merged = array_merge(json_decode($row['payload'], true) ?? [], $this->stripStatus($body));
+        $existing = json_decode($row['payload'], true) ?? [];
+        // A checkpoint that changes preferred_contact_method without also resending
+        // contact_value is a normal incremental update (ONBOARDING_CONTRACT.md's
+        // "checkpoint that field" model), not a request to keep the old value under
+        // the new method -- a phone number isn't a valid contact_value for
+        // method=email. Drop the stale value so it isn't re-validated against a
+        // method it was never entered for; the client re-supplies it in a later
+        // checkpoint (required again before completion, since a missing
+        // contact_value fails validation the same way an invalid one would).
+        $newMethod = $body['preferred_contact_method'] ?? null;
+        $methodChanging = $newMethod !== null && $newMethod !== ($existing['preferred_contact_method'] ?? null);
+        if ($methodChanging && !array_key_exists('contact_value', $body)) {
+            unset($existing['contact_value']);
+        }
+        $merged = array_merge($existing, $this->stripStatus($body));
         $fields = $this->validatedFields($merged, requireComplete: $requestedCompletion);
         if ($fields instanceof JsonResponse) {
             return $fields;
@@ -168,18 +182,20 @@ class AssessmentDraftService
             } else {
                 $fields['preferred_contact_method'] = $method;
                 if ($method === 'phone') {
-                    $value = (string)($body['contact_value'] ?? '');
-                    if (!preg_match('/^\+1\d{10}$/', $value)) {
+                    if (!array_key_exists('contact_value', $body)) {
+                        $errors[] = 'contact_value is required (an E.164 US phone number) with method=phone';
+                    } elseif (!preg_match('/^\+1\d{10}$/', (string)$body['contact_value'])) {
                         $errors[] = 'contact_value must be an E.164 US phone number for method=phone';
                     } else {
-                        $fields['contact_value'] = $value;
+                        $fields['contact_value'] = (string)$body['contact_value'];
                     }
                 } elseif ($method === 'email') {
-                    $value = (string)($body['contact_value'] ?? '');
-                    if (!filter_var($value, FILTER_VALIDATE_EMAIL)) {
+                    if (!array_key_exists('contact_value', $body)) {
+                        $errors[] = 'contact_value is required (a valid email address) with method=email';
+                    } elseif (!filter_var((string)$body['contact_value'], FILTER_VALIDATE_EMAIL)) {
                         $errors[] = 'contact_value must be a valid email address for method=email';
                     } else {
-                        $fields['contact_value'] = $value;
+                        $fields['contact_value'] = (string)$body['contact_value'];
                     }
                 }
             }
@@ -210,18 +226,25 @@ class AssessmentDraftService
         }
 
         if (array_key_exists('accommodations', $body)) {
-            $accommodations = is_array($body['accommodations']) ? $body['accommodations'] : [];
-            $invalid = array_diff($accommodations, self::ACCOMMODATIONS);
-            if (!empty($invalid)) {
-                $errors[] = 'accommodations may only contain: ' . implode(', ', self::ACCOMMODATIONS);
+            if (!is_array($body['accommodations'])) {
+                $errors[] = 'accommodations must be an array';
             } else {
-                $fields['accommodations'] = array_values($accommodations);
-                if (in_array('other_accommodation', $accommodations, true)) {
-                    $detail = (string)($body['accommodation_detail'] ?? '');
-                    if ($detail === '' || strlen($detail) > 200) {
-                        $errors[] = 'accommodation_detail is required (1-200 chars) when other_accommodation is selected';
-                    } else {
-                        $fields['accommodation_detail'] = $detail;
+                $accommodations = $body['accommodations'];
+                $invalid = array_diff($accommodations, self::ACCOMMODATIONS);
+                if (!empty($invalid)) {
+                    $errors[] = 'accommodations may only contain: ' . implode(', ', self::ACCOMMODATIONS);
+                } else {
+                    $fields['accommodations'] = array_values($accommodations);
+                    // ONBOARDING_CONTRACT.md row 9: the detail is optional even when
+                    // other_accommodation is selected -- only its length is bounded
+                    // when the patient does choose to provide one.
+                    if (in_array('other_accommodation', $accommodations, true) && array_key_exists('accommodation_detail', $body)) {
+                        $detail = (string)$body['accommodation_detail'];
+                        if (strlen($detail) > 200) {
+                            $errors[] = 'accommodation_detail must be 200 characters or fewer';
+                        } else {
+                            $fields['accommodation_detail'] = $detail;
+                        }
                     }
                 }
             }
