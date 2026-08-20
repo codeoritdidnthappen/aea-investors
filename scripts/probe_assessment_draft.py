@@ -116,8 +116,13 @@ def login_and_get_token(username: str, password: str) -> dict:
     }
     authorize_url = f"{BASE}/oauth2/default/authorize?{urllib.parse.urlencode(params)}"
 
-    def _follow(location: str, *, method: str = "GET", data: bytes | None = None,
-                headers: dict | None = None) -> tuple[str, bytes]:
+    def _follow(
+        location: str,
+        *,
+        method: str = "GET",
+        data: bytes | None = None,
+        headers: dict | None = None,
+    ) -> tuple[str, bytes]:
         """Issue one request, return (next_location_or_empty, body). Never auto-follows."""
         req = urllib.request.Request(location, data=data, headers=headers or {}, method=method)
         try:
@@ -127,7 +132,7 @@ def login_and_get_token(username: str, password: str) -> dict:
             return exc.headers.get("Location", ""), exc.read()
 
     location, body = _follow(authorize_url)
-    if not location and b"provider/login" not in body and b"name=\"username\"" not in body:
+    if not location and b"provider/login" not in body and b'name="username"' not in body:
         raise ProbeError("authorize did not redirect and did not show a login form")
     if location:
         if location.startswith("/"):
@@ -306,8 +311,12 @@ def main() -> int:
     status, body = api("PUT", path, token_a, {"accommodations": ["other_accommodation"]})
     no_detail_required = "error" not in body
     _check(
-        results, "A selects other_accommodation with no detail",
-        status, 200, no_detail_required, body,
+        results,
+        "A selects other_accommodation with no detail",
+        status,
+        200,
+        no_detail_required,
+        body,
     )
 
     # 7. A non-array accommodations value must be rejected, not silently coerced to
@@ -334,7 +343,9 @@ def main() -> int:
 
     # 12. Fill remaining required fields and complete for real.
     status, body = api(
-        "PUT", path, token_a,
+        "PUT",
+        path,
+        token_a,
         {"visit_format": "video", "visit_time_window": "no_preference", "status": "completed"},
     )
     completed = body.get("status") == "completed"
