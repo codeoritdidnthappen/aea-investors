@@ -120,3 +120,27 @@ def test_module_ships_its_own_table_no_core_schema_touched() -> None:
     sql = _sql_text()
     assert "CREATE TABLE IF NOT EXISTS aeai_assessment_draft" in sql
     assert "patient_uuid" in sql
+
+
+def test_service_never_returns_a_bare_array_for_fields() -> None:
+    """TICK-038 regression guard.
+
+    PHP's `json_encode` cannot distinguish an empty associative array from an empty
+    list -- both are just `[]` -- so `'fields' => $fields` (or `'fields' =>
+    json_decode(...)`) serializes an empty/list-like array as JSON `[]`, not `{}`.
+    `ai_server/onboarding/draft_client.py`'s `AssessmentDraft.fields` is always a
+    `dict`, and `flow.py:137`'s `create(token, {})` hits exactly this case on every
+    fresh draft -- confirmed live in evidence/TICK-038 (raw response body
+    `{"uuid":"...","status":"draft","fields":[]}`, rejected by
+    `_draft_from_response`'s `isinstance(fields, dict)` check even though the create
+    call itself succeeded). Every `JsonResponse` construction that includes a
+    `'fields'` key must route through a cast that forces the object shape even when
+    empty (`asFieldsObject()` below), never pass a raw PHP array straight through.
+    """
+    service = _service_text()
+    assert "private function asFieldsObject(array $fields): object" in service
+    assert "return (object) $fields;" in service
+    field_response_sites = re.findall(r"'fields' => ([^,\]]+)", service)
+    assert len(field_response_sites) == 3  # create, read, update
+    for site in field_response_sites:
+        assert site.strip().startswith("$this->asFieldsObject(")

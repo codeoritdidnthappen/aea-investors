@@ -203,3 +203,24 @@ def test_a_non_json_response_fails_explicitly() -> None:
 
     with pytest.raises(OpenEmrRequestError):
         run(adapter_with(httpx.MockTransport(handler)).read("token", "draft-1"))
+
+
+def test_a_fields_array_instead_of_object_fails_explicitly() -> None:
+    """TICK-038: valid JSON, but `fields` shaped as a list is still rejected.
+
+    Live evidence (evidence/TICK-038) showed OpenEMR's own PHP module code returning
+    exactly this raw body for a fresh draft with no checkpointed fields yet --
+    `{"uuid":"...","status":"draft","fields":[]}` -- because PHP's `json_encode`
+    can't tell an empty associative array apart from an empty list. This client
+    correctly treats that as an invalid response rather than silently coercing it;
+    the fix for the underlying bug lives entirely in
+    `openemr_modules/aeai-portal-chat/src/Service/AssessmentDraftService.php`
+    (`asFieldsObject()`), not here -- this test locks in that this side's own
+    validation would still catch it if that fix ever regressed.
+    """
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(201, content=b'{"uuid":"draft-1","status":"draft","fields":[]}')
+
+    with pytest.raises(OpenEmrRequestError, match="invalid assessment draft response"):
+        run(adapter_with(httpx.MockTransport(handler)).create("token", {}))

@@ -65,7 +65,7 @@ class AssessmentDraftService
              VALUES (?, ?, 'draft', ?, ?, ?)",
             [$uuid, $patientUuid, json_encode($fields), $now, $now]
         );
-        return new JsonResponse(['uuid' => $uuid, 'status' => 'draft', 'fields' => $fields], 201);
+        return new JsonResponse(['uuid' => $uuid, 'status' => 'draft', 'fields' => $this->asFieldsObject($fields)], 201);
     }
 
     public function read(?string $patientUuid, string $uuid): JsonResponse
@@ -80,7 +80,7 @@ class AssessmentDraftService
         return new JsonResponse([
             'uuid' => $row['uuid'],
             'status' => $row['status'],
-            'fields' => json_decode($row['payload'], true) ?? [],
+            'fields' => $this->asFieldsObject(json_decode($row['payload'], true) ?? []),
         ], 200);
     }
 
@@ -143,7 +143,7 @@ class AssessmentDraftService
                 'this assessment was changed by another request; reload and retry'
             );
         }
-        return new JsonResponse(['uuid' => $uuid, 'status' => $status, 'fields' => $fields], 200);
+        return new JsonResponse(['uuid' => $uuid, 'status' => $status, 'fields' => $this->asFieldsObject($fields)], 200);
     }
 
     /**
@@ -165,6 +165,22 @@ class AssessmentDraftService
     {
         unset($body['status']);
         return $body;
+    }
+
+    /**
+     * PHP's `json_encode` cannot tell an empty associative array apart from an empty
+     * list -- both are just `[]` in PHP -- so a draft with zero checkpointed fields
+     * (every fresh `create()`, per `ai_server/onboarding/flow.py:137`'s `create(token,
+     * {})`) serializes an empty `fields` array as JSON `[]`, not `{}`. `draft_client.py`'s
+     * `AssessmentDraft.fields` is always a `dict`, so that JSON array fails its
+     * `isinstance(fields, dict)` check and the whole response is rejected as invalid
+     * (TICK-038) even though the request otherwise succeeded. Casting to `object`
+     * forces the empty case to encode as `{}` while leaving a populated array's
+     * encoding unchanged (same keys/values either way).
+     */
+    private function asFieldsObject(array $fields): object
+    {
+        return (object) $fields;
     }
 
     /**
