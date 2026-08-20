@@ -2,6 +2,7 @@
 
 namespace AeaiPortalChat\Service;
 
+use OpenEMR\Common\Database\QueryUtils;
 use Symfony\Component\HttpFoundation\JsonResponse;
 
 /**
@@ -102,12 +103,21 @@ class AssessmentDraftService
             return $fields;
         }
         $status = $requestedCompletion ? 'completed' : 'draft';
+        // `AND status != 'completed'` makes this a compare-and-swap: closes the
+        // window between the read above and this write where a concurrent request
+        // (e.g. a retried client submission) could complete the same draft in
+        // between. If that happens, 0 rows are affected here even though the read
+        // saw a non-completed row -- report the same 409 the read-time check above
+        // would have, rather than a false 200.
         sqlStatement(
             "UPDATE aeai_assessment_draft
                 SET payload = ?, status = ?, updated_at = ?
-              WHERE patient_uuid = ? AND uuid = ?",
+              WHERE patient_uuid = ? AND uuid = ? AND status != 'completed'",
             [json_encode($fields), $status, gmdate('Y-m-d H:i:s'), $patientUuid, $uuid]
         );
+        if (QueryUtils::affectedRows() === 0) {
+            return $this->errorResponse(409, 'this assessment is already completed and cannot be edited');
+        }
         return new JsonResponse(['uuid' => $uuid, 'status' => $status, 'fields' => $fields], 200);
     }
 
