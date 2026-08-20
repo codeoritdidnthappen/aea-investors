@@ -110,8 +110,9 @@ uv run --locked --group dev pytest
 uv run uvicorn ai_server.app.main:app --host 127.0.0.1 --port 8000
 ```
 
-`GET /health` returns a non-sensitive liveness response. The portal module is added
-by its dedicated ticket.
+`GET /health` returns a non-sensitive liveness response. `GET /` serves the embedded
+chat page and `POST /api/chat` streams a turn's reply to it, gated on the AI-session
+cookie. The portal module is added by its dedicated ticket.
 
 The full local demo topology — pinned OpenEMR, MariaDB, and the AI server as
 separate Docker Compose services with persistent local state — lives in
