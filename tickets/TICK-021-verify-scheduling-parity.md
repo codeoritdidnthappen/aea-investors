@@ -26,7 +26,7 @@ exposed/not applicable rather than block on a capability that doesn't exist.
 
 ## Acceptance Criteria
 
-- [ ] A parity matrix covers supported booking, reschedule, cancellation, notice, and eligibility cases exposed by OpenEMR.
+- [ ] A parity matrix covers supported booking, cancellation, notice, and eligibility cases exposed by OpenEMR; reschedule is documented as not exposed/not applicable rather than verified, per the dependency note above (TICK-020 remains permanently blocked on it).
 - [ ] Each case records the same native and chat result using synthetic data.
 - [ ] Any discrepancy blocks release and identifies the authoritative OpenEMR response.
 
