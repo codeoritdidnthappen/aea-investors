@@ -8,10 +8,10 @@ estimate: S
 depends_on: [TICK-017, TICK-035, TICK-037]
 labels: [onboarding, ai-server, openemr]
 source: [FR-8, FR-27]
-status: todo
+status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/75
+builder_commit: 8391156
 ---
-
 ## Context
 
 Found live 2026-08-20 immediately after TICK-037's fix, running onboarding
