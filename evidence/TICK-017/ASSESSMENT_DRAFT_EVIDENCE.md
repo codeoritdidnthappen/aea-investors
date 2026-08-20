@@ -84,14 +84,17 @@ against the live route:
 | 2 | Patient A creates a draft (`POST /portal/patient/assessment`, `help_type` only) | `201` |
 | 3 | Patient A reads it back | `200`, `help_type` present |
 | 4 | Patient A checkpoints `preferred_contact_method`/`contact_value` | `200`, both fields now present |
-| 5 | **Patient B reads patient A's draft by uuid** | `404` |
-| 6 | **Patient B writes patient A's draft by uuid** | `404` |
-| 7 | Patient A submits an invalid `help_type` enum value | `400` |
-| 8 | Patient A requests completion with 2 of 4 required fields present | `400` |
-| 9 | Patient A supplies the remaining required fields and completes | `200`, `status=completed` |
-| 10 | Patient A attempts to edit the now-completed draft | `409` |
+| 5 | Patient A switches `preferred_contact_method` alone, no `contact_value` | `400`, honest "required" message |
+| 6 | Patient A selects `other_accommodation` with no detail supplied | `200` (optional per contract) |
+| 7 | Patient A submits a non-array `accommodations` value | `400` |
+| 8 | **Patient B reads patient A's draft by uuid** | `404` |
+| 9 | **Patient B writes patient A's draft by uuid** | `404` |
+| 10 | Patient A submits an invalid `help_type` enum value | `400` |
+| 11 | Patient A requests completion with 2 of 4 required fields present | `400` |
+| 12 | Patient A supplies the remaining required fields and completes | `200`, `status=completed` |
+| 13 | Patient A attempts to edit the now-completed draft | `409` |
 
-All 10 checks passed (`scripts/probe_assessment_draft.py` exit 0). Steps 5–6 are the
+All 13 checks passed (`scripts/probe_assessment_draft.py` exit 0). Steps 8–9 are the
 binding proof: same mechanism TICK-028 found *missing* on the FHIR `Patient` write
 route, here confirmed present on this new route because it reuses OpenEMR's own
 token-derived patient-UUID rather than trusting any client-supplied identifier.
@@ -132,6 +135,38 @@ actionable `409` either way, not a generic one. `sql/table.sql` updated (applied
 the live table via `ALTER TABLE` for this proof, since module install only runs
 `CREATE TABLE IF NOT EXISTS`), plus a static test locking in that the version column
 is actually used in both the read and the compare-and-swap write.
+
+A third review round found eight more issues (spread across correctness, style, and
+maintenance). Three were genuine correctness bugs in the field-validation logic that
+would hit normal use of the feature, per the user's explicit direction to fix those
+and defer the rest:
+
+- **Fixed:** `accommodation_detail` was enforced as *required* whenever
+  `other_accommodation` was selected, contradicting `ONBOARDING_CONTRACT.md` row 9
+  ("Detail is optional, limited to 200 characters"). Now only validated (length) if
+  supplied; never required. Step 6 above locks this in.
+- **Fixed:** a non-array `accommodations` value was silently coerced to `[]` and
+  saved, overwriting any previously-saved selection with a `200` and no error. Now
+  rejected with `400`. Step 7 above locks this in.
+- **Fixed:** checkpointing a new `preferred_contact_method` without resending
+  `contact_value` re-validated the *stale* old-method-shaped value against the new
+  method, always failing with a misleading format error (e.g. a saved phone number
+  checked against the email regex). `update()` now drops the stale `contact_value`
+  when the method is changing and no fresh value is supplied in the same request,
+  and the error message distinguishes "missing" from "invalid format" so the client
+  knows to supply one, not that the old one was malformed. Step 5 above locks this
+  in.
+
+**Deferred, not fixed** (accepted as-is for this PR, per explicit user direction):
+`parseJsonBody()` accepts a JSON array as well as a JSON object (creates a useless
+empty draft instead of `400`); `accommodation_detail`'s 200-character limit is
+`strlen()` (bytes) rather than a character count, so non-ASCII text could hit it
+early; an array-typed `contact_value` hits a PHP type-coercion warning before
+validation runs rather than a clean `400` (severity depends on the live
+error-handler config, unconfirmed); no schema-migration mechanism for an
+already-installed module (already documented above -- hit during this very
+development); and `_b64url()`/`_pkce_pair()` are duplicated verbatim between this
+script and `scripts/probe_patient_context.py`.
 
 ### Bug found in OpenEMR core along the way
 
