@@ -1,10 +1,10 @@
-"""Unit tests for the `AuthoritativeTool` that wires real booking (TICK-034) and
-cancellation (TICK-036) into chat.
+"""Unit tests for the `AuthoritativeTool` that wires real booking (TICK-034),
+cancellation (TICK-036), and reschedule (TICK-020) into chat.
 
-`BookingTool` is exercised here against a fake `BookingService`/`CancellationService`
-(the tickets' own "Unit-test the new tool against a fake ..." requirement) for
-success, conflict/stale-token, and missing-token cases, plus the existing reschedule
-fallback. `BookingToolSettings` and `NoMappedCandidateSource` are the small pieces of
+`BookingTool` is exercised here against a fake `BookingService`/`CancellationService`/
+`RescheduleService` (the tickets' own "Unit-test the new tool against a fake ..."
+requirement) for success, conflict/stale-token, and missing-token cases.
+`BookingToolSettings` and `NoMappedCandidateSource` are the small pieces of
 configuration/wiring TICK-034 adds around it.
 """
 
@@ -24,6 +24,10 @@ from ai_server.scheduling.cancel import (
     AppointmentNotFoundError,
     CancelledAppointment,
     StaleAppointmentTokenError,
+)
+from ai_server.scheduling.reschedule import (
+    RescheduleCancellationFailedError,
+    RescheduledAppointment,
 )
 
 NOW = datetime(2026, 8, 25, 9, 0, tzinfo=timezone.utc)
@@ -69,6 +73,28 @@ class FakeCancellationService:
         return self.outcome
 
 
+class FakeRescheduleService:
+    """A `RescheduleService`-shaped double that returns or raises exactly what it's told."""
+
+    def __init__(self, outcome: RescheduledAppointment | Exception) -> None:
+        self.outcome = outcome
+        self.calls: list[tuple[str, str, str, str, AppointmentRequest, datetime]] = []
+
+    async def reschedule(
+        self,
+        access_token: str,
+        patient_id: str,
+        slot_token: str,
+        appointment_token: str,
+        request: AppointmentRequest,
+        now: datetime,
+    ) -> RescheduledAppointment:
+        self.calls.append((access_token, patient_id, slot_token, appointment_token, request, now))
+        if isinstance(self.outcome, Exception):
+            raise self.outcome
+        return self.outcome
+
+
 def run(coroutine):
     return asyncio.run(coroutine)
 
@@ -81,15 +107,21 @@ def _refusing_cancellation() -> FakeCancellationService:
     return FakeCancellationService(AssertionError("must not be called"))  # type: ignore[arg-type]
 
 
+def _refusing_reschedule() -> FakeRescheduleService:
+    return FakeRescheduleService(AssertionError("must not be called"))  # type: ignore[arg-type]
+
+
 def tool(
     booking: FakeBookingService,
     cancellation: FakeCancellationService | None = None,
+    reschedule: FakeRescheduleService | None = None,
     access_token: str | None = "token",
     patient_id: str | None = "patient-uuid",
 ) -> BookingTool:
     return BookingTool(
         booking=booking,  # type: ignore[arg-type]
         cancellation=cancellation or _refusing_cancellation(),  # type: ignore[arg-type]
+        reschedule=reschedule or _refusing_reschedule(),  # type: ignore[arg-type]
         appointment_request=REQUEST,
         access_token=access_token,
         patient_id=patient_id,
@@ -255,18 +287,142 @@ def test_cancel_with_no_bound_patient_id_falls_back_without_calling_cancellation
     assert result.public_summary == "No scheduling action is available yet in this demo."
 
 
-# --- AC3: reschedule falls back to the existing no-action summary; a `cancel` plan
-# missing an `appointment_token` does too (TICK-036) --------------------------------
+# --- TICK-020 AC1/AC4: a `reschedule` plan with both a `slot_token` and an
+# `appointment_token` executes through `RescheduleService` -------------------------
 
 
-def test_reschedule_intent_falls_back_to_the_no_action_summary() -> None:
-    booking = FakeBookingService(AssertionError("must not be called"))  # type: ignore[arg-type]
-    plan = PlanningOutput(intent="reschedule")
+def test_reschedule_success_produces_a_public_summary_of_only_the_openemr_confirmed_outcome() -> (
+    None
+):
+    booked = BookedAppointment(
+        id="601", starts_at=NOW + timedelta(hours=3), ends_at=NOW + timedelta(hours=3, minutes=30)
+    )
+    cancelled = CancelledAppointment(id="501", status="cancelled")
+    reschedule = FakeRescheduleService(RescheduledAppointment(booked=booked, cancelled=cancelled))
+    plan = PlanningOutput(
+        intent="reschedule", slot_token="slot_new123", appointment_token="appt_old123"
+    )
 
-    result = run(tool(booking).execute(plan))
+    result = run(tool(_refusing_booking(), _refusing_cancellation(), reschedule).execute(plan))
+
+    assert reschedule.calls == [
+        ("token", "patient-uuid", "slot_new123", "appt_old123", REQUEST, NOW)
+    ]
+    assert "601" in result.public_summary
+    assert "501" in result.public_summary
+    assert booked.starts_at.isoformat() in result.public_summary
+    assert "cancelled" in result.public_summary.lower()
+    # AC4 (FR-20): only the OpenEMR-confirmed outcome, no invented commitment language.
+    assert "confirmed" in result.public_summary.lower()
+
+
+def test_reschedule_stale_or_conflicting_target_slot_leaves_the_original_unchanged() -> None:
+    reschedule = FakeRescheduleService(SlotBookingError("slot token is unknown or already used"))
+    plan = PlanningOutput(
+        intent="reschedule", slot_token="slot_stale", appointment_token="appt_old123"
+    )
+
+    result = run(tool(_refusing_booking(), _refusing_cancellation(), reschedule).execute(plan))
+
+    assert "no longer available" in result.public_summary.lower()
+    assert "unchanged" in result.public_summary.lower()
+    assert "confirmed" not in result.public_summary.lower()
+
+
+def test_reschedule_openemr_booking_failure_leaves_the_original_unchanged() -> None:
+    reschedule = FakeRescheduleService(
+        OpenEmrRequestError("OpenEMR booking request failed with status 409")
+    )
+    plan = PlanningOutput(
+        intent="reschedule", slot_token="slot_conflict", appointment_token="appt_old123"
+    )
+
+    result = run(tool(_refusing_booking(), _refusing_cancellation(), reschedule).execute(plan))
+
+    assert "nothing was booked" in result.public_summary.lower()
+    assert "unchanged" in result.public_summary.lower()
+    assert "confirmed" not in result.public_summary.lower()
+
+
+def test_reschedule_cancellation_failure_after_a_successful_rebook_is_reported_plainly() -> None:
+    """AC3: cancelling the original after a successful rebook must never be silently
+    dropped -- the patient is told the new appointment is confirmed and to contact
+    the clinic if the old one is not."""
+    booked = BookedAppointment(
+        id="601", starts_at=NOW + timedelta(hours=3), ends_at=NOW + timedelta(hours=3, minutes=30)
+    )
+    reschedule = FakeRescheduleService(
+        RescheduleCancellationFailedError("OpenEMR appointment cancellation failed", booked)
+    )
+    plan = PlanningOutput(
+        intent="reschedule", slot_token="slot_new123", appointment_token="appt_old123"
+    )
+
+    result = run(tool(_refusing_booking(), _refusing_cancellation(), reschedule).execute(plan))
+
+    assert "601" in result.public_summary
+    assert "confirmed" in result.public_summary.lower()
+    assert "may still be active" in result.public_summary.lower()
+    assert "contact the clinic" in result.public_summary.lower()
+
+
+def test_reschedule_intent_missing_a_slot_token_falls_back_to_the_no_action_summary() -> None:
+    reschedule = _refusing_reschedule()
+    plan = PlanningOutput(intent="reschedule", appointment_token="appt_old123")
+
+    result = run(tool(_refusing_booking(), _refusing_cancellation(), reschedule).execute(plan))
 
     assert result.public_summary == "No scheduling action is available yet in this demo."
-    assert booking.calls == []
+
+
+def test_reschedule_intent_missing_an_appointment_token_falls_back_to_the_no_action_summary() -> (
+    None
+):
+    reschedule = _refusing_reschedule()
+    plan = PlanningOutput(intent="reschedule", slot_token="slot_new123")
+
+    result = run(tool(_refusing_booking(), _refusing_cancellation(), reschedule).execute(plan))
+
+    assert result.public_summary == "No scheduling action is available yet in this demo."
+
+
+def test_reschedule_intent_missing_both_tokens_falls_back_to_the_no_action_summary() -> None:
+    reschedule = _refusing_reschedule()
+    plan = PlanningOutput(intent="reschedule")
+
+    result = run(tool(_refusing_booking(), _refusing_cancellation(), reschedule).execute(plan))
+
+    assert result.public_summary == "No scheduling action is available yet in this demo."
+
+
+def test_reschedule_with_no_delegated_access_token_falls_back_without_calling_reschedule() -> None:
+    reschedule = _refusing_reschedule()
+    plan = PlanningOutput(
+        intent="reschedule", slot_token="slot_new123", appointment_token="appt_old123"
+    )
+
+    result = run(
+        tool(_refusing_booking(), _refusing_cancellation(), reschedule, access_token=None).execute(
+            plan
+        )
+    )
+
+    assert result.public_summary == "No scheduling action is available yet in this demo."
+
+
+def test_reschedule_with_no_bound_patient_id_falls_back_without_calling_reschedule() -> None:
+    reschedule = _refusing_reschedule()
+    plan = PlanningOutput(
+        intent="reschedule", slot_token="slot_new123", appointment_token="appt_old123"
+    )
+
+    result = run(
+        tool(_refusing_booking(), _refusing_cancellation(), reschedule, patient_id=None).execute(
+            plan
+        )
+    )
+
+    assert result.public_summary == "No scheduling action is available yet in this demo."
 
 
 def test_cancel_intent_with_no_token_falls_back_to_the_no_action_summary() -> None:

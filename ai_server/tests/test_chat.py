@@ -243,13 +243,15 @@ def test_ac3_no_action_tool_never_claims_a_scheduling_success() -> None:
     assert "confirmed" not in summary.lower()
 
 
-def test_ac3_chat_service_disables_booking_and_reschedule_pending_a_real_tool(
+def test_ac3_chat_service_disables_booking_pending_it_being_offered_in_this_demo(
     tmp_path: Path,
 ) -> None:
-    """Rescheduling has no OpenEMR service method (TICK-020, permanently blocked);
-    booking's own `scheduling_rules` flag is unchanged by this ticket. Cancellation is
-    now wired to a real tool (TICK-036), so it is no longer disabled here -- see
-    `test_tick036_cancellation_is_enabled_now_that_a_real_tool_exists` below."""
+    """Booking's own `scheduling_rules` flag is unchanged by this ticket -- kept
+    disabled deliberately for this demo (TICK-039), unrelated to whether
+    `BookingService` itself works. Cancellation (TICK-036) and reschedule (TICK-020)
+    are both wired to real tools now, so neither is disabled here -- see
+    `test_tick036_cancellation_is_enabled_now_that_a_real_tool_exists` and
+    `test_tick020_reschedule_is_enabled_now_that_a_real_tool_exists` below."""
     del tmp_path
     captured: list[OutboundPayload] = []
 
@@ -272,7 +274,28 @@ def test_ac3_chat_service_disables_booking_and_reschedule_pending_a_real_tool(
     assert len(captured) == 1
     rules = captured[0].scheduling_rules
     assert rules.booking_enabled is False
-    assert rules.rescheduling_enabled is False
+
+
+def test_tick020_reschedule_is_enabled_now_that_a_real_tool_exists() -> None:
+    captured: list[OutboundPayload] = []
+
+    class CapturingWorkflow(GroqWorkflow):
+        def __init__(self) -> None:
+            super().__init__(PrivacyGate.create(), client=None)  # type: ignore[arg-type]
+
+        async def respond(self, payload, tool):  # type: ignore[override]
+            captured.append(payload)
+            yield "ok"
+
+    service = ChatService(
+        workflow=CapturingWorkflow(), tool_factory=no_action_tool_factory(), clock=lambda: NOW
+    )
+
+    async def run() -> list[str]:
+        return [chunk async for chunk in service.stream_reply("Can you reschedule my appointment?")]
+
+    assert asyncio.run(run()) == ["ok"]
+    assert captured[0].scheduling_rules.rescheduling_enabled is True
 
 
 def test_tick036_cancellation_is_enabled_now_that_a_real_tool_exists() -> None:

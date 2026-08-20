@@ -55,6 +55,7 @@ from ai_server.scheduling.booking import (
     OpenEmrBookingSettings,
 )
 from ai_server.scheduling.cancel import AppointmentCancelAdapter, CancellationService
+from ai_server.scheduling.reschedule import RescheduleService
 from ai_server.scheduling.slots import AnonymousSlotStore, SlotDiscoveryService
 
 
@@ -298,6 +299,10 @@ def _build_scheduling_tool(
     cancellation_service = CancellationService(
         appointment_store, AppointmentCancelAdapter(portal_settings, client)
     )
+    # Composes the same booking_service/cancellation_service instances above, not new
+    # ones, so a reschedule's book/cancel calls still resolve through the one shared
+    # slot_store/appointment_store single-use guarantee (TICK-020).
+    reschedule_service = RescheduleService(booking_service, cancellation_service)
     schedule_adapter = OpenEmrScheduleAdapter(schedule_settings, client)
     slot_discovery = SlotDiscoveryService(NoMappedCandidateSource(), schedule_adapter, slot_store)
     appointment_discovery = AppointmentDiscoveryService(schedule_adapter, appointment_store)
@@ -307,6 +312,7 @@ def _build_scheduling_tool(
         return BookingTool(
             booking=booking_service,
             cancellation=cancellation_service,
+            reschedule=reschedule_service,
             appointment_request=appointment_request,
             access_token=access_token,
             patient_id=patient_id,

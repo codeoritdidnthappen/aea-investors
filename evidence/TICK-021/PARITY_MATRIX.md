@@ -32,16 +32,24 @@ the enforcement mechanism this ticket adds, not a manual sign-off.
 | Eligibility denied: another patient's or an unknown appointment id | `404` — `AppointmentCancelService::forPatient` filters by both the token-derived `puuid` and the requested `auuid` in one `search()` call, so a mismatch is never found, not found-then-rejected (`openemr_modules/aeai-portal-chat/.../AppointmentCancelService.php`, locked by `ai_server/tests/test_appointment_cancel_module.py`) | `AppointmentNotFoundError` raised; no cancellation ever implied | PARITY | `test_cancel_eligibility_denied_for_another_patients_appointment` |
 | Already cancelled | `409 {"error": "this appointment is already cancelled"}` | `AppointmentAlreadyCancelledError` raised carrying OpenEMR's own message text unaltered (AC3: "identifies the authoritative OpenEMR response") | PARITY | `test_cancel_already_cancelled_native_message_surfaces_unaltered` |
 
-## Reschedule — not exposed / not applicable
+## Reschedule — composed, not a native OpenEMR capability
 
 | Case | Result |
 |---|---|
-| Reschedule an existing appointment's date/time/duration | **Not exposed on OpenEMR v8.3.0.** No Standard/FHIR route and no callable `AppointmentService` method exist — only ~150 lines of inline SQL in the legacy `interface/main/calendar/add_edit_event.php` page (`evidence/TICK-001/ENDPOINT_MATRIX.md`'s reschedule row). TICK-020 (`tickets/TICK-020-manage-appointments.md`) stays permanently `blocked` on this — there is no OpenEMR behavior to compare a chat result against, so this row is documented as not applicable rather than verified, per this ticket's own dependency note (2026-08-20). |
+| Reschedule an existing appointment's date/time/duration | **Still not exposed as a single OpenEMR capability on v8.3.0.** No Standard/FHIR route and no callable `AppointmentService` update method exist — only ~150 lines of inline SQL in the legacy `interface/main/calendar/add_edit_event.php` page (`evidence/TICK-001/ENDPOINT_MATRIX.md`'s reschedule row). TICK-020 (`tickets/TICK-020-manage-appointments.md`), re-scoped 2026-08-20, does not add a third OpenEMR write path for this: `ai_server.scheduling.reschedule.RescheduleService` instead **composes** the booking and cancellation rows already proven above — book the new slot first, and only cancel the original once OpenEMR has confirmed the new one — so there is still no single native reschedule policy to parity-check, only the two policies this matrix already covers, called in sequence. |
 
-Locked by `test_reschedule_has_no_callable_path_in_ai_server_scheduling` (no
-reschedule-named symbol exists in `ai_server.scheduling` to relay) and
-`test_reschedule_is_documented_as_not_exposed_not_applicable` (this file and
-TICK-020's own file stay in sync with that claim).
+Locked by `test_reschedule_has_no_native_write_path_of_its_own_in_booking_or_cancel_modules`
+(no reschedule-named symbol exists in `ai_server.scheduling.booking`/`cancel` — the
+composition lives in its own `ai_server.scheduling.reschedule` module) and
+`test_reschedule_is_documented_as_a_composition_not_a_native_openemr_capability` (this
+file and TICK-020's own file stay in sync with that claim). `ai_server/tests/
+test_reschedule.py` is `RescheduleService`'s own synthetic coverage: the happy path
+(book then cancel, in that order), a stale/conflicting target slot (booking fails,
+original never touched), and cancellation failing after a successful rebook (reported
+via `RescheduleCancellationFailedError`, never silently dropped). Live proof status
+for the happy path and the conflicting-slot case is tracked separately in
+`evidence/TICK-020/RESCHEDULE_EVIDENCE.md`, mirroring this file's own "What this does
+not cover, and why" section below.
 
 ## What this does not cover, and why
 

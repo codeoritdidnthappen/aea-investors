@@ -41,6 +41,7 @@ from ai_server.scheduling.cancel import (
     CancellationService,
     StaleAppointmentTokenError,
 )
+from ai_server.scheduling.reschedule import RescheduleCancellationFailedError, RescheduleService
 from ai_server.scheduling.slots import CandidateSlot, SlotDiscoveryService
 
 SYSTEM_PROMPT = (
@@ -50,20 +51,22 @@ SYSTEM_PROMPT = (
     "appointment was booked, rescheduled, or cancelled; that can only be confirmed by "
     "OpenEMR, not by you. To cancel, reference one of the caller's own current "
     "appointments by its appointment_token; never invent or ask the patient for an "
-    "appointment id. If every scheduling action is disabled, say so and do not propose "
-    "one. Do not give clinical or treatment advice; if asked, say you can only help "
-    "with scheduling."
+    "appointment id. To reschedule, reference one of the caller's own current "
+    "appointments by its appointment_token together with one open slot by its "
+    "slot_token; never invent or ask the patient for either identifier. If every "
+    "scheduling action is disabled, say so and do not propose one. Do not give "
+    "clinical or treatment advice; if asked, say you can only help with scheduling."
 )
 
-# Rescheduling has no OpenEMR service method (TICK-020 is permanently blocked), so
-# that action stays disabled regardless of tool wiring. Cancellation is now wired to a
-# real `AuthoritativeTool` implementation (TICK-036), so it is enabled here; the model
-# still only learns actual appointments to reference from scheduling_context's
-# current_appointments, never from anything client- or model-supplied.
+# Cancellation (TICK-036) and reschedule (TICK-020, a server-side composition of
+# booking + cancellation, never a new OpenEMR write path) are both wired to real
+# `AuthoritativeTool` behavior, so both are enabled here; the model still only learns
+# actual appointments/slots to reference from scheduling_context's
+# current_appointments/open_slots, never from anything client- or model-supplied.
 _SCHEDULING_RULES = SchedulingRules(
     minimum_booking_notice_minutes=1440,
     booking_enabled=False,
-    rescheduling_enabled=False,
+    rescheduling_enabled=True,
     cancellation_enabled=True,
 )
 _TIMEZONE = "America/Chicago"
@@ -81,13 +84,12 @@ NO_ACTION_SUMMARY = "No scheduling action is available yet in this demo."
 class NoActionTool(AuthoritativeTool):
     """The fallback `AuthoritativeTool` for every intent `BookingTool` cannot perform.
 
-    Rescheduling has no OpenEMR service method (TICK-020 is permanently blocked), so
-    this tool performs no OpenEMR operation and reports none occurred. `BookingTool`
-    also delegates here for a `book` intent missing a `slot_token`, a `cancel` intent
-    missing an `appointment_token`, or either intent missing this turn's delegated
-    session credentials, and `_build_scheduling_tool` (`ai_server/app/main.py`) uses
-    this as the whole tool for any environment missing the OpenEMR settings booking or
-    cancellation need (TICK-034 AC3/AC5, TICK-036).
+    `BookingTool` delegates here for a `book` intent missing a `slot_token`, a
+    `cancel` intent missing an `appointment_token`, a `reschedule` intent missing
+    either token, or any intent missing this turn's delegated session credentials,
+    and `_build_scheduling_tool` (`ai_server/app/main.py`) uses this as the whole
+    tool for any environment missing the OpenEMR settings booking, cancellation, or
+    reschedule need (TICK-034 AC3/AC5, TICK-036, TICK-020).
     """
 
     async def execute(self, plan: PlanningOutput) -> AuthoritativeToolResult:
@@ -97,9 +99,10 @@ class NoActionTool(AuthoritativeTool):
 
 @dataclass(frozen=True)
 class BookingTool(AuthoritativeTool):
-    """Executes a `book` plan through `BookingService` and a `cancel` plan through
-    `CancellationService`; everything else falls back to `NoActionTool` (TICK-034 AC3,
-    TICK-036 AC4).
+    """Executes a `book` plan through `BookingService`, a `cancel` plan through
+    `CancellationService`, and a `reschedule` plan through `RescheduleService`
+    (which itself composes those same two services, TICK-020); everything else
+    falls back to `NoActionTool` (TICK-034 AC3, TICK-036 AC4, TICK-020 AC1).
 
     `access_token`/`patient_id` are this turn's already-delegated OpenEMR credentials
     (`SessionStore.access_token`/`patient_uuid`, `ai_server/app/main.py`'s `/api/chat`
@@ -116,6 +119,7 @@ class BookingTool(AuthoritativeTool):
 
     booking: BookingService
     cancellation: CancellationService
+    reschedule: RescheduleService
     appointment_request: AppointmentRequest
     access_token: str | None
     patient_id: str | None
@@ -126,6 +130,12 @@ class BookingTool(AuthoritativeTool):
             return await self._execute_book(plan.slot_token)
         if plan.intent == "cancel" and plan.appointment_token is not None:
             return await self._execute_cancel(plan.appointment_token)
+        if (
+            plan.intent == "reschedule"
+            and plan.slot_token is not None
+            and plan.appointment_token is not None
+        ):
+            return await self._execute_reschedule(plan.appointment_token, plan.slot_token)
         return await NoActionTool().execute(plan)
 
     async def _execute_book(self, slot_token: str) -> AuthoritativeToolResult:
@@ -193,6 +203,59 @@ class BookingTool(AuthoritativeTool):
             public_summary=(
                 "Cancelled and confirmed by OpenEMR: appointment "
                 f"{cancelled.id} is now {cancelled.status}."
+            )
+        )
+
+    async def _execute_reschedule(
+        self, appointment_token: str, slot_token: str
+    ) -> AuthoritativeToolResult:
+        if self.access_token is None or self.patient_id is None:
+            # No delegated session credentials for this turn -- no OpenEMR call is
+            # possible, same as booking/cancellation above.
+            return AuthoritativeToolResult(public_summary=NO_ACTION_SUMMARY)
+        try:
+            rescheduled = await self.reschedule.reschedule(
+                self.access_token,
+                self.patient_id,
+                slot_token,
+                appointment_token,
+                self.appointment_request,
+                self.now,
+            )
+        except SlotBookingError:
+            return AuthoritativeToolResult(
+                public_summary=(
+                    "That new appointment time is no longer available, so nothing "
+                    "was rescheduled and your original appointment is unchanged. "
+                    "Please ask for open times again and choose a new one."
+                )
+            )
+        except RescheduleCancellationFailedError as exc:
+            return AuthoritativeToolResult(
+                public_summary=(
+                    "Your new appointment is confirmed by OpenEMR: appointment "
+                    f"{exc.booked.id}, {exc.booked.starts_at.isoformat()} to "
+                    f"{exc.booked.ends_at.isoformat()}. However, OpenEMR could not "
+                    "confirm that your original appointment was cancelled, so it "
+                    "may still be active -- please contact the clinic if it isn't "
+                    "cancelled."
+                )
+            )
+        except OpenEmrRequestError:
+            return AuthoritativeToolResult(
+                public_summary=(
+                    "OpenEMR could not confirm that reschedule just now, so nothing "
+                    "was booked and your original appointment is unchanged. Please "
+                    "try again."
+                )
+            )
+        return AuthoritativeToolResult(
+            public_summary=(
+                "Rescheduled and confirmed by OpenEMR: your new appointment is "
+                f"{rescheduled.booked.id}, {rescheduled.booked.starts_at.isoformat()} "
+                f"to {rescheduled.booked.ends_at.isoformat()}, and your original "
+                f"appointment {rescheduled.cancelled.id} is now "
+                f"{rescheduled.cancelled.status}."
             )
         )
 

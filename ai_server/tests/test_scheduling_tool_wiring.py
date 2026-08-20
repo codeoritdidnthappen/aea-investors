@@ -1,10 +1,12 @@
-"""Tests for wiring the real booking/cancellation tool into `ChatService` (TICK-034
-AC5, TICK-036).
+"""Tests for wiring the real booking/cancellation/reschedule tool into `ChatService`
+(TICK-034 AC5, TICK-036, TICK-020).
 
 `_build_scheduling_tool` mirrors `_build_onboarding_service`'s tolerance of absent
 OpenEMR configuration: every environment missing the Standard/FHIR/Portal API base
 URLs or the admin-configured booking fields gets today's fixed no-action tool and no
-slot/appointment discovery, instead of a startup failure.
+slot/appointment discovery, instead of a startup failure. Reschedule (TICK-020) needs
+no configuration of its own beyond booking/cancellation's, since it only composes
+those two already-built services.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ from ai_server.app.chat import BookingTool, NoActionTool
 from ai_server.app.main import _build_chat_service, _build_scheduling_tool
 from ai_server.llm.groq import PlanningOutput
 from ai_server.scheduling.appointments import AppointmentDiscoveryService
+from ai_server.scheduling.reschedule import RescheduleService
 from ai_server.scheduling.slots import SlotDiscoveryService
 
 NOW = datetime(2026, 8, 25, 9, 0, tzinfo=timezone.utc)
@@ -105,6 +108,7 @@ def test_every_required_setting_present_builds_the_real_tool_and_discovery(
     assert isinstance(appointment_discovery, AppointmentDiscoveryService)
     tool = factory("token", "patient-uuid", NOW)
     assert isinstance(tool, BookingTool)
+    assert isinstance(tool.reschedule, RescheduleService)
     assert tool.appointment_request.category_id == "5"
     assert tool.appointment_request.title == "Office Visit"
     assert tool.appointment_request.facility_id == "9"
@@ -151,6 +155,25 @@ def test_the_same_appointment_store_backs_both_discovery_and_the_cancellation_to
     assert isinstance(tool, BookingTool)
 
     assert appointment_discovery._store is tool.cancellation._store  # type: ignore[attr-defined]
+
+
+def test_the_reschedule_service_composes_the_same_booking_and_cancellation_instances(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """TICK-020: a reschedule must resolve through the exact same
+    `BookingService`/`CancellationService` instances `book`/`cancel` intents use, not
+    freshly constructed ones, so single-use token guarantees still hold."""
+    _clear_env(monkeypatch)
+    for name, value in _REQUIRED_ENV.items():
+        monkeypatch.setenv(name, value)
+    client = httpx.AsyncClient()
+
+    factory, _, _ = _build_scheduling_tool(client)
+    tool = factory("token", "patient-uuid", NOW)
+    assert isinstance(tool, BookingTool)
+
+    assert tool.reschedule._booking is tool.booking  # type: ignore[attr-defined]
+    assert tool.reschedule._cancellation is tool.cancellation  # type: ignore[attr-defined]
 
 
 def test_build_chat_service_falls_back_to_unavailable_without_groq_settings(

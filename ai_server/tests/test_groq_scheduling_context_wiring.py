@@ -234,6 +234,12 @@ class RefusingBookingService:
         raise AssertionError("booking must not be called for a cancel-only scenario")
 
 
+@dataclass
+class RefusingRescheduleService:
+    async def reschedule(self, *args: object, **kwargs: object) -> None:
+        raise AssertionError("reschedule must not be called for a cancel-only scenario")
+
+
 def test_ac2_a_groq_shaped_response_with_the_real_token_reaches_cancellation_service() -> None:
     """End to end through the real `GroqWorkflow`/`HttpGroqClient`/`BookingTool`:
     a Groq peer that only resolves an `appointment_token` when it can see
@@ -277,6 +283,7 @@ def test_ac2_a_groq_shaped_response_with_the_real_token_reaches_cancellation_ser
             tool = BookingTool(
                 booking=RefusingBookingService(),  # type: ignore[arg-type]
                 cancellation=cancellation,  # type: ignore[arg-type]
+                reschedule=RefusingRescheduleService(),  # type: ignore[arg-type]
                 appointment_request=AppointmentRequest(
                     category_id="5", title="Office Visit", facility_id="9", billing_location_id="10"
                 ),
@@ -337,6 +344,7 @@ def test_ac3_without_scheduling_context_in_the_request_no_action_is_the_honest_o
             tool = BookingTool(
                 booking=RefusingBookingService(),  # type: ignore[arg-type]
                 cancellation=cancellation,  # type: ignore[arg-type]
+                reschedule=RefusingRescheduleService(),  # type: ignore[arg-type]
                 appointment_request=AppointmentRequest(
                     category_id="5", title="Office Visit", facility_id="9", billing_location_id="10"
                 ),

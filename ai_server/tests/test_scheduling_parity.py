@@ -14,12 +14,13 @@ that way. A discrepancy here is a real policy drift, not a flaky test, and fails
 (AC3). `evidence/TICK-021/PARITY_MATRIX.md` is the human-readable table this file
 backs; keep the two in sync.
 
-Reschedule has no row here: no OpenEMR route or callable service method exists to
-compare against (`evidence/TICK-001/ENDPOINT_MATRIX.md`'s reschedule row; TICK-020's
-`blocked_reason`), so it is documented as not exposed/not applicable rather than
-verified, per this ticket's dependency note.
-`test_reschedule_is_documented_as_not_exposed_not_applicable` locks that
-documentation in rather than silently drifting if either file changes.
+Reschedule has no row of its own here: no OpenEMR route or callable service method
+exists for an in-place reschedule (`evidence/TICK-001/ENDPOINT_MATRIX.md`'s reschedule
+row), so there is no single native policy to parity-check against. TICK-020 instead
+composes the booking and cancellation rows below (`ai_server.scheduling.reschedule.
+RescheduleService`) rather than adding a third, independent OpenEMR write path; see
+`evidence/TICK-020/RESCHEDULE_EVIDENCE.md` and `ai_server/tests/test_reschedule.py`
+for that composition's own coverage.
 """
 
 from __future__ import annotations
@@ -235,35 +236,36 @@ def test_cancel_already_cancelled_native_message_surfaces_unaltered() -> None:
         run(cancel_adapter(httpx.MockTransport(native)).cancel("token", "appt-1"))
 
 
-# --- RESCHEDULE: not exposed, documented rather than verified -----------------------
+# --- RESCHEDULE: composed from booking + cancellation (TICK-020) -------------------
 
 
-def test_reschedule_has_no_callable_path_in_ai_server_scheduling() -> None:
-    """Locks in the absence this matrix documents: neither scheduling module exposes
-    a reschedule operation to relay, because none exists to relay
+def test_reschedule_has_no_native_write_path_of_its_own_in_booking_or_cancel_modules() -> None:
+    """`ai_server/scheduling/booking.py` and `ai_server/scheduling/cancel.py` still
+    gain no reschedule-specific OpenEMR write path of their own -- no update method
+    exists for an in-place reschedule on this pinned OpenEMR release
     (`evidence/TICK-001/ENDPOINT_MATRIX.md`).
+    `ai_server.scheduling.reschedule.RescheduleService` (TICK-020) composes these two
+    modules' existing book/cancel calls instead of adding a new one to either.
     """
     for module in (booking_module, cancel_module):
         public_names = {name for name in dir(module) if not name.startswith("_")}
         assert not any("reschedule" in name.lower() for name in public_names)
 
 
-def test_reschedule_is_documented_as_not_exposed_not_applicable() -> None:
-    """TICK-020 (reschedule) is not yet built: re-scoped 2026-08-20 to a
-    cancel-then-rebook plan that explicitly depends on TICK-039 landing first
-    (`depends_on` in its own ticket file), because no OpenEMR service method for an
-    in-place reschedule exists on this pinned release either way. This ticket's own
-    AC says reschedule must be documented as not exposed/not applicable rather than
-    verified until then. Checking the committed files directly (not a hand-copied
-    assumption) keeps this test honest if either one is ever edited.
+def test_reschedule_is_documented_as_a_composition_not_a_native_openemr_capability() -> None:
+    """TICK-020 (re-scoped 2026-08-20): OpenEMR v8.3.0 still has no callable service
+    method for an in-place reschedule, so there is no single native policy to
+    parity-check the way booking/cancellation are above. Reschedule instead composes
+    those two already-verified policies (`ai_server.scheduling.reschedule.
+    RescheduleService`); this test locks that both the ticket and the parity matrix
+    document that composition rather than silently drifting if either file changes.
     """
     tick_020 = (_REPO_ROOT / "tickets" / "TICK-020-manage-appointments.md").read_text(
         encoding="utf-8"
     )
-    assert "status: todo" in tick_020
-    assert "TICK-039" in tick_020
-    assert "no OpenEMR service method exists" in tick_020 or "no update method" in tick_020
+    assert "cancel-then-rebook" in tick_020
+    assert "no update method" in tick_020
 
     matrix = (_REPO_ROOT / "evidence" / "TICK-021" / "PARITY_MATRIX.md").read_text(encoding="utf-8")
     assert "Reschedule" in matrix
-    assert "not exposed" in matrix.lower() or "not applicable" in matrix.lower()
+    assert "compose" in matrix.lower()
