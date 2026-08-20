@@ -76,6 +76,18 @@ def test_service_scopes_every_query_by_patient_uuid() -> None:
     assert "WHERE uuid = ?" not in service
 
 
+def test_service_update_uses_optimistic_concurrency_control() -> None:
+    service = _service_text()
+    # forPatient() must read the version a request will later compare-and-swap on,
+    # and the UPDATE must guard on that exact value read earlier in the same
+    # request -- otherwise two concurrent checkpoint writes can silently clobber
+    # each other (each merges from its own stale read).
+    assert "SELECT uuid, status, payload, version" in service
+    assert "SET payload = ?, status = ?, updated_at = ?, version = version + 1" in service
+    assert "AND version = ?" in service
+    assert "$row['version']" in service
+
+
 def test_service_uses_parameterized_queries_only() -> None:
     service = _service_text()
     # Every sql* call's SQL string (its first argument) must use placeholders, never
