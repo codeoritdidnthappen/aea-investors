@@ -8,9 +8,9 @@ estimate: M
 depends_on: [TICK-034]
 labels: [chat, scheduling, langgraph]
 source: [FR-9, FR-14, FR-15, FR-16, FR-20]
-status: todo
+status: done
+builder_commit: 52979c1
 ---
-
 ## Context
 
 Split from TICK-034 (2026-08-20) to keep booking's clean, already-solved path

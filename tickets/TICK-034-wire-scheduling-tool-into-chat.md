@@ -8,9 +8,9 @@ estimate: M
 depends_on: [TICK-010, TICK-031, TICK-035]
 labels: [chat, scheduling, langgraph]
 source: [FR-11, FR-12, FR-16, FR-20]
-status: todo
+status: done
+builder_commit: 8f7a750
 ---
-
 ## Context
 
 `ai_server/app/chat.py`'s `NoActionTool` is the only `AuthoritativeTool`
