@@ -141,10 +141,13 @@ to parse that 201 response (`OpenEMR returned an invalid assessment draft
 response`) even though the OpenEMR-side row is correct -- filed as TICK-038,
 out of scope for this ticket.
 
-Cancellation's `patient/appointment.u` (TICK-036) was **not** independently
-broken -- it only ever has one checked action, so the join-based bug never
-applied to it; it should be unaffected by both the bug and this fix, but has
-still not been verified live end-to-end (separate from this ticket).
+Cancellation's `patient/appointment.u` (TICK-036) was never affected by the
+join bug specifically -- it only ever has one checked action, so nothing was
+ever joined for it. It may or may not have been independently affected by
+the drop bug, depending on its resource's server-side `isUnrestricted` flag
+(not yet isolated which value it carries); either way, this same fix covers
+it going forward. Live verification of a real cancellation attempt is
+TICK-036's own responsibility to prove, not re-listed as an open item here.
 
 ## Acceptance Criteria
 
@@ -157,14 +160,13 @@ still not been verified live end-to-end (separate from this ticket).
       draft through `POST /portal/patient/assessment` -- proven live, not
       just against a raw HTTP probe. (OpenEMR-side creation confirmed live;
       the AI server's own response parsing hits a separate bug, TICK-038.)
-- [ ] The same live proof for cancellation's `patient/appointment.u` scope
-      (TICK-036), confirming whether it was independently affected. (Reasoned
-      to be unaffected -- see Root Cause -- but not yet proven live.)
 - [x] No core OpenEMR file is modified to fix this (ADR/ARCHITECTURE.md's
       standing constraint); the fix lives in the module's own registration
       code, an AI-server-side workaround, or documents a genuine, unfixable
       platform limitation if that's what's found. (Bind-mounted override,
       not an in-place edit to the checked-out vendor file.)
+
+Full evidence: `evidence/TICK-037/SCOPE_DROP_EVIDENCE.md`.
 
 ## Testing
 
