@@ -8,8 +8,9 @@ estimate: L
 depends_on: [TICK-014, TICK-015, TICK-016, TICK-035, TICK-042]
 labels: [onboarding, ocr, chat]
 source: [FR-6, FR-7, FR-21, FR-22, FR-23, FR-25, NFR-23, NFR-29]
-status: todo
+status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/90
+builder_commit: 1697d22
 ---
 ## Context
 
@@ -87,27 +88,29 @@ just another shaped message on the same `POST /api/chat` turn.
 
 ## Acceptance Criteria
 
-- [ ] A patient can, through the real chat UI, attach a synthetic ID image,
+- [x] A patient can, through the real chat UI, attach a synthetic ID image,
       consent, and see the OCR-extracted fields offered as suggestions on
       the same given/family/DOB/address prompts already in `FIELD_PROMPTS`
       -- proven live (real Tesseract, a real fixture image), not just
       mocked in a unit test.
-- [ ] Only the patient's own typed confirmation/correction reaches
+- [x] Only the patient's own typed confirmation/correction reaches
       `state.identity` -- an extracted-but-unconfirmed value has no path to
       a write, verified by a test that submits an upload and then replies
       with a *different* value than what was extracted, asserting the
       corrected value (not the extracted one) is what gets written.
-- [ ] Malformed/oversized/non-image uploads and a Tesseract-unavailable
+- [x] Malformed/oversized/non-image uploads and a Tesseract-unavailable
       empty result (TICK-014's own ACs) are reachable and produce a clear,
       non-crashing rejection through the chat surface.
-- [ ] The upload's image and extracted values are purged
+- [x] The upload's image and extracted values are purged
       (`OcrService.delete`/`revoke`) and provably inaccessible after the
       turn that consumes them -- test that a second `identity()`/`image()`
       call on the same `upload_id` returns `None`.
-- [ ] The no-upload path is unchanged: existing onboarding tests keep
+- [x] The no-upload path is unchanged: existing onboarding tests keep
       passing without modification.
-- [ ] `TICK-024`'s own "OCR confirmation" acceptance criterion can finally
+- [x] `TICK-024`'s own "OCR confirmation" acceptance criterion can finally
       be exercised live once this lands.
+
+Full evidence: `evidence/TICK-044/OCR_UPLOAD_CHAT_EVIDENCE.md`.
 
 ## Testing
 
