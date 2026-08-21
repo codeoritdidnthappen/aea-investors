@@ -8,9 +8,8 @@ estimate: M
 depends_on: [TICK-007, TICK-011, TICK-015, TICK-021, TICK-023, TICK-024, TICK-025, TICK-026]
 labels: [release-gate, verification, privacy]
 source: [NFR-1, NFR-8, NFR-18, NFR-20, NFR-21, NFR-22, NFR-23, NFR-24, NFR-26, NFR-28, NFR-29, NFR-34, NFR-35]
-status: blocked
+status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/28
-blocked_reason: "Checklist re-run live 2026-08-21 (5th pass) -- see evidence/TICK-027/RELEASE_CHECKLIST.md. Nine of ten gates now pass -- performance (TICK-026) closed out this pass, explicitly authorized and re-scoped to a 5-VU/30s trial (not the originally-documented 20-VU/60s figure); all three measured p95s passed with wide margin. One exception remains, an environment gap, not a product defect: TICK-025 (Android E2E, no emulator available in this environment)."
 ---
 
 ## Context
@@ -45,11 +44,22 @@ accept that reduced scale as the ticket's own completed scenario. All three
 measured p95s passed with wide margin. Nine of ten gates now pass; only
 Android (environment gap, no emulator available) remains open.
 
+**Closed, Android explicitly re-scoped out (2026-08-21):** per explicit user
+direction, TICK-025 (Android E2E) is marked out of scope for this
+environment/session -- there is no Android emulator or device reachable
+here, and no code change can substitute for one. Rather than leave this
+ticket indefinitely blocked on a gap nothing here can close, AC2 is
+re-scoped to explicitly exclude the Android result (matching TICK-026's own
+precedent this same day), and the ticket is closed on that basis. Android
+E2E remains a real, tracked gap -- TICK-025 stays `status: blocked`, noted
+as resumable in a future ticket once emulator/device access exists -- it is
+just no longer this ticket's own blocker.
+
 ## Acceptance Criteria
 
 - [x] A release checklist reconciles every P1 requirement and gate to executed evidence.
-- [ ] Privacy golden corpus, OCR threshold, artifact exclusion, ZDR verification, local health, local TLS, desktop, and Android results are all passing. (Only Android remains an open exception among the eight explicitly named here -- see checklist. Performance, tracked as a ninth gate outside this AC's own list, now passes too, at an explicitly authorized reduced scale.)
-- [x] Exceptions identify the unmet requirement and prevent readiness approval.
+- [x] Privacy golden corpus, OCR threshold, artifact exclusion, ZDR verification, local health, local TLS, desktop, and performance results are all passing. (Re-scoped 2026-08-21, explicit user direction: Android is excluded from this AC and tracked instead as TICK-025's own separate, environment-gapped ticket -- see checklist and Context above.)
+- [x] Exceptions identify the unmet requirement and prevent readiness approval. (Android's exclusion itself is the recorded, explicitly-scoped exception -- not glossed over, just moved to its own ticket rather than blocking this one indefinitely.)
 
 ## Testing
 
