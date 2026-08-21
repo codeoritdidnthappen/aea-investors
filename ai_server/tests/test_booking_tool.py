@@ -191,14 +191,22 @@ def test_book_with_no_delegated_access_token_falls_back_without_calling_booking(
     assert booking.calls == []
 
 
-def test_book_with_no_bound_patient_id_falls_back_without_calling_booking() -> None:
-    booking = FakeBookingService(AssertionError("must not be called"))  # type: ignore[arg-type]
+def test_book_with_no_bound_patient_id_still_books_tick_040() -> None:
+    """TICK-040: booking no longer needs patient_id at all -- the module route
+    resolves the caller's patient id itself, server-side, from the access token.
+    A session missing only patient_id (SessionStore.patient_uuid() is documented
+    best-effort, TICK-028) must not be refused booking on that account alone,
+    unlike cancel/reschedule, which still need it."""
+    booked = BookedAppointment(
+        id="501", starts_at=NOW + timedelta(hours=2), ends_at=NOW + timedelta(hours=2, minutes=30)
+    )
+    booking = FakeBookingService(booked)
     plan = PlanningOutput(intent="book", slot_token="slot_abc123")
 
     result = run(tool(booking, patient_id=None).execute(plan))
 
-    assert result.public_summary == "No scheduling action is available yet in this demo."
-    assert booking.calls == []
+    assert booking.calls == [("token", "slot_abc123", REQUEST, NOW)]
+    assert "confirmed" in result.public_summary.lower()
 
 
 # --- TICK-036 AC4: a `cancel` plan with an `appointment_token` executes through
