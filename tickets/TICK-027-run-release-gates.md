@@ -10,7 +10,7 @@ labels: [release-gate, verification, privacy]
 source: [NFR-1, NFR-8, NFR-18, NFR-20, NFR-21, NFR-22, NFR-23, NFR-24, NFR-26, NFR-28, NFR-29, NFR-34, NFR-35]
 status: blocked
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/28
-blocked_reason: "Checklist re-run live 2026-08-20 (4th pass) -- see evidence/TICK-027/RELEASE_CHECKLIST.md. Nine of ten P1 gates now pass with fresh evidence -- desktop Chrome (TICK-024) closed out this pass now that TICK-044 landed and was live-verified (OCR confirmation was the last open item). Two exceptions remain, both environment/authorization gaps, not product defects: TICK-025 (Android E2E, no emulator available in this environment) and TICK-026 (performance, requires explicit user authorization to spend against a live API key, not yet requested)."
+blocked_reason: "Checklist re-run live 2026-08-21 (5th pass) -- see evidence/TICK-027/RELEASE_CHECKLIST.md. Nine of ten gates now pass -- performance (TICK-026) closed out this pass, explicitly authorized and re-scoped to a 5-VU/30s trial (not the originally-documented 20-VU/60s figure); all three measured p95s passed with wide margin. One exception remains, an environment gap, not a product defect: TICK-025 (Android E2E, no emulator available in this environment)."
 ---
 
 ## Context
@@ -38,10 +38,17 @@ through the real chat UI. Desktop Chrome (TICK-024) now fully passes --
 and performance (needs explicit spend authorization) remain open, neither a
 product defect.
 
+**Re-run a fifth time (2026-08-21):** performance (TICK-026) closed out
+this pass. Explicit user authorization for a cost-contained trial (5 VU/30s,
+not the originally-documented 20 VU/60s), followed by explicit direction to
+accept that reduced scale as the ticket's own completed scenario. All three
+measured p95s passed with wide margin. Nine of ten gates now pass; only
+Android (environment gap, no emulator available) remains open.
+
 ## Acceptance Criteria
 
 - [x] A release checklist reconciles every P1 requirement and gate to executed evidence.
-- [ ] Privacy golden corpus, OCR threshold, artifact exclusion, ZDR verification, local health, local TLS, desktop, and Android results are all passing. (Nine of ten pass; only Android remains an open exception among the eight explicitly named here -- performance is tracked as a ninth gate outside this AC's own list and also remains open -- see checklist.)
+- [ ] Privacy golden corpus, OCR threshold, artifact exclusion, ZDR verification, local health, local TLS, desktop, and Android results are all passing. (Only Android remains an open exception among the eight explicitly named here -- see checklist. Performance, tracked as a ninth gate outside this AC's own list, now passes too, at an explicitly authorized reduced scale.)
 - [x] Exceptions identify the unmet requirement and prevent readiness approval.
 
 ## Testing
