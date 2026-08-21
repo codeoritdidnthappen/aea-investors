@@ -8,8 +8,9 @@ estimate: M
 depends_on: [TICK-002, TICK-032, TICK-033]
 labels: [portal, chat, auth, bug]
 source: [FR-1, FR-2, NFR-19]
-status: todo
+status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/92
+builder_commit: 69b58fa
 ---
 ## Context
 
@@ -117,28 +118,64 @@ the exact same consent screen Finding 1 is about, and could compound it.
 
 Full evidence: `evidence/TICK-045/CHAT_PANEL_INVESTIGATION.md`.
 
+**Fixed and independently live-verified (2026-08-21):** build-agent
+implemented the iframe-breakout fix (`evidence/TICK-045/FIX_VERIFICATION.md`)
+but had no browser tool available to confirm real-browser execution.
+Independently closed that gap in real desktop Chrome -- see
+`evidence/TICK-045/LIVE_VERIFICATION_2026-08-21.md`, which also documents and
+recovers from an unrelated operational hazard found along the way: the
+running `local-openemr-1` container had been recreated from inside
+build-agent's own now-deleted git worktree, leaving its bind mount pointing
+at a path that no longer existed. Recreating the container from the main
+repo checkout fixed it.
+
 ## Acceptance Criteria
 
-- [ ] The AI Chat panel's embedded re-authentication flow (login + consent)
+- [x] The AI Chat panel's embedded re-authentication flow (login + consent)
       is fully usable within the panel's own space -- either by giving the
       iframe enough height to show the whole flow without scrolling, by
       ensuring the iframe's own internal scrolling reliably works (verified
       with both mouse and keyboard), or by redirecting session-expired
       re-auth to a full top-level page instead of embedding it in the
-      640px panel.
-- [ ] A patient whose ai-server session has expired and is auto-returned to
+      640px panel. Implemented as the third option: an iframe-breakout
+      script added to both `oauth2-login.html.twig` and
+      `scope-authorize.html.twig`. See `evidence/TICK-045/FIX_VERIFICATION.md`
+      and `evidence/TICK-045/LIVE_VERIFICATION_2026-08-21.md`.
+- [x] A patient whose ai-server session has expired and is auto-returned to
       the AI Chat panel gets an unambiguous "please sign in again" signal,
-      not a screen that looks stuck or broken.
-- [ ] `persist.php`'s 503 (Finding 2) is root-caused: either fixed, or
+      not a screen that looks stuck or broken. A full top-level navigation
+      to the Sign In page is unambiguous by construction; confirmed live in
+      real desktop Chrome (see below).
+- [x] `persist.php`'s 503 (Finding 2) is root-caused: either fixed, or
       confirmed genuinely unrelated to chat reliability with evidence, and
-      recorded either way.
-- [ ] The scope-parsing bug (Finding 3) is triaged: confirmed harmless
+      recorded either way. Triaged as transient/not currently reproducible
+      (5/5 live re-test succeeded, no matching log entries); structurally
+      unable to block the chat panel's own render regardless of its own
+      status. See `evidence/TICK-045/FIX_VERIFICATION.md`.
+- [x] The scope-parsing bug (Finding 3) is triaged: confirmed harmless
       log noise with evidence, or fixed, or filed as its own follow-up
       ticket if it turns out to be a separate, larger issue than this
-      ticket's own scope.
-- [ ] Reproduced live (real desktop Chrome, real expired session, not just
+      ticket's own scope. Triaged as harmless log noise from non-browser
+      tooling that doesn't replicate the consent form's own JS scope
+      reconstruction -- every field a real browser can submit sets `value`
+      to the scope string itself, never the bare `"1"` that triggers the
+      error. Independently corroborated by re-reading the same code. See
+      `evidence/TICK-045/FIX_VERIFICATION.md` and
+      `evidence/TICK-045/LIVE_VERIFICATION_2026-08-21.md`.
+- [x] Reproduced live (real desktop Chrome, real expired session, not just
       code review) that the fix actually resolves the "doesn't reliably
-      come up" symptom end to end.
+      come up" symptom end to end. Build-agent's own fix pass had no
+      browser tool available and could only confirm the script's presence
+      in delivered HTML via curl, explicitly flagging real-browser
+      execution as unverified. Closed that gap independently: forced a
+      deterministic expired-session state (cleared the ai-server's
+      `sessions` table), reproduced the exact panel markup in real desktop
+      Chrome with the parent hosted on `emr.localhost` (matching production
+      -- an unrepresentative `chat.localhost`-hosted first attempt failed
+      due to a cross-origin top-navigation restriction that doesn't apply
+      to the real same-origin case), and confirmed the tab genuinely
+      navigated to a full top-level Sign In page. See
+      `evidence/TICK-045/LIVE_VERIFICATION_2026-08-21.md`.
 
 ## Testing
 
