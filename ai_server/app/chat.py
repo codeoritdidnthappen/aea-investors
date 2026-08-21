@@ -137,9 +137,13 @@ class BookingTool(AuthoritativeTool):
         return await NoActionTool().execute(plan)
 
     async def _execute_book(self, slot_token: str) -> AuthoritativeToolResult:
-        if self.access_token is None or self.patient_id is None:
-            # No delegated session credentials for this turn (e.g. the session's
-            # patient id was never captured, TICK-028) -- no OpenEMR call is possible.
+        if self.access_token is None:
+            # No delegated access token for this turn -- no OpenEMR call is possible.
+            # Unlike cancel/reschedule, booking (TICK-040) no longer needs patient_id
+            # at all -- the module route resolves the caller's patient id itself,
+            # server-side, from the access token -- so a session missing only
+            # patient_id (SessionStore.patient_uuid() is documented best-effort,
+            # TICK-028) must not be refused booking on that account alone.
             return AuthoritativeToolResult(public_summary=NO_ACTION_SUMMARY)
         try:
             booked = await self.booking.book(

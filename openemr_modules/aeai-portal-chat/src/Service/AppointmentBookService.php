@@ -72,6 +72,11 @@ class AppointmentBookService
         if (empty($eid)) {
             return $this->errorResponse(500, 'OpenEMR could not create the appointment');
         }
+        // insert() generates and writes a real uuid internally (a fresh
+        // UuidRegistry::createUuid() call) but only returns $eid, not the uuid it
+        // just used -- an extra SELECT is the only way to recover the exact value
+        // actually stored, short of duplicating that internal generation, which
+        // would produce a different uuid than the one on the row.
         $row = sqlQuery('SELECT uuid FROM openemr_postcalendar_events WHERE pc_eid = ?', [$eid]);
         $auuid = !empty($row['uuid']) ? UuidRegistry::uuidToString($row['uuid']) : (string) $eid;
 
@@ -87,12 +92,12 @@ class AppointmentBookService
         $fields = [];
 
         foreach (self::REQUIRED_INT_FIELDS as $field) {
-            $value = $body[$field] ?? null;
-            if (!is_int($value) && !(is_string($value) && ctype_digit($value))) {
+            $value = self::asInt($body[$field] ?? null);
+            if ($value === null) {
                 $errors[] = "$field must be an integer";
                 continue;
             }
-            $fields[$field] = (int) $value;
+            $fields[$field] = $value;
         }
 
         foreach (self::REQUIRED_STRING_FIELDS as $field) {
@@ -105,10 +110,11 @@ class AppointmentBookService
         }
 
         if (isset($body['pc_aid'])) {
-            if (!is_int($body['pc_aid']) && !(is_string($body['pc_aid']) && ctype_digit($body['pc_aid']))) {
+            $value = self::asInt($body['pc_aid']);
+            if ($value === null) {
                 $errors[] = 'pc_aid must be an integer';
             } else {
-                $fields['pc_aid'] = (int) $body['pc_aid'];
+                $fields['pc_aid'] = $value;
             }
         }
 
@@ -117,6 +123,20 @@ class AppointmentBookService
         }
 
         return $fields;
+    }
+
+    /** Accepts a real int or a digit-only string (JSON has no distinct integer type
+     * guarantee for every client); anything else -- including a negative or
+     * float-looking string -- is not a valid id/count here. */
+    private static function asInt(mixed $value): ?int
+    {
+        if (is_int($value)) {
+            return $value;
+        }
+        if (is_string($value) && ctype_digit($value)) {
+            return (int) $value;
+        }
+        return null;
     }
 
     private function errorResponse(int $status, string $message, array $details = []): JsonResponse
