@@ -19,6 +19,8 @@ use Symfony\Component\HttpFoundation\JsonResponse;
  */
 class AppointmentBookController
 {
+    use ParsesJsonRequestBody;
+
     public function subscribeToEvents(EventDispatcherInterface $eventDispatcher): void
     {
         $eventDispatcher->addListener(RestApiScopeEvent::EVENT_TYPE_GET_SUPPORTED_SCOPES, $this->addScopes(...));
@@ -44,24 +46,5 @@ class AppointmentBookController
             }
         );
         return $event;
-    }
-
-    /**
-     * @return array|JsonResponse Decoded body, or a 400 if it isn't valid JSON.
-     *
-     * Same rationale as `AssessmentDraftController::parseJsonBody()`:
-     * `HttpRestRequest::getRequestBodyJSON()` fatals on this OpenEMR version.
-     */
-    private function parseJsonBody(): array|JsonResponse
-    {
-        $raw = file_get_contents('php://input');
-        if ($raw === false || trim($raw) === '') {
-            return [];
-        }
-        $decoded = json_decode($raw, true);
-        if (json_last_error() !== JSON_ERROR_NONE || !is_array($decoded)) {
-            return new JsonResponse(['error' => 'request body must be a JSON object'], 400);
-        }
-        return $decoded;
     }
 }
