@@ -8,9 +8,8 @@ estimate: L
 depends_on: [TICK-013, TICK-015, TICK-016, TICK-017, TICK-031, TICK-023, TICK-032, TICK-033, TICK-038, TICK-039, TICK-040, TICK-041, TICK-042, TICK-044]
 labels: [e2e, chrome, verification]
 source: [FR-1, FR-2, FR-6, FR-12, FR-14, FR-18, FR-19, NFR-18, NFR-19, NFR-35]
-status: blocked
+status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/25
-blocked_reason: "Re-attempted live 2026-08-20 a third time now that TICK-038/039/040/041/042 all landed. Every other AC item now verified live end to end: login, iframe launch, session, streaming, full onboarding conversation through real completion with a real patient_data write, real appointment cancellation with DB confirmation, accessibility/keyboard operability. See evidence/TICK-024/DESKTOP_E2E_EVIDENCE_3.md. Only remaining gap: OCR confirmation has no live path to test -- not a bug, a missing integration (ai_server/ocr/ and ai_server/onboarding/ were each built and tested independently but never wired together; onboarding's identity capture asks the patient to type fields directly, with no upload step anywhere in the flow). Filed as TICK-044 (build ticket, out of this verification ticket's own scope). Blocked on TICK-044 landing."
 ---
 
 ## Context
@@ -50,11 +49,23 @@ wired together. Filed as **TICK-044** (a build ticket, out of this
 verification ticket's own scope) -- see
 `evidence/TICK-024/DESKTOP_E2E_EVIDENCE_3.md`.
 
+**Closed out (2026-08-20):** TICK-044 landed and was live-verified through
+the real chat UI -- a real synthetic ID photo uploaded through the real
+"Attach ID photo" file input, genuinely processed by local Tesseract, shown
+as a suggestion on the given/family/DOB/address prompts, and only the
+patient's own typed corrections (not the extracted values) reached the
+final `patient_data` write. Every AC item this ticket lists has now been
+verified live at least once: login, iframe launch, session, streaming,
+onboarding (including OCR confirmation), appointment operations
+(book/cancel/reschedule), fallback, and keyboard/accessibility. See
+`evidence/TICK-044/OCR_UPLOAD_CHAT_EVIDENCE.md` for the OCR-confirmation
+proof.
+
 ## Acceptance Criteria
 
-- [ ] Synthetic-patient E2E coverage exercises login, iframe launch, session, streaming, onboarding, OCR confirmation, appointment operations, and fallback.
-- [ ] Keyboard and baseline accessibility checks pass on the embedded chat.
-- [ ] Failures capture reproducible evidence without protected values.
+- [x] Synthetic-patient E2E coverage exercises login, iframe launch, session, streaming, onboarding, OCR confirmation, appointment operations, and fallback.
+- [x] Keyboard and baseline accessibility checks pass on the embedded chat.
+- [x] Failures capture reproducible evidence without protected values.
 
 ## Testing
 

@@ -10,7 +10,7 @@ labels: [release-gate, verification, privacy]
 source: [NFR-1, NFR-8, NFR-18, NFR-20, NFR-21, NFR-22, NFR-23, NFR-24, NFR-26, NFR-28, NFR-29, NFR-34, NFR-35]
 status: blocked
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/28
-blocked_reason: "Checklist re-run live 2026-08-20 (3rd pass) -- see evidence/TICK-027/RELEASE_CHECKLIST.md. Eight of ten P1 gates now pass with fresh evidence (privacy golden corpus, artifact exclusion, OCR threshold, ZDR, local health, local TLS, >=80% test coverage, and now reschedule -- TICK-020 landed and is no longer a permanent exception). Two exceptions remain, both inherited from their own tickets: TICK-024 (desktop E2E, narrowed to a single remaining gap -- OCR confirmation has no live path to test, blocked on TICK-044, a build ticket), TICK-025 (Android E2E, blocked on no emulator in this environment). TICK-026 (performance) still requires explicit user authorization before it can run against a live API key -- not yet requested. Re-run once TICK-044 and TICK-025 land/unblock."
+blocked_reason: "Checklist re-run live 2026-08-20 (4th pass) -- see evidence/TICK-027/RELEASE_CHECKLIST.md. Nine of ten P1 gates now pass with fresh evidence -- desktop Chrome (TICK-024) closed out this pass now that TICK-044 landed and was live-verified (OCR confirmation was the last open item). Two exceptions remain, both environment/authorization gaps, not product defects: TICK-025 (Android E2E, no emulator available in this environment) and TICK-026 (performance, requires explicit user authorization to spend against a live API key, not yet requested)."
 ---
 
 ## Context
@@ -32,10 +32,16 @@ as TICK-044), not a bug. Android (TICK-025) and performance (TICK-026)
 remain unchanged, for the same reasons already on record. See
 `evidence/TICK-027/RELEASE_CHECKLIST.md`.
 
+**Re-run a fourth time (2026-08-20):** TICK-044 landed and was live-verified
+through the real chat UI. Desktop Chrome (TICK-024) now fully passes --
+`status: done`. Nine of ten P1 gates pass; only Android (environment gap)
+and performance (needs explicit spend authorization) remain open, neither a
+product defect.
+
 ## Acceptance Criteria
 
 - [x] A release checklist reconciles every P1 requirement and gate to executed evidence.
-- [ ] Privacy golden corpus, OCR threshold, artifact exclusion, ZDR verification, local health, local TLS, desktop, and Android results are all passing. (Eight of ten pass; desktop (narrowed to one OCR-wiring gap, TICK-044), Android, and performance remain open exceptions -- see checklist.)
+- [ ] Privacy golden corpus, OCR threshold, artifact exclusion, ZDR verification, local health, local TLS, desktop, and Android results are all passing. (Nine of ten pass; only Android remains an open exception among the eight explicitly named here -- performance is tracked as a ninth gate outside this AC's own list and also remains open -- see checklist.)
 - [x] Exceptions identify the unmet requirement and prevent readiness approval.
 
 ## Testing
