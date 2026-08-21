@@ -74,18 +74,21 @@ _TIMEZONE = "America/Chicago"
 
 
 # An `upload_identity_document` onboarding action (TICK-044,
-# `ai_server/app/onboarding_chat.py`) reuses this same field for its base64-encoded
-# image instead of a dedicated upload route -- base64 inflates raw bytes by 4/3
-# (ceiling to a whole group of 4 characters), and a fixed pad covers the small JSON
-# envelope around it, so a max-size OCR upload (`ai_server.ocr.service`'s own
-# `MAX_UPLOAD_BYTES`) is never rejected here before `OcrService` itself validates it.
-_MAX_CHAT_MESSAGE_LENGTH = ((MAX_UPLOAD_BYTES + 2) // 3) * 4 + 1_000
+# `ai_server/app/onboarding_chat.py`) carries its base64-encoded image in this
+# dedicated field, not `message` -- keeping `message` at its original 4,000-character
+# cap for every other chat turn (scheduling included) instead of widening it for
+# everyone just to fit an image. Base64 inflates raw bytes by 4/3 (ceiling to a whole
+# group of 4 characters); a fixed pad covers the field's own JSON encoding overhead,
+# so a max-size OCR upload (`ai_server.ocr.service`'s own `MAX_UPLOAD_BYTES`) is never
+# rejected here before `OcrService` itself validates it.
+_MAX_IMAGE_BASE64_LENGTH = ((MAX_UPLOAD_BYTES + 2) // 3) * 4 + 1_000
 
 
 class ChatTurnRequest(BaseModel):
     """The only shape the iframe may send to the AI server for a turn."""
 
-    message: str = Field(min_length=1, max_length=_MAX_CHAT_MESSAGE_LENGTH)
+    message: str = Field(min_length=1, max_length=4_000)
+    image_base64: str | None = Field(default=None, max_length=_MAX_IMAGE_BASE64_LENGTH)
 
 
 NO_ACTION_SUMMARY = "No scheduling action is available yet in this demo."
@@ -556,15 +559,18 @@ CHAT_PAGE_HTML = """<!doctype html>
     <button type="submit" id="chat-send">Send</button>
   </form>
   <div id="upload-identity">
-    <label for="id-photo-input">Attach ID photo</label>
-    <input type="file" id="id-photo-input" accept="image/png,image/jpeg"
-      aria-describedby="upload-caption">
     <p id="upload-caption">
-      During onboarding, you can attach a photo of your ID here to prefill your name,
-      date of birth, and address as suggestions you still confirm or correct
-      yourself. It is read locally and discarded once you confirm or correct those
-      fields.
+      During onboarding, you can attach a photo of your ID to prefill your name, date
+      of birth, and address as suggestions you still confirm or correct yourself. A
+      synthetic ID image is read locally and discarded once you confirm or correct
+      those fields.
     </p>
+    <label for="upload-consent">
+      <input type="checkbox" id="upload-consent">
+      I consent to a synthetic ID image being read locally for this purpose.
+    </label>
+    <input type="file" id="id-photo-input" accept="image/png,image/jpeg" disabled
+      aria-describedby="upload-caption">
   </div>
 </main>
 <script>
@@ -574,6 +580,7 @@ CHAT_PAGE_HTML = """<!doctype html>
   var input = document.getElementById("chat-input");
   var sendButton = document.getElementById("chat-send");
   var idPhotoInput = document.getElementById("id-photo-input");
+  var uploadConsent = document.getElementById("upload-consent");
   var status = document.getElementById("chat-status");
   var transcript = document.getElementById("chat-transcript");
   var fallback = document.getElementById("chat-fallback");
@@ -605,7 +612,9 @@ CHAT_PAGE_HTML = """<!doctype html>
   // Shared by the typed-message form and the ID-photo attachment below: both send
   // their JSON-shaped body through this one call to the same /api/chat turn below
   // (TICK-044 reuses the existing chat-message pipe instead of a separate route).
-  function sendMessage(message, displayText) {
+  // `imageBase64` travels as its own request field, never appended into `message`,
+  // so the 4,000-character message cap stays the same for every other chat turn.
+  function sendMessage(message, displayText, imageBase64) {
     sendButton.disabled = true;
     idPhotoInput.disabled = true;
     fallback.setAttribute("data-visible", "false");
@@ -623,14 +632,19 @@ CHAT_PAGE_HTML = """<!doctype html>
 
     function reenableControls() {
       sendButton.disabled = false;
-      idPhotoInput.disabled = false;
+      idPhotoInput.disabled = !uploadConsent.checked;
+    }
+
+    var body = { message: message };
+    if (imageBase64) {
+      body.image_base64 = imageBase64;
     }
 
     fetch("/api/chat", {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: message }),
+      body: JSON.stringify(body),
       signal: controller.signal
     }).then(function (response) {
       if (!response.ok || !response.body) {
@@ -671,9 +685,16 @@ CHAT_PAGE_HTML = """<!doctype html>
     sendMessage(message, message);
   });
 
+  // The file input stays disabled until this checkbox is explicitly ticked (FR-21,
+  // ONBOARDING_CONTRACT.md field 1: consent is its own unticked-by-default step, not
+  // implied by selecting a file) -- nothing is ever read from disk before that.
+  uploadConsent.addEventListener("change", function () {
+    idPhotoInput.disabled = !uploadConsent.checked;
+  });
+
   idPhotoInput.addEventListener("change", function () {
     var file = idPhotoInput.files && idPhotoInput.files[0];
-    if (!file) {
+    if (!file || !uploadConsent.checked) {
       return;
     }
     var reader = new FileReader();
@@ -683,11 +704,12 @@ CHAT_PAGE_HTML = """<!doctype html>
       var base64 = commaIndex >= 0 ? dataUrl.slice(commaIndex + 1) : dataUrl;
       var message = JSON.stringify({
         action: "upload_identity_document",
-        consent: true,
-        image_base64: base64
+        consent: uploadConsent.checked
       });
-      sendMessage(message, "Attached ID photo: " + file.name);
+      sendMessage(message, "Attached ID photo: " + file.name, base64);
       idPhotoInput.value = "";
+      uploadConsent.checked = false;
+      idPhotoInput.disabled = true;
     };
     reader.readAsDataURL(file);
   });

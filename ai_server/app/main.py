@@ -200,7 +200,8 @@ def create_app(
                 configured_session_store, clock
             )
             return StreamingResponse(
-                onboarding.stream_reply(handle, turn.message), media_type="text/plain"
+                onboarding.stream_reply(handle, turn.message, turn.image_base64),
+                media_type="text/plain",
             )
         service = configured_chat_service or unavailable_chat_service()
         # Retrieved for this call only (TICK-034 AC1): never persisted, logged, or

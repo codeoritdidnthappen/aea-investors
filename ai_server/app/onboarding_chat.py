@@ -186,7 +186,8 @@ def _parsed_upload_request(message: str) -> dict[str, object] | None:
     """Return the parsed body of an `upload_identity_document` chat action, or `None`
     if `message` isn't that JSON-shaped action -- same JSON-message discipline as
     `_parsed_action`, kept separate because this action carries a payload beyond its
-    name (`consent`, `image_base64`)."""
+    name (`consent`; the image itself travels as `stream_reply`'s own separate
+    `image_base64` argument, never inside this JSON body)."""
     try:
         parsed = json.loads(message)
     except (json.JSONDecodeError, ValueError):
@@ -290,7 +291,9 @@ class OnboardingChatService:
     clock: Callable[[], datetime] = utc_now
     _sessions: dict[str, _SessionState] = field(default_factory=dict)
 
-    async def stream_reply(self, handle: str, message: str) -> AsyncIterator[str]:
+    async def stream_reply(
+        self, handle: str, message: str, image_base64: str | None = None
+    ) -> AsyncIterator[str]:
         """Yield the fixed unavailable message, or the next onboarding step's reply."""
         if self.flow is None:
             yield UNAVAILABLE_ONBOARDING_RESPONSE
@@ -357,7 +360,7 @@ class OnboardingChatService:
             upload_request = _parsed_upload_request(message)
             if upload_request is not None:
                 async for chunk in self._handle_identity_upload(
-                    state, upload_request, pause_text, now
+                    state, upload_request, image_base64, pause_text, now
                 ):
                     yield chunk
                 return
@@ -394,6 +397,7 @@ class OnboardingChatService:
         self,
         state: _SessionState,
         request: dict[str, object],
+        image_base64: str | None,
         pause_text: str,
         now: datetime,
     ) -> AsyncIterator[str]:
@@ -426,7 +430,6 @@ class OnboardingChatService:
             return
 
         identity: ExtractedIdentity | None = None
-        image_base64 = request.get("image_base64")
         if isinstance(image_base64, str):
             try:
                 image_bytes: bytes | None = base64.b64decode(image_base64, validate=True)

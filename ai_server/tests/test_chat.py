@@ -23,6 +23,7 @@ from ai_server.app.chat import (
 )
 from ai_server.app.main import create_app
 from ai_server.llm.groq import UNAVAILABLE_RESPONSE, GroqWorkflow
+from ai_server.ocr.service import MAX_UPLOAD_BYTES
 from ai_server.privacy.gate import OutboundPayload, PrivacyGate
 from ai_server.scheduling.appointments import AnonymousAppointmentToken
 from ai_server.scheduling.slots import AnonymousSlotToken
@@ -71,7 +72,11 @@ class ScriptedChatService:
 
 
 async def _post_chat(
-    app, cookie: str | None, message: str = "Hello", origin: str | None = "https://chat.test"
+    app,
+    cookie: str | None,
+    message: str = "Hello",
+    origin: str | None = "https://chat.test",
+    image_base64: str | None = None,
 ) -> httpx.Response:
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(
@@ -80,7 +85,31 @@ async def _post_chat(
             cookies={"ai_session": cookie} if cookie else None,
         ) as client:
             headers = {"origin": origin} if origin else None
-            return await client.post("/api/chat", json={"message": message}, headers=headers)
+            body: dict[str, object] = {"message": message}
+            if image_base64 is not None:
+                body["image_base64"] = image_base64
+            return await client.post("/api/chat", json=body, headers=headers)
+
+
+def test_tick_044_message_length_cap_is_unwidened_by_the_separate_image_field(
+    tmp_path: Path,
+) -> None:
+    """TICK-044 review finding: image_base64 must never widen the `message` cap that
+    every other chat turn (scheduling included) shares -- an oversized image belongs
+    only in its own field, capped separately at ai_server.ocr.service.MAX_UPLOAD_BYTES'
+    base64-inflated size."""
+    app = create_app(settings(tmp_path), clock=lambda: NOW, chat_service=unavailable_chat_service())
+
+    oversized_message = asyncio.run(_post_chat(app, cookie=None, message="x" * 4_001))
+    assert oversized_message.status_code == 422
+
+    oversized_image = asyncio.run(
+        _post_chat(app, cookie=None, image_base64="x" * (MAX_UPLOAD_BYTES * 2))
+    )
+    assert oversized_image.status_code == 422
+
+    within_cap_image = asyncio.run(_post_chat(app, cookie=None, image_base64="x" * 1_000))
+    assert within_cap_image.status_code != 422  # rejected later (no session), not by shape
 
 
 # --- AC1: the UI only ever talks to this server's own AI-session-gated route -----

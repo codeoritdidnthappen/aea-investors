@@ -223,8 +223,10 @@ def _flow(server: _SyntheticOpenEmr) -> OnboardingFlow:
     return OnboardingFlow(draft_adapter, demographics_adapter)
 
 
-async def _send(service: OnboardingChatService, handle: str, message: str) -> str:
-    return "".join([chunk async for chunk in service.stream_reply(handle, message)])
+async def _send(
+    service: OnboardingChatService, handle: str, message: str, image_base64: str | None = None
+) -> str:
+    return "".join([chunk async for chunk in service.stream_reply(handle, message, image_base64)])
 
 
 def _bound_session(store: SessionStore, ttl: timedelta = timedelta(minutes=30)) -> str:
@@ -488,7 +490,10 @@ def test_completion_without_a_bound_patient_uuid_still_completes_tick_042(
 class _ScriptedOnboardingService:
     calls: list[tuple[str, str]] = field(default_factory=list)
 
-    async def stream_reply(self, handle: str, message: str) -> AsyncIterator[str]:
+    async def stream_reply(
+        self, handle: str, message: str, image_base64: str | None = None
+    ) -> AsyncIterator[str]:
+        del image_base64
         self.calls.append((handle, message))
         yield "onboarding-reply"
 
@@ -650,14 +655,12 @@ class _RecordingOcrService(OcrService):
         return upload_id
 
 
-def _upload_message(image: bytes, *, consent: bool = True) -> str:
-    return json.dumps(
-        {
-            "action": "upload_identity_document",
-            "consent": consent,
-            "image_base64": base64.b64encode(image).decode("ascii"),
-        }
-    )
+def _upload_action(*, consent: bool = True) -> str:
+    return json.dumps({"action": "upload_identity_document", "consent": consent})
+
+
+def _image_base64(image: bytes) -> str:
+    return base64.b64encode(image).decode("ascii")
 
 
 async def _advance_to_given_name(service: OnboardingChatService, handle: str) -> str:
@@ -728,7 +731,7 @@ def test_tick_044_each_invalid_upload_subtype_is_rejected_with_a_clear_retry_mes
     async def scenario() -> None:
         await _advance_to_given_name(service, handle)
 
-        reply = await _send(service, handle, _upload_message(bad_image))
+        reply = await _send(service, handle, _upload_action(), _image_base64(bad_image))
 
         assert SUPPORTIVE_CONTENT[Trigger.UPLOAD_FAILURE] in reply
         assert FIELD_PROMPTS["given_name"] in reply
@@ -746,22 +749,10 @@ def test_tick_044_a_missing_or_non_base64_image_payload_is_rejected_with_a_clear
     async def scenario() -> None:
         await _advance_to_given_name(service, handle)
 
-        missing_image_reply = await _send(
-            service, handle, json.dumps({"action": "upload_identity_document", "consent": True})
-        )
+        missing_image_reply = await _send(service, handle, _upload_action())
         assert SUPPORTIVE_CONTENT[Trigger.UPLOAD_FAILURE] in missing_image_reply
 
-        bad_base64_reply = await _send(
-            service,
-            handle,
-            json.dumps(
-                {
-                    "action": "upload_identity_document",
-                    "consent": True,
-                    "image_base64": "not valid base64!!",
-                }
-            ),
-        )
+        bad_base64_reply = await _send(service, handle, _upload_action(), "not valid base64!!")
         assert SUPPORTIVE_CONTENT[Trigger.UPLOAD_FAILURE] in bad_base64_reply
         assert engine.calls == []  # neither malformed payload ever reached the OCR engine
 
@@ -777,7 +768,7 @@ def test_tick_044_a_tesseract_unavailable_empty_result_is_a_clear_retryable_reje
     async def scenario() -> None:
         await _advance_to_given_name(service, handle)
 
-        reply = await _send(service, handle, _upload_message(_png_bytes()))
+        reply = await _send(service, handle, _upload_action(), _image_base64(_png_bytes()))
 
         assert SUPPORTIVE_CONTENT[Trigger.UPLOAD_FAILURE] in reply
         assert FIELD_PROMPTS["given_name"] in reply
@@ -798,7 +789,7 @@ def test_tick_044_a_successful_upload_purges_the_image_and_extraction_immediatel
     async def scenario() -> None:
         await _advance_to_given_name(service, handle)
 
-        reply = await _send(service, handle, _upload_message(_png_bytes()))
+        reply = await _send(service, handle, _upload_action(), _image_base64(_png_bytes()))
 
         assert "Avery Alden" in reply
         upload_id = ocr.last_upload_id
@@ -818,7 +809,9 @@ def test_tick_044_successful_extraction_offers_hints_on_every_identity_prompt(
     async def scenario() -> None:
         await _advance_to_given_name(service, handle)
 
-        given_name_reply = await _send(service, handle, _upload_message(_png_bytes()))
+        given_name_reply = await _send(
+            service, handle, _upload_action(), _image_base64(_png_bytes())
+        )
         assert "We read your given name as 'Avery Alden'" in given_name_reply
         assert FIELD_PROMPTS["given_name"] in given_name_reply
 
@@ -845,7 +838,9 @@ def test_tick_044_only_the_patients_own_typed_reply_is_written_never_the_extract
 
     async def scenario() -> None:
         await _advance_to_given_name(service, handle)
-        await _send(service, handle, _upload_message(_png_bytes()))  # extracts "Avery Alden"
+        await _send(
+            service, handle, _upload_action(), _image_base64(_png_bytes())
+        )  # extracts "Avery Alden"
 
         # The patient types corrections that differ from every extracted suggestion.
         await _send(service, handle, "Jordan")
@@ -908,7 +903,9 @@ def test_tick_044_real_tesseract_processes_an_uploaded_identity_photo_end_to_end
     async def scenario() -> None:
         await _advance_to_given_name(service, handle)
 
-        reply = await _send(service, handle, _upload_message(_png_bytes(width=64, height=32)))
+        reply = await _send(
+            service, handle, _upload_action(), _image_base64(_png_bytes(width=64, height=32))
+        )
 
         assert FIELD_PROMPTS["given_name"] in reply
 
