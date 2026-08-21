@@ -22,12 +22,20 @@ last, immediately before completion, to minimize what a restart can lose.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import AsyncIterator, Callable
 
 from ai_server.app.auth import SessionStore, utc_now
+from ai_server.ocr.service import (
+    ConsentRequiredError,
+    ExtractedIdentity,
+    InvalidUploadError,
+    OcrService,
+)
 from ai_server.onboarding.draft_client import AssessmentDraftNotFoundError
 from ai_server.onboarding.fields import IDENTITY_FIELDS, FieldValidationError, validate_field
 from ai_server.onboarding.flow import (
@@ -36,7 +44,13 @@ from ai_server.onboarding.flow import (
     OnboardingFlow,
     OnboardingIncompleteError,
 )
-from ai_server.onboarding.triggers import SUPPORTIVE_CONTENT, PauseTracker, detect_distress
+from ai_server.onboarding.triggers import (
+    SUPPORTIVE_CONTENT,
+    PauseTracker,
+    Trigger,
+    detect_distress,
+    upload_failure_trigger,
+)
 from ai_server.openemr.adapter import OpenEmrRequestError
 
 UNAVAILABLE_ONBOARDING_RESPONSE = (
@@ -82,7 +96,11 @@ FIELD_PROMPTS: dict[str, str] = {
         '{"selected": ["language_interpreter"], "detail": "(optional, if other)"}, or '
         '{"selected": []} for none.'
     ),
-    "given_name": "What is your legal given (first) name?",
+    "given_name": (
+        "What is your legal given (first) name? You can also attach a photo of your "
+        "ID here first to prefill your name, date of birth, and address as "
+        "suggestions -- you'll still confirm or correct each one yourself."
+    ),
     "family_name": "What is your legal family (last) name?",
     "date_of_birth": "What is your date of birth? Use YYYY-MM-DD.",
     "address": (
@@ -164,6 +182,51 @@ def _parse_value(message: str) -> object:
         return message
 
 
+def _parsed_upload_request(message: str) -> dict[str, object] | None:
+    """Return the parsed body of an `upload_identity_document` chat action, or `None`
+    if `message` isn't that JSON-shaped action -- same JSON-message discipline as
+    `_parsed_action`, kept separate because this action carries a payload beyond its
+    name (`consent`, `image_base64`)."""
+    try:
+        parsed = json.loads(message)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if isinstance(parsed, dict) and parsed.get("action") == "upload_identity_document":
+        return parsed
+    return None
+
+
+_HINT_SOURCE_FIELD: dict[str, str] = {
+    "given_name": "name",
+    "family_name": "name",
+    "date_of_birth": "date_of_birth",
+    "address": "address",
+}
+
+
+def _hinted_prompt(field_name: str, hint: ExtractedIdentity | None) -> str:
+    """Prefix `FIELD_PROMPTS[field_name]` with an extracted-value suggestion, or
+    return it unchanged if there is no hint for this field.
+
+    `ExtractedIdentity.name` is a single combined field (`ai_server/ocr/service.py`):
+    it is shown once as the same suggestion for both `given_name` and `family_name`
+    (TICK-044 design decision #4) -- the patient still types every field themselves,
+    so this only ever changes the prompt text, never `state.identity`.
+    """
+    prompt = FIELD_PROMPTS[field_name]
+    if hint is None:
+        return prompt
+    source = _HINT_SOURCE_FIELD.get(field_name)
+    value = getattr(hint, source) if source else None
+    if value is None:
+        return prompt
+    label = field_name.replace("_", " ")
+    return (
+        f"We read your {label} as {value!r} from your upload. Reply with that to "
+        "confirm, or type a correction. "
+    ) + prompt
+
+
 def _next_field(identity: dict[str, object], draft_fields: dict[str, object]) -> str | None:
     """The next field this flow still needs, or `None` once all eight are answered.
 
@@ -206,6 +269,11 @@ class _SessionState:
     pause_tracker: PauseTracker = field(default_factory=PauseTracker)
     last_turn_at: datetime | None = None
     awaiting_confirmation: bool = False
+    # A same-turn suggestion only (TICK-044 design decision #4/#5): populated once an
+    # upload is successfully extracted and immediately purged, read by `_hinted_prompt`
+    # to prefix the upcoming identity prompts, and never copied into `identity` --
+    # only the patient's own typed reply through `validate_field` can do that.
+    identity_hint: ExtractedIdentity | None = None
 
 
 @dataclass
@@ -214,6 +282,11 @@ class OnboardingChatService:
 
     flow: OnboardingFlow | None
     session_store: SessionStore
+    # `None` disables the upload offer entirely (TICK-044): the given_name prompt
+    # keeps its upload-mention text, but an `upload_identity_document` action falls
+    # through to `validate_field` like any other malformed given_name answer instead
+    # of being intercepted -- additive-only, never a required step (AC5/AC6).
+    ocr: OcrService | None = None
     clock: Callable[[], datetime] = utc_now
     _sessions: dict[str, _SessionState] = field(default_factory=dict)
 
@@ -275,6 +348,20 @@ class OnboardingChatService:
             return
 
         pause_text = self._pause_prefix(state, next_field, idle_seconds)
+
+        # The upload offer is only meaningful at the same point `given_name` is first
+        # shown, with no identity field yet answered (TICK-044 design decision #2);
+        # anywhere else, an `upload_identity_document` message just falls through to
+        # `validate_field` below like any other malformed answer for that field.
+        if next_field == "given_name" and self.ocr is not None:
+            upload_request = _parsed_upload_request(message)
+            if upload_request is not None:
+                async for chunk in self._handle_identity_upload(
+                    state, upload_request, pause_text, now
+                ):
+                    yield chunk
+                return
+
         value = _parse_value(message)
         if next_field in IDENTITY_FIELDS:
             try:
@@ -301,7 +388,66 @@ class OnboardingChatService:
             state.awaiting_confirmation = True
             yield pause_text + _review_summary(state.identity, draft_fields)
             return
-        yield pause_text + FIELD_PROMPTS[following]
+        yield pause_text + _hinted_prompt(following, state.identity_hint)
+
+    async def _handle_identity_upload(
+        self,
+        state: _SessionState,
+        request: dict[str, object],
+        pause_text: str,
+        now: datetime,
+    ) -> AsyncIterator[str]:
+        """Handle one `upload_identity_document` action at the `given_name` prompt.
+
+        Refuses without explicit `consent: true` (FR-21, `OcrService.begin`'s own
+        `ConsentRequiredError`). A malformed/oversized/non-image upload
+        (`InvalidUploadError`) or a wholly failed extraction -- including a
+        Tesseract-unavailable empty result (FR-7), which `OcrService.submit` itself
+        turns into an all-`None` `ExtractedIdentity` rather than an exception -- shows
+        the same approved upload-failure supportive content (`ONBOARDING_CONTRACT.md`)
+        and re-prompts for `given_name`, so the patient can retry the upload or fall
+        back to typing; this never crashes the turn. On success, the image and
+        extraction are purged immediately (NFR-23) and only a same-turn hint (never a
+        write) carries the extracted values into the upcoming identity prompts
+        (FR-25); nothing reaches `state.identity` except the patient's own later,
+        separately-validated reply.
+        """
+        assert self.ocr is not None
+        consent_given = request.get("consent") is True
+        try:
+            upload_id = self.ocr.begin(consent=consent_given, now=now)
+        except ConsentRequiredError:
+            yield (
+                pause_text
+                + SUPPORTIVE_CONTENT[Trigger.UPLOAD_FAILURE]
+                + " "
+                + FIELD_PROMPTS["given_name"]
+            )
+            return
+
+        identity: ExtractedIdentity | None = None
+        image_base64 = request.get("image_base64")
+        if isinstance(image_base64, str):
+            try:
+                image_bytes: bytes | None = base64.b64decode(image_base64, validate=True)
+            except binascii.Error:
+                image_bytes = None
+            if image_bytes is not None:
+                try:
+                    identity = await self.ocr.submit(upload_id, image_bytes, now)
+                except InvalidUploadError:
+                    identity = None
+        # Single-use hint (NFR-23): purge right after reading whatever was extracted
+        # (or nothing, on any failure above), before this turn's reply is even sent.
+        self.ocr.delete(upload_id, now)
+
+        trigger = upload_failure_trigger(identity)
+        if trigger is not None:
+            yield pause_text + SUPPORTIVE_CONTENT[trigger] + " " + FIELD_PROMPTS["given_name"]
+            return
+
+        state.identity_hint = identity
+        yield pause_text + _hinted_prompt("given_name", identity)
 
     async def _handle_confirmation(
         self,

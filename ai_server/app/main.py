@@ -39,6 +39,7 @@ from ai_server.app.onboarding_chat import (
     unavailable_onboarding_service,
 )
 from ai_server.llm.groq import GroqConfigurationError, GroqSettings, GroqWorkflow, HttpGroqClient
+from ai_server.ocr.service import OcrService, SubprocessTesseractEngine
 from ai_server.onboarding.draft_client import AssessmentDraftAdapter, OpenEmrPortalSettings
 from ai_server.onboarding.flow import OnboardingFlow
 from ai_server.openemr.adapter import (
@@ -339,7 +340,12 @@ def _build_onboarding_service(
         AssessmentDraftAdapter(portal_settings, client),
         OpenEmrDemographicsAdapter(portal_settings, client),
     )
-    return OnboardingChatService(flow=flow, session_store=session_store, clock=clock)
+    # The pinned local Tesseract engine (TICK-014), never a network call; one shared,
+    # in-process OcrService is safe across concurrent sessions since every upload is
+    # keyed by its own random upload id (TICK-044 wires this previously-unreferenced
+    # service into the chat turn for the first time).
+    ocr = OcrService(SubprocessTesseractEngine())
+    return OnboardingChatService(flow=flow, session_store=session_store, ocr=ocr, clock=clock)
 
 
 app = create_app()

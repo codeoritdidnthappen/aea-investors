@@ -23,6 +23,7 @@ from ai_server.llm.groq import (
     GroqWorkflow,
     PlanningOutput,
 )
+from ai_server.ocr.service import MAX_UPLOAD_BYTES
 from ai_server.openemr.adapter import OpenEmrConfigurationError, OpenEmrRequestError
 from ai_server.privacy.gate import (
     AnonymousAppointment,
@@ -72,10 +73,19 @@ _SCHEDULING_RULES = SchedulingRules(
 _TIMEZONE = "America/Chicago"
 
 
+# An `upload_identity_document` onboarding action (TICK-044,
+# `ai_server/app/onboarding_chat.py`) reuses this same field for its base64-encoded
+# image instead of a dedicated upload route -- base64 inflates raw bytes by 4/3
+# (ceiling to a whole group of 4 characters), and a fixed pad covers the small JSON
+# envelope around it, so a max-size OCR upload (`ai_server.ocr.service`'s own
+# `MAX_UPLOAD_BYTES`) is never rejected here before `OcrService` itself validates it.
+_MAX_CHAT_MESSAGE_LENGTH = ((MAX_UPLOAD_BYTES + 2) // 3) * 4 + 1_000
+
+
 class ChatTurnRequest(BaseModel):
     """The only shape the iframe may send to the AI server for a turn."""
 
-    message: str = Field(min_length=1, max_length=4_000)
+    message: str = Field(min_length=1, max_length=_MAX_CHAT_MESSAGE_LENGTH)
 
 
 NO_ACTION_SUMMARY = "No scheduling action is available yet in this demo."
@@ -511,6 +521,15 @@ CHAT_PAGE_HTML = """<!doctype html>
     cursor: pointer;
   }
   button:disabled { opacity: 0.6; cursor: not-allowed; }
+  #upload-identity {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    border: 1px solid var(--border);
+    border-radius: 0.35rem;
+    padding: 0.5rem 0.75rem;
+  }
+  #upload-caption { margin: 0; font-size: 0.85rem; }
   a { color: var(--accent); }
   :focus-visible {
     outline: 3px solid var(--accent);
@@ -536,6 +555,17 @@ CHAT_PAGE_HTML = """<!doctype html>
       aria-describedby="chat-status"></textarea>
     <button type="submit" id="chat-send">Send</button>
   </form>
+  <div id="upload-identity">
+    <label for="id-photo-input">Attach ID photo</label>
+    <input type="file" id="id-photo-input" accept="image/png,image/jpeg"
+      aria-describedby="upload-caption">
+    <p id="upload-caption">
+      During onboarding, you can attach a photo of your ID here to prefill your name,
+      date of birth, and address as suggestions you still confirm or correct
+      yourself. It is read locally and discarded once you confirm or correct those
+      fields.
+    </p>
+  </div>
 </main>
 <script>
 (function () {
@@ -543,6 +573,7 @@ CHAT_PAGE_HTML = """<!doctype html>
   var form = document.getElementById("chat-form");
   var input = document.getElementById("chat-input");
   var sendButton = document.getElementById("chat-send");
+  var idPhotoInput = document.getElementById("id-photo-input");
   var status = document.getElementById("chat-status");
   var transcript = document.getElementById("chat-transcript");
   var fallback = document.getElementById("chat-fallback");
@@ -571,16 +602,14 @@ CHAT_PAGE_HTML = """<!doctype html>
     return body;
   }
 
-  form.addEventListener("submit", function (event) {
-    event.preventDefault();
-    var message = input.value.trim();
-    if (!message) {
-      return;
-    }
-    input.value = "";
+  // Shared by the typed-message form and the ID-photo attachment below: both send
+  // their JSON-shaped body through this one call to the same /api/chat turn below
+  // (TICK-044 reuses the existing chat-message pipe instead of a separate route).
+  function sendMessage(message, displayText) {
     sendButton.disabled = true;
+    idPhotoInput.disabled = true;
     fallback.setAttribute("data-visible", "false");
-    appendMessage("user", message);
+    appendMessage("user", displayText);
     var replyBody = appendMessage("assistant", "");
     setStatus("Sending...");
 
@@ -590,6 +619,11 @@ CHAT_PAGE_HTML = """<!doctype html>
     function resetStallTimer() {
       clearTimeout(stallTimer);
       stallTimer = setTimeout(function () { controller.abort(); }, 30000);
+    }
+
+    function reenableControls() {
+      sendButton.disabled = false;
+      idPhotoInput.disabled = false;
     }
 
     fetch("/api/chat", {
@@ -611,7 +645,7 @@ CHAT_PAGE_HTML = """<!doctype html>
           if (result.done) {
             clearTimeout(stallTimer);
             setStatus("Response complete.");
-            sendButton.disabled = false;
+            reenableControls();
             return;
           }
           resetStallTimer();
@@ -623,8 +657,39 @@ CHAT_PAGE_HTML = """<!doctype html>
     }).catch(function () {
       clearTimeout(stallTimer);
       showFallback();
-      sendButton.disabled = false;
+      reenableControls();
     });
+  }
+
+  form.addEventListener("submit", function (event) {
+    event.preventDefault();
+    var message = input.value.trim();
+    if (!message) {
+      return;
+    }
+    input.value = "";
+    sendMessage(message, message);
+  });
+
+  idPhotoInput.addEventListener("change", function () {
+    var file = idPhotoInput.files && idPhotoInput.files[0];
+    if (!file) {
+      return;
+    }
+    var reader = new FileReader();
+    reader.onload = function () {
+      var dataUrl = String(reader.result || "");
+      var commaIndex = dataUrl.indexOf(",");
+      var base64 = commaIndex >= 0 ? dataUrl.slice(commaIndex + 1) : dataUrl;
+      var message = JSON.stringify({
+        action: "upload_identity_document",
+        consent: true,
+        image_base64: base64
+      });
+      sendMessage(message, "Attached ID photo: " + file.name);
+      idPhotoInput.value = "";
+    };
+    reader.readAsDataURL(file);
   });
 
   input.focus();

@@ -10,7 +10,11 @@ uses), including a simulated AI-server restart mid-draft (FR-30) and completion.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
+import shutil
+import struct
+import zlib
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -29,8 +33,15 @@ from ai_server.app.onboarding_chat import (
     onboarding_mode,
     unavailable_onboarding_service,
 )
+from ai_server.ocr.service import (
+    MAX_UPLOAD_BYTES,
+    OcrService,
+    SubprocessTesseractEngine,
+    TesseractUnavailableError,
+)
 from ai_server.onboarding.draft_client import AssessmentDraftAdapter, OpenEmrPortalSettings
 from ai_server.onboarding.flow import OnboardingFlow
+from ai_server.onboarding.triggers import SUPPORTIVE_CONTENT, Trigger
 from ai_server.openemr.demographics import OpenEmrDemographicsAdapter
 
 NOW = datetime(2026, 8, 20, 12, 0, tzinfo=timezone.utc)
@@ -579,6 +590,329 @@ def test_route_dispatches_to_onboarding_on_an_explicit_start_request_with_no_cur
     assert response.text == "onboarding-reply"
     assert onboarding.calls == [(handle, "start onboarding")]
     assert scheduling.calls == []
+
+
+# --- TICK-044: consented OCR identity upload wired into the given_name prompt -----
+
+_CARD_TEXT = (
+    "SYNTHETIC DEMO ID\n"
+    "NAME: Avery Alden\n"
+    "DOB: 1990-01-01\n"
+    "ADDRESS: 100 Maple Avenue, Austin, TX 78701\n"
+    "ID: SYN-00000001\n"
+)
+
+
+def _png_bytes(width: int = 4, height: int = 2) -> bytes:
+    """Build a minimal, structurally valid grayscale PNG without any dependency
+    (mirrors `test_ocr_service.py`'s own helper -- this file stays self-contained)."""
+
+    def chunk(chunk_type: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data))
+            + chunk_type
+            + data
+            + struct.pack(">I", zlib.crc32(chunk_type + data))
+        )
+
+    signature = b"\x89PNG\r\n\x1a\n"
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 0, 0, 0, 0)
+    raw = b"".join(b"\x00" + bytes([255]) * width for _ in range(height))
+    idat = zlib.compress(raw)
+    return signature + chunk(b"IHDR", ihdr) + chunk(b"IDAT", idat) + chunk(b"IEND", b"")
+
+
+class _FakeOcrEngine:
+    """A `TesseractEngine`-shaped double: never shells out to real Tesseract."""
+
+    def __init__(self, text: str = "", fail: bool = False) -> None:
+        self.text = text
+        self.fail = fail
+        self.calls: list[bytes] = []
+
+    async def recognize_text(self, image: bytes) -> str:
+        self.calls.append(image)
+        if self.fail:
+            raise TesseractUnavailableError("engine unavailable")
+        return self.text
+
+
+class _RecordingOcrService(OcrService):
+    """Records the upload id `begin()` issues, so a test can prove it was purged."""
+
+    def __init__(self, engine: _FakeOcrEngine) -> None:
+        super().__init__(engine)
+        self.last_upload_id: str | None = None
+
+    def begin(self, *, consent: bool, now: datetime) -> str:
+        upload_id = super().begin(consent=consent, now=now)
+        self.last_upload_id = upload_id
+        return upload_id
+
+
+def _upload_message(image: bytes, *, consent: bool = True) -> str:
+    return json.dumps(
+        {
+            "action": "upload_identity_document",
+            "consent": consent,
+            "image_base64": base64.b64encode(image).decode("ascii"),
+        }
+    )
+
+
+async def _advance_to_given_name(service: OnboardingChatService, handle: str) -> str:
+    """Answer every draft field so the flow reaches the `given_name` prompt -- the
+    only point an upload is accepted (TICK-044 design decision #2)."""
+    await _send(service, handle, "start onboarding")
+    await _send(service, handle, json.dumps({"method": "portal_message"}))
+    await _send(service, handle, "both")
+    await _send(service, handle, json.dumps({"format": "video", "time_window": "weekday_morning"}))
+    return await _send(service, handle, json.dumps({"selected": []}))
+
+
+def _upload_service(
+    tmp_path: Path, engine: _FakeOcrEngine | None = None, ocr: OcrService | None = None
+) -> tuple[OnboardingChatService, str, _SyntheticOpenEmr]:
+    configured = settings(tmp_path)
+    store = SessionStore(configured.database_path, configured.encryption_key)
+    store.initialize()
+    handle = _bound_session(store)
+    server = _SyntheticOpenEmr()
+    resolved_ocr = ocr if ocr is not None else OcrService(engine or _FakeOcrEngine())
+    service = OnboardingChatService(
+        flow=_flow(server), session_store=store, ocr=resolved_ocr, clock=lambda: NOW
+    )
+    return service, handle, server
+
+
+def test_tick_044_the_given_name_prompt_mentions_the_upload_option() -> None:
+    assert "attach a photo of your ID" in FIELD_PROMPTS["given_name"]
+
+
+def test_tick_044_upload_without_explicit_consent_is_refused_and_reprompts(
+    tmp_path: Path,
+) -> None:
+    engine = _FakeOcrEngine(text=_CARD_TEXT)
+    service, handle, _ = _upload_service(tmp_path, engine)
+
+    async def scenario() -> None:
+        prompt = await _advance_to_given_name(service, handle)
+        assert prompt == FIELD_PROMPTS["given_name"]
+
+        reply = await _send(
+            service, handle, json.dumps({"action": "upload_identity_document", "consent": False})
+        )
+
+        assert SUPPORTIVE_CONTENT[Trigger.UPLOAD_FAILURE] in reply
+        assert FIELD_PROMPTS["given_name"] in reply
+        assert engine.calls == []  # consent was refused before OCR ever ran
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "bad_image",
+    [
+        b"not an image at all",
+        b"\x89PNG\r\n\x1a\n" + b"\x00" * 4,
+        b"\x00" * (MAX_UPLOAD_BYTES + 1),
+    ],
+    ids=["unsupported_format", "corrupt", "oversized"],
+)
+def test_tick_044_each_invalid_upload_subtype_is_rejected_with_a_clear_retry_message(
+    tmp_path: Path, bad_image: bytes
+) -> None:
+    engine = _FakeOcrEngine(text=_CARD_TEXT)
+    service, handle, _ = _upload_service(tmp_path, engine)
+
+    async def scenario() -> None:
+        await _advance_to_given_name(service, handle)
+
+        reply = await _send(service, handle, _upload_message(bad_image))
+
+        assert SUPPORTIVE_CONTENT[Trigger.UPLOAD_FAILURE] in reply
+        assert FIELD_PROMPTS["given_name"] in reply
+        assert engine.calls == []  # invalid uploads never reach the OCR engine
+
+    asyncio.run(scenario())
+
+
+def test_tick_044_a_missing_or_non_base64_image_payload_is_rejected_with_a_clear_retry_message(
+    tmp_path: Path,
+) -> None:
+    engine = _FakeOcrEngine(text=_CARD_TEXT)
+    service, handle, _ = _upload_service(tmp_path, engine)
+
+    async def scenario() -> None:
+        await _advance_to_given_name(service, handle)
+
+        missing_image_reply = await _send(
+            service, handle, json.dumps({"action": "upload_identity_document", "consent": True})
+        )
+        assert SUPPORTIVE_CONTENT[Trigger.UPLOAD_FAILURE] in missing_image_reply
+
+        bad_base64_reply = await _send(
+            service,
+            handle,
+            json.dumps(
+                {
+                    "action": "upload_identity_document",
+                    "consent": True,
+                    "image_base64": "not valid base64!!",
+                }
+            ),
+        )
+        assert SUPPORTIVE_CONTENT[Trigger.UPLOAD_FAILURE] in bad_base64_reply
+        assert engine.calls == []  # neither malformed payload ever reached the OCR engine
+
+    asyncio.run(scenario())
+
+
+def test_tick_044_a_tesseract_unavailable_empty_result_is_a_clear_retryable_rejection(
+    tmp_path: Path,
+) -> None:
+    engine = _FakeOcrEngine(fail=True)
+    service, handle, _ = _upload_service(tmp_path, engine)
+
+    async def scenario() -> None:
+        await _advance_to_given_name(service, handle)
+
+        reply = await _send(service, handle, _upload_message(_png_bytes()))
+
+        assert SUPPORTIVE_CONTENT[Trigger.UPLOAD_FAILURE] in reply
+        assert FIELD_PROMPTS["given_name"] in reply
+        assert len(engine.calls) == 1  # the engine did run; it just extracted nothing
+
+    asyncio.run(scenario())
+
+
+def test_tick_044_a_successful_upload_purges_the_image_and_extraction_immediately(
+    tmp_path: Path,
+) -> None:
+    """AC4: a second `identity()`/`image()` call on the same upload id returns `None`
+    once the upload turn that consumed it has completed (NFR-23)."""
+    engine = _FakeOcrEngine(text=_CARD_TEXT)
+    ocr = _RecordingOcrService(engine)
+    service, handle, _ = _upload_service(tmp_path, ocr=ocr)
+
+    async def scenario() -> None:
+        await _advance_to_given_name(service, handle)
+
+        reply = await _send(service, handle, _upload_message(_png_bytes()))
+
+        assert "Avery Alden" in reply
+        upload_id = ocr.last_upload_id
+        assert upload_id is not None
+        assert ocr.identity(upload_id, NOW) is None
+        assert ocr.image(upload_id, NOW) is None
+
+    asyncio.run(scenario())
+
+
+def test_tick_044_successful_extraction_offers_hints_on_every_identity_prompt(
+    tmp_path: Path,
+) -> None:
+    engine = _FakeOcrEngine(text=_CARD_TEXT)
+    service, handle, _ = _upload_service(tmp_path, engine)
+
+    async def scenario() -> None:
+        await _advance_to_given_name(service, handle)
+
+        given_name_reply = await _send(service, handle, _upload_message(_png_bytes()))
+        assert "We read your given name as 'Avery Alden'" in given_name_reply
+        assert FIELD_PROMPTS["given_name"] in given_name_reply
+
+        family_name_reply = await _send(service, handle, "Avery")
+        assert "We read your family name as 'Avery Alden'" in family_name_reply
+
+        dob_reply = await _send(service, handle, "Alden")
+        assert "We read your date of birth as '1990-01-01'" in dob_reply
+
+        address_reply = await _send(service, handle, "1990-01-01")
+        assert "We read your address as '100 Maple Avenue, Austin, TX 78701'" in address_reply
+
+    asyncio.run(scenario())
+
+
+def test_tick_044_only_the_patients_own_typed_reply_is_written_never_the_extracted_value(
+    tmp_path: Path,
+) -> None:
+    """AC2: the patient replies with different values than the upload extracted; the
+    corrected values -- not the extracted ones -- are what onboarding completes with,
+    proving there is no path from an unconfirmed extracted value to a write."""
+    engine = _FakeOcrEngine(text=_CARD_TEXT)
+    service, handle, server = _upload_service(tmp_path, engine)
+
+    async def scenario() -> None:
+        await _advance_to_given_name(service, handle)
+        await _send(service, handle, _upload_message(_png_bytes()))  # extracts "Avery Alden"
+
+        # The patient types corrections that differ from every extracted suggestion.
+        await _send(service, handle, "Jordan")
+        await _send(service, handle, "Rivers")
+        await _send(service, handle, "1985-05-05")
+        reply = await _send(
+            service,
+            handle,
+            json.dumps(
+                {
+                    "street1": "200 Cedar Street",
+                    "city": "Chicago",
+                    "state": "IL",
+                    "zip_code": "60601",
+                }
+            ),
+        )
+        assert "Jordan" in reply and "Rivers" in reply  # review summary shows the typed values
+        assert "Avery" not in reply and "Alden" not in reply
+
+        reply = await _send(service, handle, "confirm")
+
+        assert "Thanks, Jordan!" in reply
+        assert len(server.demographics_writes) == 1
+        written = json.loads(server.demographics_writes[0].content)
+        written_text = json.dumps(written)
+        assert "Jordan" in written_text
+        assert "Avery" not in written_text and "Alden" not in written_text
+
+    asyncio.run(scenario())
+
+
+def test_tick_044_the_no_upload_manual_entry_path_is_unaffected(tmp_path: Path) -> None:
+    """AC5/AC6: a patient who never attaches a file sees exactly today's flow -- the
+    upload feature is additive only, never a required step."""
+    engine = _FakeOcrEngine(text=_CARD_TEXT)
+    service, handle, server = _upload_service(tmp_path, engine)
+
+    async def scenario() -> None:
+        await _advance_to_given_name(service, handle)
+        reply = await _send(service, handle, "Avery")
+        assert reply == FIELD_PROMPTS["family_name"]  # no hint text: no upload occurred
+        assert engine.calls == []
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.skipif(shutil.which("tesseract") is None, reason="tesseract is not installed locally")
+def test_tick_044_real_tesseract_processes_an_uploaded_identity_photo_end_to_end(
+    tmp_path: Path,
+) -> None:
+    """AC1: runs the real `SubprocessTesseractEngine` (never `_FakeOcrEngine`) through
+    the same chat-turn path a live upload takes, proving the OCR/onboarding plumbing
+    genuinely reaches local Tesseract end to end. Field-level extraction accuracy
+    against real ID imagery remains TICK-015's separate golden-set gate (Out of
+    Scope here); this only proves the turn never crashes and still guides the patient
+    back to `given_name` either way."""
+    service, handle, _ = _upload_service(tmp_path, ocr=OcrService(SubprocessTesseractEngine()))
+
+    async def scenario() -> None:
+        await _advance_to_given_name(service, handle)
+
+        reply = await _send(service, handle, _upload_message(_png_bytes(width=64, height=32)))
+
+        assert FIELD_PROMPTS["given_name"] in reply
+
+    asyncio.run(scenario())
 
 
 if __name__ == "__main__":
