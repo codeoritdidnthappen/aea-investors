@@ -41,13 +41,17 @@ class IdentityNotConfirmedError(Exception):
 
 @dataclass(frozen=True)
 class ConfirmedIdentity:
-    """Only a fully confirmed identity; every field but `family_name` is non-empty.
+    """Only a fully confirmed identity; every field is non-empty.
 
     `given_name` and `family_name` are kept separate rather than one `name` string:
     OpenEMR's write endpoint takes them as separate fields, and no join-then-split
     scheme can recover an internally-spaced family name (e.g. "Van Der Berg") from a
-    joined string without guessing. `family_name` alone may be empty for a confirmed
-    mononym; `confirm_identity` still requires every other field.
+    joined string without guessing. `family_name` must be non-empty like every other
+    field here: OpenEMR's own `PatientValidator` rejects an empty last name outright
+    (`NotEmpty::EMPTY_VALUE`), so a mononym cannot be written regardless of what this
+    class would otherwise accept, and fabricating a placeholder surname would violate
+    this system's confirmed-only, no-fabricated-values guarantee (FR-23) -- see
+    `tickets/TICK-043-fix-mononym-demographics-validation.md`.
     """
 
     given_name: str
@@ -68,17 +72,21 @@ def confirm_identity(
     a raw OCR value passed through automatically. `None` or blank covers every
     no-write case in one path: never extracted, extracted but not yet confirmed,
     revoked, or failed OCR (AC3) - all refuse identically instead of writing a
-    partial record. `family_name` is the one field allowed to be confirmed as empty
-    (a mononym), so it is not part of this check.
+    partial record.
     """
-    fields = {"given_name": given_name, "date_of_birth": date_of_birth, "address": address}
+    fields = {
+        "given_name": given_name,
+        "family_name": family_name,
+        "date_of_birth": date_of_birth,
+        "address": address,
+    }
     missing = [field for field, value in fields.items() if not value]
     if missing:
         raise IdentityNotConfirmedError(f"identity fields not confirmed: {', '.join(missing)}")
-    assert given_name and date_of_birth and address  # narrows for the type checker
+    assert given_name and family_name and date_of_birth and address  # narrows for the type checker
     return ConfirmedIdentity(
         given_name=given_name,
-        family_name=family_name or "",
+        family_name=family_name,
         date_of_birth=date_of_birth,
         address=address,
     )

@@ -32,7 +32,7 @@ use Symfony\Component\HttpFoundation\JsonResponse;
  */
 class PatientDemographicsUpdateService
 {
-    private const REQUIRED_STRING_FIELDS = ['fname', 'DOB', 'street'];
+    private const REQUIRED_STRING_FIELDS = ['fname', 'lname', 'DOB', 'street'];
 
     public function update(?string $patientUuid, array $body): JsonResponse
     {
@@ -71,16 +71,6 @@ class PatientDemographicsUpdateService
                 continue;
             }
             $fields[$field] = $value;
-        }
-
-        // `lname` alone may be a confirmed empty string (a mononym) -- the same
-        // allowance `ai_server/openemr/demographics.py`'s own `ConfirmedIdentity`
-        // makes; every other field above must be non-empty.
-        $lname = $body['lname'] ?? null;
-        if (!is_string($lname)) {
-            $errors[] = 'lname must be a string';
-        } else {
-            $fields['lname'] = $lname;
         }
 
         if (!empty($errors)) {
