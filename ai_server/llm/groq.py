@@ -1,4 +1,6 @@
-"""Groq planning and post-tool response streaming behind the local privacy gate."""
+"""Groq planning behind the local privacy gate; an authoritative tool's own result is
+always yielded verbatim afterward, never re-described by a second Groq call
+(TICK-041)."""
 
 from __future__ import annotations
 
@@ -13,7 +15,6 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ai_server.privacy.gate import (
     LOCAL_CORRECTION,
-    OutboundMessage,
     OutboundPayload,
     PrivacyGate,
 )
@@ -260,7 +261,21 @@ class GroqWorkflow:
     async def respond(
         self, payload: OutboundPayload, tool: AuthoritativeTool
     ) -> AsyncIterator[str]:
-        """Yield a safe local result or a post-tool final model response."""
+        """Yield a safe local result, or the authoritative tool's own result verbatim.
+
+        TICK-041: a second Groq call used to run after the tool executed, asking the
+        model to "describe" `result.public_summary` in its own words, and that
+        *unchecked* model output -- not `result` itself -- was what the patient saw.
+        Live-confirmed (a real OpenEMR 404 on a real cancel attempt): the model
+        streamed back a fabricated success claim from an honest failure summary,
+        despite an explicit "do not add facts" instruction. A prompt cannot close this
+        class of bug -- the model can always be asked one more time to misbehave -- so
+        this is a code-level guardrail instead: `result.public_summary` is already the
+        authoritative, patient-safe sentence (every `AuthoritativeToolResult` in this
+        codebase is constructed as exactly that), and it is now yielded directly.
+        Groq is never asked to restate an authoritative outcome, so it cannot rephrase
+        a failure into a success or vice versa.
+        """
         if not self._safe(payload):
             yield LOCAL_CORRECTION
             return
@@ -271,34 +286,7 @@ class GroqWorkflow:
             return
 
         result = await tool.execute(plan)
-        final_payload = self._final_payload(payload, result)
-        if not self._safe(final_payload):
-            yield UNAVAILABLE_RESPONSE
-            return
-        try:
-            async for chunk in self._client.stream(final_payload):
-                yield chunk
-        except (GroqUnavailableError, httpx.HTTPError):
-            yield UNAVAILABLE_RESPONSE
+        yield result.public_summary
 
     def _safe(self, payload: OutboundPayload) -> bool:
         return not self._gate.has_sensitive_text(payload.user_message_content())
-
-    @staticmethod
-    def _final_payload(
-        payload: OutboundPayload, result: AuthoritativeToolResult
-    ) -> OutboundPayload:
-        """Build the only post-tool model input, retaining the approved payload shape."""
-        return payload.model_copy(
-            update={
-                "messages": [
-                    OutboundMessage(
-                        role="system",
-                        content=(
-                            "Describe only the authoritative scheduling result. Do not add facts."
-                        ),
-                    ),
-                    OutboundMessage(role="user", content=result.public_summary),
-                ]
-            }
-        )

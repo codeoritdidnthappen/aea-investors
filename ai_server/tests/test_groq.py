@@ -101,19 +101,52 @@ def test_ticket_010_requires_dated_zdr_verification(monkeypatch: pytest.MonkeyPa
     assert GroqSettings.from_environment().zdr_verified_on == date(2026, 8, 18)
 
 
-def test_ticket_010_validates_plan_before_authoritative_tool_and_streams_afterward() -> None:
+def test_ticket_010_validates_plan_before_authoritative_tool_and_yields_its_result() -> None:
     client = CapturingGroqClient('{"intent":"book","slot_token":"slot_demo"}')
     tool = CapturingTool(calls=[])
 
     chunks = collect(GroqWorkflow(PrivacyGate.create(), client), payload(), tool)
 
-    assert chunks == ["Confirmed ", "by OpenEMR."]
+    assert chunks == ["OpenEMR reports the appointment is booked."]
     assert tool.calls == [PlanningOutput(intent="book", slot_token="slot_demo")]
-    assert [request.model for request in client.calls] == [GROQ_MODEL, GROQ_MODEL]
+    # Only the planning call happens -- no second Groq call describes the result
+    # (TICK-041): the tool's own `public_summary` is yielded verbatim instead.
+    assert [request.model for request in client.calls] == [GROQ_MODEL]
     assert (
         client.calls[0].scheduling_context.model_dump() == payload().scheduling_context.model_dump()
     )
-    assert client.calls[1].messages[1].content == "OpenEMR reports the appointment is booked."
+
+
+def test_tick041_a_second_model_call_never_happens_so_it_cannot_fabricate_a_result() -> None:
+    """Regression for the live-found bug: a second Groq call used to "describe" the
+    tool's honest result, and its *unchecked* streamed output -- not the tool's real
+    result -- was what the patient saw. Here `client.stream()` is rigged to fabricate
+    a success claim completely unrelated to the tool's real (failure) outcome; if
+    `GroqWorkflow` ever called it again, this test would see that fabrication instead
+    of the honest text."""
+    client = CapturingGroqClient('{"intent":"cancel","appointment_token":"appt_demo"}')
+    client.final_chunks = ['{"appointment_token":"appt_demo","cancellation":"confirmed"}']
+
+    @dataclass
+    class FailingTool:
+        async def execute(self, plan: PlanningOutput) -> AuthoritativeToolResult:
+            del plan
+            return AuthoritativeToolResult(
+                public_summary=(
+                    "OpenEMR could not confirm that cancellation just now, so the "
+                    "appointment was not cancelled. Please try again."
+                )
+            )
+
+    chunks = collect(GroqWorkflow(PrivacyGate.create(), client), payload(), FailingTool())
+
+    assert chunks == [
+        "OpenEMR could not confirm that cancellation just now, so the "
+        "appointment was not cancelled. Please try again."
+    ]
+    assert "confirmed" not in "".join(chunks)
+    # `stream()` was never invoked -- only the one planning call happened.
+    assert len(client.calls) == 1
 
 
 def test_ticket_010_invalid_plan_never_calls_tool_or_streams() -> None:

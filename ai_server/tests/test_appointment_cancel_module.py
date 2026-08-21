@@ -66,11 +66,29 @@ def test_controller_binds_only_to_the_token_derived_patient_uuid() -> None:
 def test_service_ownership_check_filters_by_both_patient_and_appointment_uuid_at_once() -> None:
     service = _service_text()
 
-    assert "'puuid' => $patientUuid" in service
-    assert "'pc_uuid' => $auuid" in service
+    assert "'puuid' => UuidRegistry::uuidToBytes($patientUuid)" in service
+    assert "'pc_uuid' => UuidRegistry::uuidToBytes($auuid)" in service
     # Both filters are in the single search() call, so a mismatch is a query miss
     # (404), never a fetch-then-compare that could be edited to skip the check.
     assert service.count("search([") == 1
+
+
+def test_service_converts_uuids_to_bytes_before_searching() -> None:
+    """TICK-041 root cause: `AppointmentService::search()`'s `puuid`/`pc_uuid`
+    filters bind an exact-match `BINARY <column> = ?` clause against whatever raw
+    value is passed; both columns are `binary(16)`, but a plain UUID string is
+    36 characters, so passing the string form (as this service used to) can never
+    match and the call always 404d regardless of whether the ids were correct
+    (confirmed live against the real database and the real `AppointmentService`,
+    `evidence/TICK-041/APPOINTMENT_CANCEL_UUID_EVIDENCE.md`). Both ids must be
+    converted with `UuidRegistry::uuidToBytes()` first, and validated with
+    `UuidRegistry::isValidStringUUID()` beforehand so a malformed id is an honest
+    404, not an uncaught exception."""
+    service = _service_text()
+
+    assert "use OpenEMR\\Common\\Uuid\\UuidRegistry;" in service
+    assert "UuidRegistry::isValidStringUUID($patientUuid)" in service
+    assert "UuidRegistry::isValidStringUUID($auuid)" in service
 
 
 def test_service_never_deletes_and_uses_the_real_cancelled_with_history_status() -> None:

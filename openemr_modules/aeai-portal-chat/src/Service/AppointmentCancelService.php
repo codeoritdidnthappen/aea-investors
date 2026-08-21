@@ -2,6 +2,7 @@
 
 namespace AeaiPortalChat\Service;
 
+use OpenEMR\Common\Uuid\UuidRegistry;
 use OpenEMR\Services\AppointmentService;
 use OpenEMR\Validators\ProcessingResult;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -62,10 +63,34 @@ class AppointmentCancelService
      * Returns the appointment row only if it belongs to `$patientUuid` -- the entire
      * binding boundary is this dual-filtered search. There is no query anywhere in
      * this class that looks an appointment up by `$auuid` alone.
+     *
+     * TICK-041 root cause: `AppointmentService::search()`'s `puuid`/`pc_uuid` filters
+     * (like the identical two-filter call `AppointmentRestController::getOneForPatient()`
+     * itself makes) reach `FhirSearchWhereClauseBuilder::build()`/`StringSearchField`,
+     * which binds an exact-match filter as `BINARY <column> = ?` against the caller's
+     * raw value. `openemr_postcalendar_events.uuid` and `patient_data.uuid` are both
+     * `binary(16)` columns, but `$patientUuid`/`$auuid` arrive as 36-character dashed
+     * UUID strings (`UuidRegistry::uuidToString()`'s format) -- a `binary(16)` column
+     * can never equal a 36-byte string, so this call always returned zero rows
+     * regardless of whether the ids were genuinely correct. Confirmed live against the
+     * real local database and the real `AppointmentService::search()` method (not just
+     * the generated SQL in isolation): the dashed-string form returns 0 rows for
+     * `pc_eid=7`'s own confirmed-correct uuid pair, and converting both values with
+     * `UuidRegistry::uuidToBytes()` first -- the same conversion
+     * `InsuranceRestController` already performs before every `puuid` search this
+     * pinned release ships with -- returns exactly that row. An invalid/malformed uuid
+     * string is treated the same as "not found" (`cancel()`'s existing 404), not a
+     * server error.
      */
     private function forPatient(string $patientUuid, string $auuid): ?array
     {
-        $result = (new AppointmentService())->search(['puuid' => $patientUuid, 'pc_uuid' => $auuid]);
+        if (!UuidRegistry::isValidStringUUID($patientUuid) || !UuidRegistry::isValidStringUUID($auuid)) {
+            return null;
+        }
+        $result = (new AppointmentService())->search([
+            'puuid' => UuidRegistry::uuidToBytes($patientUuid),
+            'pc_uuid' => UuidRegistry::uuidToBytes($auuid),
+        ]);
         $data = ProcessingResult::extractDataArray($result);
         return $data[0] ?? null;
     }
