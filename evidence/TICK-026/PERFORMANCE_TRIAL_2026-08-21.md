@@ -6,9 +6,16 @@ Prior direction deferred this ticket entirely, citing real cost against a
 live Groq API key at the ticket's own documented 20-VU/60s scale. Asked
 explicitly before running anything; user authorized a **smaller, cost-contained
 trial (5 VUs, 30 seconds)** covering both halves together (chat/API and
-OpenEMR scheduling reads/writes), not yet the full 20-VU/60s scenario AC1
-names. **This run does not close AC1** -- it is a real, live measurement at
-reduced scale, reported honestly as such.
+OpenEMR scheduling reads/writes), not the full 20-VU/60s scenario AC1
+originally named.
+
+**Update, 2026-08-21:** after reviewing these results, the user explicitly
+directed that this reduced scale be accepted as TICK-026's own completed
+scenario rather than left open pending the full 20/60 figure. The ticket is
+closed (`status: done`) on that basis -- see its own "Scope note" for the
+same decision recorded there. `PRD.md`'s NFR-13/NFR-14 text (which still
+documents 20 VU/60s) was intentionally left unchanged; only this ticket's
+own AC1 was re-scoped.
 
 ## Credential provisioning
 
@@ -80,10 +87,11 @@ Proves the local deployment is fast and healthy at 1/4 the documented
 scale, with two real reproducible scripts now checked in
 (`scripts/k6_performance_test.js` for scheduling,
 `scripts/load_test_chat_browser.js` for chat/API) ready to run at the full
-20-VU/60s scale. Does not itself satisfy AC1 ("the stated 20-user,
-60-second scenario") -- that requires either explicit authorization to run
-the full-scale scenario against this local key, or re-scoping to
-production per the ticket's own originally-deferred plan.
+20-VU/60s scale later if needed. Per explicit user direction (see "Update,
+2026-08-21" above), this trial's own reduced scale is what TICK-026's AC1
+is closed against -- it does not itself demonstrate performance at the
+originally-documented 20-VU/60s figure, which remains a separate,
+not-yet-run scenario the same scripts already support unchanged.
 
 ## Reproduction
 
