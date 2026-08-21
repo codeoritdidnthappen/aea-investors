@@ -29,15 +29,13 @@ from ai_server.onboarding.flow import (
     OnboardingIncompleteError,
 )
 from ai_server.openemr.adapter import OpenEmrRequestError
-from ai_server.openemr.demographics import OpenEmrDemographicsAdapter, OpenEmrDemographicsSettings
+from ai_server.openemr.demographics import OpenEmrDemographicsAdapter
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _ONBOARDING_DIR = _REPO_ROOT / "ai_server" / "onboarding"
 
 PORTAL_BASE_URL = "https://openemr.test/apis/default"
-DEMOGRAPHICS_BASE_URL = "https://openemr.test/apis/default/api"
 NOW = datetime(2026, 8, 20, tzinfo=timezone.utc)
-PATIENT_UUID = "synthetic-patient-uuid"
 
 _REQUIRED_COMPLETE_FIELDS = {
     "preferred_contact": {"method": "portal_message"},
@@ -144,7 +142,7 @@ def _flow(server: _SyntheticOpenEmr, *, demographics_ok: bool = True) -> Onboard
         )
     )
     demographics_adapter = OpenEmrDemographicsAdapter(
-        OpenEmrDemographicsSettings(api_base_url=DEMOGRAPHICS_BASE_URL), demographics_client
+        OpenEmrPortalSettings(portal_base_url=PORTAL_BASE_URL), demographics_client
     )
     return OnboardingFlow(draft_adapter, demographics_adapter)
 
@@ -252,7 +250,7 @@ def test_ac3_completion_writes_demographics_and_finalizes_the_native_assessment(
     for field, value in _REQUIRED_COMPLETE_FIELDS.items():
         run(flow.checkpoint_field("token", cursor, field, value, NOW))
 
-    record = run(flow.complete("token", PATIENT_UUID, cursor, _IDENTITY, NOW))
+    record = run(flow.complete("token", cursor, _IDENTITY, NOW))
 
     assert server.drafts[cursor.draft_uuid]["status"] == "completed"
     assert len(server.demographics_writes) == 1
@@ -278,7 +276,7 @@ def test_ac3_completion_never_joins_then_re_splits_a_multi_word_family_name() ->
         run(flow.checkpoint_field("token", cursor, field, value, NOW))
 
     identity = {**_IDENTITY, "family_name": "Van Der Berg"}
-    record = run(flow.complete("token", PATIENT_UUID, cursor, identity, NOW))
+    record = run(flow.complete("token", cursor, identity, NOW))
 
     demographics_body = json.loads(server.demographics_writes[0].content)
     assert demographics_body["fname"] == "Avery"
@@ -296,7 +294,7 @@ def test_ac3_completion_with_a_stale_cursor_raises_the_documented_error_type() -
     cursor = OnboardingCursor(draft_uuid="never-created")
 
     with pytest.raises(OnboardingIncompleteError):
-        run(flow.complete("token", PATIENT_UUID, cursor, _IDENTITY, NOW))
+        run(flow.complete("token", cursor, _IDENTITY, NOW))
 
     assert server.demographics_writes == []
 
@@ -311,7 +309,7 @@ def test_ac3_completion_with_a_missing_required_field_writes_nothing() -> None:
     run(flow.checkpoint_field("token", cursor, "help_type", "both", NOW))
 
     with pytest.raises(OnboardingIncompleteError):
-        run(flow.complete("token", PATIENT_UUID, cursor, _IDENTITY, NOW))
+        run(flow.complete("token", cursor, _IDENTITY, NOW))
 
     assert server.drafts[cursor.draft_uuid]["status"] == "draft"
     assert server.demographics_writes == []
@@ -326,7 +324,7 @@ def test_ac3_completion_with_invalid_identity_writes_nothing() -> None:
     invalid_identity = {**_IDENTITY, "date_of_birth": "2020-01-01"}  # under 18
 
     with pytest.raises(OnboardingIncompleteError, match="under 18"):
-        run(flow.complete("token", PATIENT_UUID, cursor, invalid_identity, NOW))
+        run(flow.complete("token", cursor, invalid_identity, NOW))
 
     assert server.drafts[cursor.draft_uuid]["status"] == "draft"
     assert server.demographics_writes == []
@@ -342,7 +340,7 @@ def test_ac3_a_failed_demographics_write_retains_the_draft_for_retry() -> None:
         run(flow.checkpoint_field("token", cursor, field, value, NOW))
 
     with pytest.raises(OpenEmrRequestError):
-        run(flow.complete("token", PATIENT_UUID, cursor, _IDENTITY, NOW))
+        run(flow.complete("token", cursor, _IDENTITY, NOW))
 
     assert server.drafts[cursor.draft_uuid]["status"] == "draft"
 

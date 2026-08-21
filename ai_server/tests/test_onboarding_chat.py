@@ -31,11 +31,10 @@ from ai_server.app.onboarding_chat import (
 )
 from ai_server.onboarding.draft_client import AssessmentDraftAdapter, OpenEmrPortalSettings
 from ai_server.onboarding.flow import OnboardingFlow
-from ai_server.openemr.demographics import OpenEmrDemographicsAdapter, OpenEmrDemographicsSettings
+from ai_server.openemr.demographics import OpenEmrDemographicsAdapter
 
 NOW = datetime(2026, 8, 20, 12, 0, tzinfo=timezone.utc)
 PORTAL_BASE_URL = "https://openemr.test/apis/default"
-DEMOGRAPHICS_BASE_URL = "https://openemr.test/apis/default/api"
 
 
 def settings(tmp_path: Path) -> AuthSettings:
@@ -208,7 +207,7 @@ def _flow(server: _SyntheticOpenEmr) -> OnboardingFlow:
         transport=httpx.MockTransport(server.demographics_handler)
     )
     demographics_adapter = OpenEmrDemographicsAdapter(
-        OpenEmrDemographicsSettings(api_base_url=DEMOGRAPHICS_BASE_URL), demographics_client
+        OpenEmrPortalSettings(portal_base_url=PORTAL_BASE_URL), demographics_client
     )
     return OnboardingFlow(draft_adapter, demographics_adapter)
 
