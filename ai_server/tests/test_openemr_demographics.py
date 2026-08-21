@@ -115,20 +115,15 @@ def test_ac2_writes_only_the_confirmed_name_dob_and_address_to_the_mapped_endpoi
     }
 
 
-def test_ac2_a_confirmed_mononym_has_no_fabricated_family_name() -> None:
-    captured: list[httpx.Request] = []
-
-    async def handler(request: httpx.Request) -> httpx.Response:
-        captured.append(request)
-        return httpx.Response(200, json={"status": "updated"})
-
-    identity = confirm_identity("Cher", None, "1990-01-01", "100 Maple Avenue")
-
-    run(adapter_with(httpx.MockTransport(handler)).write_confirmed_demographics("token", identity))
-
-    body = json.loads(captured[0].content)
-    assert body["fname"] == "Cher"
-    assert body["lname"] == ""
+def test_tick_043_a_mononym_is_refused_not_written_with_a_fabricated_surname() -> None:
+    """A missing family name is refused, like every other required field (TICK-043):
+    OpenEMR's own PatientValidator rejects an empty last name outright regardless, and
+    writing a placeholder surname would fabricate a value this system never confirmed
+    (FR-23) -- there is no code path from "no family name" to a write."""
+    with pytest.raises(IdentityNotConfirmedError):
+        confirm_identity("Cher", None, "1990-01-01", "100 Maple Avenue")
+    with pytest.raises(IdentityNotConfirmedError):
+        confirm_identity("Cher", "", "1990-01-01", "100 Maple Avenue")
 
 
 def test_ac2_a_multi_word_family_name_is_never_split() -> None:
