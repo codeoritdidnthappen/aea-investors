@@ -2,19 +2,20 @@
 
 Only name, date of birth, and address may change the logged-in patient's chart, and
 only once every field has been explicitly confirmed or corrected (FR-6, FR-17, FR-26,
-NFR-25). This module writes through the Standard API endpoint recorded as supported in
-`evidence/TICK-001/ENDPOINT_MATRIX.md` ("Write confirmed demographics") and exercised in
-`evidence/TICK-001/PROBE_EVIDENCE.md` ("Update confirmed synthetic demographic").
+NFR-25). This module writes through the module-added Portal API route
+`openemr_modules/aeai-portal-chat` registers (`PUT /portal/patient/demographics`,
+TICK-042), not the Standard API's `PUT /api/patient/:puuid` this module targeted before:
+that Standard API route is gated by a staff ACL check
+(`RestConfig::request_authorization_check($request, "patients", "demo")` ->
+`AclMain::aclCheckCore()` against a logged-in staff `authUser`), never an OAuth scope --
+structurally unreachable for a genuine patient-context bearer token, the identical gap
+TICK-040 already root-caused and fixed for booking. See
+`tickets/TICK-042-fix-demographics-write-unreachable.md`.
 
-That evidence also records what remains unproven: OpenEMR's write route has no source-
-verified patient-identity enforcement of its own, and the local probe used a user-scoped
-token, not a SMART launch-bound patient-context token. This module never closes that gap
-by trusting OpenEMR to reject the wrong patient; instead it never asks OpenEMR to decide.
-Every call takes the target patient id as an explicit argument from the caller, exactly
-like `OpenEmrScheduleAdapter` takes a bearer token per call rather than storing one -
-this module never stores, infers, or looks up which patient is "logged in". The caller
-(the authenticated session/orchestration layer) is responsible for never supplying any
-id other than the one already established for the current session.
+The module route resolves the target patient server-side from the bearer token
+(`HttpRestRequest::getPatientUUIDString()`), never from caller-supplied input -- this
+adapter no longer sends or needs a patient id at all, matching
+`OpenEmrBookingAdapter`'s/`AppointmentCancelAdapter`'s own contract exactly.
 
 `ConfirmedIdentity` can only be constructed by `confirm_identity`, which refuses unless
 name, date of birth, and address were all explicitly confirmed or corrected. An
@@ -24,12 +25,14 @@ unconfirmed, partial, revoked, or failed OCR result therefore has no path to a w
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 
 import httpx
 
-from ai_server.openemr.adapter import OpenEmrConfigurationError, OpenEmrRequestError
+from ai_server.onboarding.draft_client import OpenEmrPortalSettings
+from ai_server.openemr.adapter import OpenEmrRequestError
+
+_DEMOGRAPHICS_PATH = "/portal/patient/demographics"
 
 
 class IdentityNotConfirmedError(Exception):
@@ -81,35 +84,20 @@ def confirm_identity(
     )
 
 
-@dataclass(frozen=True)
-class OpenEmrDemographicsSettings:
-    """Validated configuration for the OpenEMR Standard API patient-write boundary."""
-
-    api_base_url: str
-
-    @classmethod
-    def from_environment(cls) -> OpenEmrDemographicsSettings:
-        """Parse the required Standard API base URL once during application startup."""
-        base_url = os.environ.get("OPENEMR_API_BASE_URL")
-        if not base_url:
-            raise OpenEmrConfigurationError("OPENEMR_API_BASE_URL is required")
-        return cls(api_base_url=base_url.rstrip("/"))
-
-
 class OpenEmrDemographicsAdapter:
-    """Writes a confirmed identity to exactly the patient id the caller supplies.
+    """Writes a confirmed identity for the caller's own bound patient (TICK-042).
 
-    Every method takes the caller's already-delegated bearer token and the caller's
-    already-established patient id; this adapter never stores, caches, or otherwise
-    retains either one, and never resolves "the logged-in patient" itself.
+    Takes only the caller's already-delegated bearer token; this adapter never stores,
+    caches, or otherwise retains it, and never resolves "the logged-in patient" itself
+    -- OpenEMR does that server-side from the token on every call.
     """
 
-    def __init__(self, settings: OpenEmrDemographicsSettings, client: httpx.AsyncClient) -> None:
+    def __init__(self, settings: OpenEmrPortalSettings, client: httpx.AsyncClient) -> None:
         self._settings = settings
         self._client = client
 
     async def write_confirmed_demographics(
-        self, access_token: str, patient_uuid: str, identity: ConfirmedIdentity
+        self, access_token: str, identity: ConfirmedIdentity
     ) -> None:
         """Write only confirmed name, date of birth, and address (FR-26, AC2).
 
@@ -124,7 +112,7 @@ class OpenEmrDemographicsAdapter:
         }
         try:
             response = await self._client.put(
-                f"{self._settings.api_base_url}/patient/{patient_uuid}",
+                f"{self._settings.portal_base_url}{_DEMOGRAPHICS_PATH}",
                 json=body,
                 headers={"Authorization": f"Bearer {access_token}"},
             )

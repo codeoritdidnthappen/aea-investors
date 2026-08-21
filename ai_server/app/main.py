@@ -46,7 +46,7 @@ from ai_server.openemr.adapter import (
     OpenEmrScheduleAdapter,
     OpenEmrScheduleSettings,
 )
-from ai_server.openemr.demographics import OpenEmrDemographicsAdapter, OpenEmrDemographicsSettings
+from ai_server.openemr.demographics import OpenEmrDemographicsAdapter
 from ai_server.privacy.gate import PrivacyGate
 from ai_server.scheduling.appointments import AnonymousAppointmentStore, AppointmentDiscoveryService
 from ai_server.scheduling.booking import BookingService, OpenEmrBookingAdapter
@@ -325,17 +325,19 @@ def _build_onboarding_service(
 ) -> OnboardingChatService:
     """Build the real OpenEMR-backed onboarding service, or a fixed-unavailable
     fallback -- mirrors `_build_chat_service`'s tolerance of absent configuration, so a
-    demo missing the Portal/Standard API base URLs degrades onboarding instead of
-    failing startup.
+    demo missing the Portal API base URL degrades onboarding instead of failing
+    startup.
     """
     try:
         portal_settings = OpenEmrPortalSettings.from_environment()
-        demographics_settings = OpenEmrDemographicsSettings.from_environment()
     except OpenEmrConfigurationError:
         return unavailable_onboarding_service(session_store, clock)
+    # Draft and demographics both go through module-added Portal routes (TICK-042),
+    # so they share the one portal_settings instance -- no separate Standard API
+    # demographics settings needed anymore.
     flow = OnboardingFlow(
         AssessmentDraftAdapter(portal_settings, client),
-        OpenEmrDemographicsAdapter(demographics_settings, client),
+        OpenEmrDemographicsAdapter(portal_settings, client),
     )
     return OnboardingChatService(flow=flow, session_store=session_store, clock=clock)
 

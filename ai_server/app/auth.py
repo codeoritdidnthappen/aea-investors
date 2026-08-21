@@ -56,12 +56,13 @@ class AuthSettings:
     # finding 2). `api:oemr`/`api:fhir`/`api:port` are the bare umbrella scopes the
     # Standard/FHIR/Portal API surfaces require; the rest map one-to-one to what this
     # server actually calls on the patient's behalf: `patient/Patient.read`
-    # (`ai_server/openemr/demographics.py`-adjacent demographics reads),
-    # `patient/Appointment.read` (`ai_server/openemr/adapter.py`'s FHIR appointment
-    # list), `patient/appointment.c`/`.u` (`ai_server/scheduling/booking.py`'s and
-    # `cancel.py`'s module-added book/cancel routes, TICK-040/TICK-036), and
-    # `patient/assessment.{c,r,u}` (`ai_server/onboarding/draft_client.py`'s
-    # module-added assessment-draft route). See evidence/TICK-033/OAUTH_SCOPE_EVIDENCE.md
+    # (read-only FHIR patient lookups), `patient/Appointment.read`
+    # (`ai_server/openemr/adapter.py`'s FHIR appointment list), `patient/appointment.c`/
+    # `.u` (`ai_server/scheduling/booking.py`'s and `cancel.py`'s module-added
+    # book/cancel routes, TICK-040/TICK-036), `patient/assessment.{c,r,u}`
+    # (`ai_server/onboarding/draft_client.py`'s module-added assessment-draft route),
+    # and `patient/demographics.u` (`ai_server/openemr/demographics.py`'s module-added
+    # demographics-write route, TICK-042). See evidence/TICK-033/OAUTH_SCOPE_EVIDENCE.md
     # for the live proof and two related, unfixed upstream findings this scope change
     # surfaced.
     scopes: tuple[str, ...] = (
@@ -77,6 +78,7 @@ class AuthSettings:
         "patient/assessment.c",
         "patient/assessment.r",
         "patient/assessment.u",
+        "patient/demographics.u",
     )
 
     @classmethod

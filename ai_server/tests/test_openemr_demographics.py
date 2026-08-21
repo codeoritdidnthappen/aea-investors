@@ -1,4 +1,4 @@
-"""Synthetic integration tests for confirmed-only demographic writes (TICK-016)."""
+"""Synthetic integration tests for confirmed-only demographic writes (TICK-016, TICK-042)."""
 
 from __future__ import annotations
 
@@ -9,21 +9,21 @@ import httpx
 import pytest
 
 from ai_server.ocr.service import ExtractedIdentity
-from ai_server.openemr.adapter import OpenEmrConfigurationError, OpenEmrRequestError
+from ai_server.onboarding.draft_client import OpenEmrPortalSettings
+from ai_server.openemr.adapter import OpenEmrRequestError
 from ai_server.openemr.demographics import (
     ConfirmedIdentity,
     IdentityNotConfirmedError,
     OpenEmrDemographicsAdapter,
-    OpenEmrDemographicsSettings,
     confirm_identity,
 )
 
-API_BASE_URL = "https://openemr.test/apis/default/api"
-PATIENT_UUID = "synthetic-patient-uuid"
+PORTAL_BASE_URL = "https://openemr.test/apis/default"
+DEMOGRAPHICS_URL = f"{PORTAL_BASE_URL}/portal/patient/demographics"
 
 
-def settings() -> OpenEmrDemographicsSettings:
-    return OpenEmrDemographicsSettings(api_base_url=API_BASE_URL)
+def settings() -> OpenEmrPortalSettings:
+    return OpenEmrPortalSettings(portal_base_url=PORTAL_BASE_URL)
 
 
 def adapter_with(handler: httpx.MockTransport) -> OpenEmrDemographicsAdapter:
@@ -33,17 +33,6 @@ def adapter_with(handler: httpx.MockTransport) -> OpenEmrDemographicsAdapter:
 
 def run(coroutine):
     return asyncio.run(coroutine)
-
-
-def test_settings_from_environment_requires_the_api_base_url(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("OPENEMR_API_BASE_URL", raising=False)
-    with pytest.raises(OpenEmrConfigurationError, match="OPENEMR_API_BASE_URL"):
-        OpenEmrDemographicsSettings.from_environment()
-
-    monkeypatch.setenv("OPENEMR_API_BASE_URL", f"{API_BASE_URL}/")
-    assert OpenEmrDemographicsSettings.from_environment().api_base_url == API_BASE_URL
 
 
 def test_ac1_confirming_every_field_yields_a_writable_identity() -> None:
@@ -102,20 +91,20 @@ def test_ac2_writes_only_the_confirmed_name_dob_and_address_to_the_mapped_endpoi
 
     async def handler(request: httpx.Request) -> httpx.Response:
         captured.append(request)
-        return httpx.Response(200, json={"data": {"fname": "Avery"}})
+        return httpx.Response(200, json={"status": "updated"})
 
     identity = confirm_identity("Avery", "Alden", "1990-01-01", "100 Maple Avenue")
 
     run(
         adapter_with(httpx.MockTransport(handler)).write_confirmed_demographics(
-            "synthetic-access-token", PATIENT_UUID, identity
+            "synthetic-access-token", identity
         )
     )
 
     assert len(captured) == 1
     request = captured[0]
     assert request.method == "PUT"
-    assert str(request.url) == f"{API_BASE_URL}/patient/{PATIENT_UUID}"
+    assert str(request.url) == DEMOGRAPHICS_URL
     assert request.headers["authorization"] == "Bearer synthetic-access-token"
     body = json.loads(request.content)
     assert body == {
@@ -131,15 +120,11 @@ def test_ac2_a_confirmed_mononym_has_no_fabricated_family_name() -> None:
 
     async def handler(request: httpx.Request) -> httpx.Response:
         captured.append(request)
-        return httpx.Response(200, json={"data": {}})
+        return httpx.Response(200, json={"status": "updated"})
 
     identity = confirm_identity("Cher", None, "1990-01-01", "100 Maple Avenue")
 
-    run(
-        adapter_with(httpx.MockTransport(handler)).write_confirmed_demographics(
-            "token", PATIENT_UUID, identity
-        )
-    )
+    run(adapter_with(httpx.MockTransport(handler)).write_confirmed_demographics("token", identity))
 
     body = json.loads(captured[0].content)
     assert body["fname"] == "Cher"
@@ -154,15 +139,11 @@ def test_ac2_a_multi_word_family_name_is_never_split() -> None:
 
     async def handler(request: httpx.Request) -> httpx.Response:
         captured.append(request)
-        return httpx.Response(200, json={"data": {}})
+        return httpx.Response(200, json={"status": "updated"})
 
     identity = confirm_identity("Avery", "Van Der Berg", "1990-01-01", "100 Maple Avenue")
 
-    run(
-        adapter_with(httpx.MockTransport(handler)).write_confirmed_demographics(
-            "token", PATIENT_UUID, identity
-        )
-    )
+    run(adapter_with(httpx.MockTransport(handler)).write_confirmed_demographics("token", identity))
 
     body = json.loads(captured[0].content)
     assert body["fname"] == "Avery"
@@ -177,7 +158,7 @@ def test_ac2_a_non_200_response_fails_explicitly_with_no_fallback() -> None:
 
     async def scenario() -> None:
         await adapter_with(httpx.MockTransport(handler)).write_confirmed_demographics(
-            "token", PATIENT_UUID, identity
+            "token", identity
         )
 
     with pytest.raises(OpenEmrRequestError):
@@ -192,7 +173,7 @@ def test_ac2_a_transport_failure_fails_explicitly_with_no_fallback() -> None:
 
     async def scenario() -> None:
         await adapter_with(httpx.MockTransport(handler)).write_confirmed_demographics(
-            "token", PATIENT_UUID, identity
+            "token", identity
         )
 
     with pytest.raises(OpenEmrRequestError):

@@ -5,6 +5,7 @@ namespace AeaiPortalChat;
 use AeaiPortalChat\Controller\AppointmentBookController;
 use AeaiPortalChat\Controller\AppointmentCancelController;
 use AeaiPortalChat\Controller\AssessmentDraftController;
+use AeaiPortalChat\Controller\PatientDemographicsController;
 use AeaiPortalChat\Controller\PortalChatController;
 use Symfony\Component\EventDispatcher\EventDispatcherInterface;
 
@@ -28,5 +29,6 @@ class Bootstrap
         (new AssessmentDraftController())->subscribeToEvents($this->eventDispatcher);
         (new AppointmentCancelController())->subscribeToEvents($this->eventDispatcher);
         (new AppointmentBookController())->subscribeToEvents($this->eventDispatcher);
+        (new PatientDemographicsController())->subscribeToEvents($this->eventDispatcher);
     }
 }

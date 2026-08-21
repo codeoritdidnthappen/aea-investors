@@ -179,7 +179,6 @@ class OnboardingFlow:
     async def complete(
         self,
         access_token: str,
-        patient_uuid: str,
         cursor: OnboardingCursor,
         identity: dict[str, object],
         now: datetime,
@@ -245,9 +244,7 @@ class OnboardingFlow:
         # nothing further runs: the draft is never marked completed, matching
         # "retain the draft and show a retry message" -- there is no path from a
         # failed demographics write to a completed assessment.
-        await self._demographics_adapter.write_confirmed_demographics(
-            access_token, patient_uuid, confirmed
-        )
+        await self._demographics_adapter.write_confirmed_demographics(access_token, confirmed)
         completed_draft = await self._draft_adapter.update(
             access_token, cursor.draft_uuid, {}, complete=True
         )

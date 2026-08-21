@@ -325,9 +325,7 @@ class OnboardingChatService:
             )
             return
         try:
-            record = await self.flow.complete(
-                access_token, patient_uuid, cursor, state.identity, now
-            )
+            record = await self.flow.complete(access_token, cursor, state.identity, now)
         except OnboardingIncompleteError as exc:
             yield _rejection_text(exc.details)
             return
