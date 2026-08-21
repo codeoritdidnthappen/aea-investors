@@ -99,4 +99,24 @@ to this ticket's route-reachability fix; identity fields are documented as
 in-memory-only, restart-durable draft fields are not affected). Populating
 `patient_data.city`/`state`/`postal_code` as separate columns instead of one
 combined `street` line (pre-existing `_format_address()` behavior, unchanged
-by this ticket).
+by this ticket). A confirmed mononym (empty family name) failing OpenEMR's
+own `PatientValidator` (`lname` must not be empty) -- live-confirmed
+pre-existing, present on the old unreachable route too had it ever been
+reachable, not a regression from this fix; tracked separately as TICK-043.
+
+## Review findings (fixed)
+
+First code-review pass found one real issue, fixed:
+`OnboardingChatService._handle_confirmation` still gated completion on
+`session_store.patient_uuid(handle, now)` being present, a leftover from the
+pre-TICK-042 contract -- the demographics write no longer needs it (the
+module route resolves it server-side from the token, matching
+`BookingTool`'s own TICK-040 fix). `patient_uuid` is documented best-effort
+(`ai_server/app/auth.py:190-195`); its absence didn't mean the token itself
+couldn't write. A genuine patient with a fully valid, write-capable token was
+being incorrectly told to "sign out and sign back in" for no real reason.
+Test rewritten (`test_completion_without_a_bound_patient_uuid_still_completes_tick_042`)
+to lock in the corrected behavior.
+
+Also flagged (verified, tracked separately, not blocking): the mononym
+validation gap above (TICK-043).

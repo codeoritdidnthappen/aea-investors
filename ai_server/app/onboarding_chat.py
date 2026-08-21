@@ -317,13 +317,6 @@ class OnboardingChatService:
             draft = await self.flow.resume(access_token, cursor)
             yield _review_summary(state.identity, draft.fields)
             return
-        patient_uuid = await asyncio.to_thread(self.session_store.patient_uuid, handle, now)
-        if patient_uuid is None:
-            yield (
-                "This session is missing the identity binding needed to finish "
-                "onboarding. Please sign out and sign back in, then confirm again."
-            )
-            return
         try:
             record = await self.flow.complete(access_token, cursor, state.identity, now)
         except OnboardingIncompleteError as exc:

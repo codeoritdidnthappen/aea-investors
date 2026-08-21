@@ -386,12 +386,14 @@ def test_long_pause_supportive_content_shows_once_per_field(tmp_path: Path) -> N
     asyncio.run(scenario())
 
 
-def test_completion_without_a_bound_patient_uuid_asks_the_patient_to_sign_back_in(
+def test_completion_without_a_bound_patient_uuid_still_completes_tick_042(
     tmp_path: Path,
 ) -> None:
-    """A session whose ID token never carried `fhirUser`/`sub` (TICK-028) has no
-    patient id to write demographics against; completion must fail safely instead of
-    crashing or silently skipping the write."""
+    """A session whose ID token never carried `fhirUser`/`sub` (TICK-028,
+    `SessionStore.patient_uuid` is documented best-effort) still completes onboarding
+    (TICK-042): the demographics write no longer needs a locally-captured patient id at
+    all -- the module route resolves the target patient server-side from the bearer
+    token itself, matching `BookingTool`'s own TICK-040 contract."""
     configured = settings(tmp_path)
     store = SessionStore(configured.database_path, configured.encryption_key)
     store.initialize()
@@ -428,10 +430,10 @@ def test_completion_without_a_bound_patient_uuid_asks_the_patient_to_sign_back_i
         )
         reply = await _send(service, handle, "confirm")
 
-        assert "sign" in reply.lower()
-        assert len(server.demographics_writes) == 0
+        assert "complete" in reply.lower()
+        assert len(server.demographics_writes) == 1
         cursor = store.load_cursor(handle, NOW)
-        assert server.drafts[cursor]["status"] == "draft"  # never completed
+        assert cursor is None  # cleared after completion
 
     asyncio.run(scenario())
 
