@@ -13,6 +13,19 @@
 # custom feature, just a targeted patch to an upstream defect (evidence/TICK-037).
 #}
 {#
+# TICK-045 addition: this is also the consent screen a patient sees when the AI
+# Chat portal panel's iframe (openemr_modules/aeai-portal-chat, always
+# 640px-tall) needs re-authentication after the ai-server session expires. Full
+# login+consent rendered inside that panel is effectively unusable (neither
+# mouse-wheel scroll nor keyboard Tab reliably reached the Authorize button --
+# evidence/TICK-045/CHAT_PANEL_INVESTIGATION.md, Finding 1). The `scripts` block
+# below breaks the page out to a full top-level tab whenever it renders inside
+# any iframe, so a patient always completes re-auth as a normal full-page flow
+# instead of a form that looks stuck in a small panel. No-op when this page is
+# already top-level (the common case: a direct link, or after breaking out
+# once already).
+#}
+{#
 # Improved Scope Authorization Template with Granular Permissions
 # UPDATED: Reconstructs scope strings based on user selection
 #
@@ -31,6 +44,16 @@
 
 {% extends "oauth2/oauth2-base.html.twig" %}
 {% block title %}{{ "OpenEMR Authorization"|xlt }}{% endblock %}
+{% block scripts %}
+    <script>
+        // TICK-045: break out of any embedding iframe (the AI Chat portal panel,
+        // in particular) before this consent form paints, so re-authentication is
+        // always a full top-level page. See the file header comment above.
+        if (window.top !== window.self) {
+            window.top.location.href = window.location.href;
+        }
+    </script>
+{% endblock %}
 {% block content %}
     <form method="post" name="userLogin" id="userLogin" action="{{ redirect|attr }}">
         {% block form_header %}{% endblock %}

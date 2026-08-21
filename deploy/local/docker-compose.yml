@@ -58,6 +58,12 @@ services:
       # for the full explanation), not a custom feature -- same bind-mount-over-vendor-path
       # approach as the module mount above, applied to a single core file instead.
       - ../../openemr_overrides/templates/oauth2/scope-authorize.html.twig:/var/www/localhost/htdocs/openemr/templates/oauth2/scope-authorize.html.twig:ro
+      # TICK-045: same bind-mount-over-vendor-path approach, adding an iframe
+      # breakout to the OAuth login/MFA template (see
+      # openemr_overrides/templates/oauth2/oauth2-login.html.twig for the full
+      # explanation) so an expired ai-server session's re-auth always renders as
+      # a full top-level page instead of trapped in the AI Chat portal panel.
+      - ../../openemr_overrides/templates/oauth2/oauth2-login.html.twig:/var/www/localhost/htdocs/openemr/templates/oauth2/oauth2-login.html.twig:ro
     healthcheck:
       test:
         [
