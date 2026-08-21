@@ -5,12 +5,12 @@ type: task
 epic: EPIC-08
 priority: P1
 estimate: L
-depends_on: [TICK-013, TICK-015, TICK-016, TICK-017, TICK-031, TICK-023, TICK-032, TICK-033, TICK-038, TICK-039]
+depends_on: [TICK-013, TICK-015, TICK-016, TICK-017, TICK-031, TICK-023, TICK-032, TICK-033, TICK-038, TICK-039, TICK-040, TICK-041, TICK-042, TICK-044]
 labels: [e2e, chrome, verification]
 source: [FR-1, FR-2, FR-6, FR-12, FR-14, FR-18, FR-19, NFR-18, NFR-19, NFR-35]
 status: blocked
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/25
-blocked_reason: "Re-attempted live 2026-08-20 now that TICK-032/033 landed -- got substantially further (nav tile, patient-context consent, streaming, accessibility, and keyboard operability all verified live) but two new, real, live bugs found along the way block full closure: TICK-038 (onboarding's first turn reaches a real successful OpenEMR write but the AI server fails to parse the response) and TICK-039 (cancellation never selects a real, available appointment despite it reaching the LLM's context). See evidence/TICK-024/DESKTOP_E2E_EVIDENCE_2.md. TICK-038 has since landed and was independently re-verified live -- onboarding now progresses past its first turn ('How should we contact you?'). Full onboarding-through-OCR-confirmation and cancellation-completion coverage were not re-exercised past that single confirming turn in this pass; re-attempt to close out remaining coverage once TICK-039 also lands."
+blocked_reason: "Re-attempted live 2026-08-20 a third time now that TICK-038/039/040/041/042 all landed. Every other AC item now verified live end to end: login, iframe launch, session, streaming, full onboarding conversation through real completion with a real patient_data write, real appointment cancellation with DB confirmation, accessibility/keyboard operability. See evidence/TICK-024/DESKTOP_E2E_EVIDENCE_3.md. Only remaining gap: OCR confirmation has no live path to test -- not a bug, a missing integration (ai_server/ocr/ and ai_server/onboarding/ were each built and tested independently but never wired together; onboarding's identity capture asks the patient to type fields directly, with no upload step anywhere in the flow). Filed as TICK-044 (build ticket, out of this verification ticket's own scope). Blocked on TICK-044 landing."
 ---
 
 ## Context
@@ -38,6 +38,17 @@ operability), and the honest no-availability booking response all verified.
 Two new real bugs found and filed (TICK-038, TICK-039), now blocking the
 remaining onboarding/OCR and cancellation-completion coverage -- see
 `evidence/TICK-024/DESKTOP_E2E_EVIDENCE_2.md`.
+
+**Re-attempted a third time, blocked only on a missing integration
+(2026-08-20):** TICK-038/039/040/041/042 all landed; re-ran live and
+verified every remaining AC item except OCR confirmation -- full onboarding
+completion with a real `patient_data` write, and real appointment
+cancellation with database confirmation, both through the actual chat UI.
+OCR confirmation has no live path to test: `ai_server/ocr/` and
+`ai_server/onboarding/` were each built and tested independently but never
+wired together. Filed as **TICK-044** (a build ticket, out of this
+verification ticket's own scope) -- see
+`evidence/TICK-024/DESKTOP_E2E_EVIDENCE_3.md`.
 
 ## Acceptance Criteria
 
