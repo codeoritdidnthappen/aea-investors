@@ -8,10 +8,10 @@ estimate: M
 depends_on: [TICK-036, TICK-039]
 labels: [chat, scheduling, safety, langgraph]
 source: [FR-14, FR-15, FR-16, FR-20, NFR-11]
-status: todo
+status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/85
+builder_commit: a5652e7
 ---
-
 ## Context
 
 Found live 2026-08-20 independently re-verifying TICK-039's fix end-to-end

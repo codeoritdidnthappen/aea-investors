@@ -8,10 +8,10 @@ estimate: M
 depends_on: [TICK-017, TICK-034, TICK-036, TICK-037]
 labels: [scheduling, openemr, auth]
 source: [FR-11, FR-12, FR-13, FR-20, FR-28]
-status: todo
+status: blocked
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/83
+blocked_reason: "live-proof acceptance criteria (AC2, AC4) require registering the new scope and exercising it through a real OAuth consent + booking write, but the only reachable local OpenEMR Docker instance mounts the main checkout, not this isolated worktree \u2014 making the new module code unreachable without writi"
 ---
-
 ## Context
 
 Found live 2026-08-20 while independently verifying TICK-020's reschedule
