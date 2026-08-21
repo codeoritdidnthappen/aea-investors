@@ -95,3 +95,29 @@ byte-for-byte unaffected, and a real-`SubprocessTesseractEngine`
 
 `pytest ai_server/tests/`: 445 passed, 4 skipped, 90.86% coverage.
 `ruff format --check` / `ruff check`: clean.
+
+## Post-merge code review (2026-08-20)
+
+A review pass against the merged commits found two real issues, both fixed
+(commit `119b9fd`):
+
+1. **Consent was not a real user decision.** The client JS hardcoded
+   `consent: true` the instant a file was chosen -- no checkbox existed at
+   all, contradicting `ONBOARDING_CONTRACT.md` field 1 ("Identity-document
+   processing consent... Unticked checkbox"). Fixed with a real,
+   unticked-by-default checkbox; the file input stays disabled until it is
+   explicitly checked. Live-verified in the browser: the "Choose File"
+   control is visibly disabled with the box unchecked, and enables the
+   instant it's ticked.
+2. **The chat message-length cap was widened globally**, not just for the
+   upload path -- `ChatTurnRequest.message` went from 4,000 characters to
+   ~11.2MB to fit a base64 image inline, affecting every chat turn
+   including the unrelated scheduling path (a scope-widening DoS/cost
+   surface). Fixed by giving the image its own `image_base64` request
+   field with its own separate cap; `message` is back to 4,000 for every
+   turn. `OnboardingChatService.stream_reply` gained an optional
+   `image_base64` parameter instead of parsing it out of the JSON message
+   body.
+
+`pytest ai_server/tests/` after the fix: 446 passed, 4 skipped, 90.86%
+coverage. `ruff format --check` / `ruff check`: clean.
