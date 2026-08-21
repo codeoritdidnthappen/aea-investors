@@ -133,7 +133,6 @@ services:
       # office's admin-configured appointment fields (ai_server/app/chat.py,
       # BookingToolSettings); they have no discoverable default
       # (ai_server/scheduling/booking.py, AppointmentRequest).
-      OPENEMR_API_BASE_URL: ${OPENEMR_API_BASE_URL:-}
       OPENEMR_FHIR_BASE_URL: ${OPENEMR_FHIR_BASE_URL:-}
       OPENEMR_PORTAL_BASE_URL: ${OPENEMR_PORTAL_BASE_URL:-}
       AI_BOOKING_CATEGORY_ID: ${AI_BOOKING_CATEGORY_ID:-}

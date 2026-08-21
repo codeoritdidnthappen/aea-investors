@@ -120,3 +120,22 @@ to lock in the corrected behavior.
 
 Also flagged (verified, tracked separately, not blocking): the mononym
 validation gap above (TICK-043).
+
+Second code-review pass found two cleanup-level issues, one fixed:
+`OPENEMR_API_BASE_URL` became genuinely dead configuration once this ticket
+removed `OpenEmrDemographicsSettings` (its last real consumer) --
+`deploy/local/.env`, `.env.example`, and `docker-compose.yml` all still
+declared it under a misleading "needed for booking/cancellation" comment.
+Removed from all three; the one remaining reference
+(`ai_server/tests/test_scheduling_tool_wiring.py`'s `_REQUIRED_ENV` superset)
+predates this ticket and isn't exercised for anything there either, left
+alone as a pre-existing, unrelated pattern.
+
+Declined (judgment call, matching TICK-040's second-review precedent
+exactly -- "not opening a review loop over cosmetic-level findings"):
+`errorResponse()` is now duplicated verbatim a 4th time across
+`AppointmentBookService`/`AppointmentCancelService`/`AssessmentDraftService`/
+`PatientDemographicsUpdateService`. Real but pre-existing-pattern-consistent
+duplication across files this ticket's own scope doesn't require touching;
+a shared-trait extraction is a reasonable future cleanup, not a correctness
+fix this ticket needs to carry.
