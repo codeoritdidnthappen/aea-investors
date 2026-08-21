@@ -316,6 +316,38 @@ def test_full_onboarding_conversation_reaches_a_completed_record(tmp_path: Path)
     asyncio.run(scenario())
 
 
+def test_tick_043_an_empty_family_name_chat_turn_is_rejected_not_accepted_as_a_mononym(
+    tmp_path: Path,
+) -> None:
+    """A patient answering "What is your legal family (last) name?" with an empty
+    string is rejected at that same turn, never advances the identity capture, and
+    never reaches confirm_identity()/OpenEMR at all -- the actual chat-turn path
+    TICK-043's fix covers, not just confirm_identity() called directly."""
+    configured = settings(tmp_path)
+    store = SessionStore(configured.database_path, configured.encryption_key)
+    store.initialize()
+    handle = _bound_session(store)
+    server = _SyntheticOpenEmr()
+
+    async def scenario() -> None:
+        service = OnboardingChatService(flow=_flow(server), session_store=store, clock=lambda: NOW)
+        await _send(service, handle, "start onboarding")
+        await _send(service, handle, json.dumps({"method": "portal_message"}))
+        await _send(service, handle, "both")
+        await _send(
+            service, handle, json.dumps({"format": "video", "time_window": "weekday_morning"})
+        )
+        await _send(service, handle, json.dumps({"selected": []}))
+        await _send(service, handle, "Cher")
+
+        rejection = await _send(service, handle, "")
+
+        assert "could not be accepted" in rejection
+        assert len(server.demographics_writes) == 0
+
+    asyncio.run(scenario())
+
+
 def test_distress_content_surfaces_through_the_same_streamed_path_and_pauses_the_field(
     tmp_path: Path,
 ) -> None:
