@@ -9,7 +9,7 @@ depends_on: [TICK-016, TICK-035, TICK-040, TICK-041]
 labels: [onboarding, openemr, auth]
 source: [FR-6, FR-17, FR-26, NFR-25]
 status: done
-remote_url:
+remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/88
 ---
 ## Context
 

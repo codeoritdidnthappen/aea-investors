@@ -9,7 +9,7 @@ depends_on: [TICK-042]
 labels: [onboarding, openemr]
 source: [FR-6, FR-17, FR-26]
 status: todo
-remote_url:
+remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/89
 ---
 ## Context
 
