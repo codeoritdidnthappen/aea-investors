@@ -101,7 +101,7 @@ class RescheduleService:
         only ever receives a `RescheduledAppointment` once both real OpenEMR calls
         have actually returned success (AC4).
         """
-        booked = await self._booking.book(access_token, patient_id, slot_token, request, now)
+        booked = await self._booking.book(access_token, slot_token, request, now)
         try:
             cancelled = await self._cancellation.cancel(
                 access_token, patient_id, appointment_token, now

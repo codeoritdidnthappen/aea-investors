@@ -108,13 +108,11 @@ class BookingTool(AuthoritativeTool):
     (`SessionStore.access_token`/`patient_uuid`, `ai_server/app/main.py`'s `/api/chat`
     handler) -- baked into a fresh instance per turn by `_build_scheduling_tool`'s
     factory, never stored anywhere beyond that. `patient_id` carries the session's
-    OpenEMR patient UUID: `ai_server/openemr/demographics.py`'s already-proven-live
-    `PUT /patient/{uuid}` establishes that this Standard API accepts the UUID as the
-    `pid` path segment, so `BookingService.book`'s `patient_id` argument reuses it the
-    same way, and `CancellationService.cancel`'s `patient_id` argument reuses it again
+    OpenEMR patient UUID: `CancellationService.cancel`'s `patient_id` argument uses it
     as the binding identity `AnonymousAppointmentStore` issued the caller's
-    `appointment_token`s under, rather than resolving a second, numeric patient id this
-    module has no endpoint to look up.
+    `appointment_token`s under. `BookingService.book` no longer takes a patient id at
+    all (TICK-040) -- the module-added Portal route it calls resolves the caller's
+    numeric OpenEMR patient id itself, server-side, from the bearer token.
     """
 
     booking: BookingService
@@ -146,7 +144,6 @@ class BookingTool(AuthoritativeTool):
         try:
             booked = await self.booking.book(
                 self.access_token,
-                self.patient_id,
                 slot_token,
                 self.appointment_request,
                 self.now,

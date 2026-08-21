@@ -41,17 +41,16 @@ class FakeBookingService:
 
     def __init__(self, outcome: BookedAppointment | Exception) -> None:
         self.outcome = outcome
-        self.calls: list[tuple[str, str, str, AppointmentRequest, datetime]] = []
+        self.calls: list[tuple[str, str, AppointmentRequest, datetime]] = []
 
     async def book(
         self,
         access_token: str,
-        patient_id: str,
         slot_token: str,
         request: AppointmentRequest,
         now: datetime,
     ) -> BookedAppointment:
-        self.calls.append((access_token, patient_id, slot_token, request, now))
+        self.calls.append((access_token, slot_token, request, now))
         if isinstance(self.outcome, Exception):
             raise self.outcome
         return self.outcome
@@ -141,7 +140,7 @@ def test_book_success_produces_a_public_summary_of_only_the_openemr_confirmed_ou
 
     result = run(tool(booking).execute(plan))
 
-    assert booking.calls == [("token", "patient-uuid", "slot_abc123", REQUEST, NOW)]
+    assert booking.calls == [("token", "slot_abc123", REQUEST, NOW)]
     assert "501" in result.public_summary
     assert booked.starts_at.isoformat() in result.public_summary
     assert booked.ends_at.isoformat() in result.public_summary
