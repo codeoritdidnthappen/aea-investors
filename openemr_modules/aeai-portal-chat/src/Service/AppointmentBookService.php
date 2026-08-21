@@ -113,14 +113,18 @@ class AppointmentBookService
         }
 
         if (!empty($errors)) {
-            return new JsonResponse(['error' => 'request body must be a JSON object', 'details' => $errors], 400);
+            return $this->errorResponse(400, 'validation failed', $errors);
         }
 
         return $fields;
     }
 
-    private function errorResponse(int $status, string $message): JsonResponse
+    private function errorResponse(int $status, string $message, array $details = []): JsonResponse
     {
-        return new JsonResponse(['error' => $message], $status);
+        $body = ['error' => $message];
+        if (!empty($details)) {
+            $body['details'] = $details;
+        }
+        return new JsonResponse($body, $status);
     }
 }
