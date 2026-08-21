@@ -42,7 +42,6 @@ from ai_server.scheduling.booking import (
     BookedAppointment,
     BookingService,
     OpenEmrBookingAdapter,
-    OpenEmrBookingSettings,
 )
 from ai_server.scheduling.cancel import (
     AppointmentAlreadyCancelledError,
@@ -53,7 +52,6 @@ from ai_server.scheduling.cancel import (
 from ai_server.scheduling.slots import AnonymousSlotStore, CandidateSlot
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-API_BASE_URL = "https://openemr.test/apis/default/api"
 PORTAL_BASE_URL = "https://openemr.test/apis/default"
 TZ = timezone(timedelta(hours=-5))
 NOW = datetime(2026, 8, 25, 9, 0, tzinfo=TZ)
@@ -70,7 +68,7 @@ def run(coroutine):
 def booking_service(handler: httpx.MockTransport, store: AnonymousSlotStore | None = None):
     active_store = store or AnonymousSlotStore()
     client = httpx.AsyncClient(transport=handler)
-    adapter = OpenEmrBookingAdapter(OpenEmrBookingSettings(api_base_url=API_BASE_URL), client)
+    adapter = OpenEmrBookingAdapter(OpenEmrPortalSettings(portal_base_url=PORTAL_BASE_URL), client)
     return BookingService(active_store, adapter), active_store
 
 
@@ -88,27 +86,28 @@ def candidate(hours_from_now: float, duration_minutes: int = 30) -> CandidateSlo
 
 
 def test_book_allowed_native_confirmation_and_chat_result_match() -> None:
-    """Native: OpenEMR 200 {"id": "501"} for a valid open slot (ENDPOINT_MATRIX.md,
-    "Create appointment / book"). Chat: `BookingService.book` must surface the same
-    id and the same OpenEMR-resolved window, never a client-supplied or invented one.
+    """Native: OpenEMR 201 {"id": "501", "status": "booked"} for a valid open slot
+    (ENDPOINT_MATRIX.md, "Create appointment / book"). Chat: `BookingService.book`
+    must surface the same id and the same OpenEMR-resolved window, never a
+    client-supplied or invented one.
     """
 
     async def native(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"id": "501"})
+        return httpx.Response(201, json={"id": "501", "status": "booked"})
 
     store = AnonymousSlotStore()
     slot = candidate(hours_from_now=48)
     issued = store.issue(slot, NOW)
     service, _ = booking_service(httpx.MockTransport(native), store)
 
-    chat_result = run(service.book("token", "7", issued.slot_token, REQUEST, NOW))
+    chat_result = run(service.book("token", issued.slot_token, REQUEST, NOW))
 
     native_result = BookedAppointment(id="501", starts_at=slot.starts_at, ends_at=slot.ends_at)
     assert chat_result == native_result
 
 
 def test_book_denied_conflict_native_rejection_and_chat_rejection_match() -> None:
-    """Native: OpenEMR returns a non-200 (e.g. 409) when the slot is no longer open
+    """Native: OpenEMR returns a non-201 (e.g. 409) when the slot is no longer open
     (TICK-031 AC3, "conflict or stale-slot ... responses are clear and create no
     invented commitment"). Chat: the same request must fail explicitly, with no
     `BookedAppointment` ever produced.
@@ -122,7 +121,7 @@ def test_book_denied_conflict_native_rejection_and_chat_rejection_match() -> Non
     service, _ = booking_service(httpx.MockTransport(native), store)
 
     with pytest.raises(OpenEmrRequestError):
-        run(service.book("token", "7", issued.slot_token, REQUEST, NOW))
+        run(service.book("token", issued.slot_token, REQUEST, NOW))
 
 
 def test_book_double_submit_native_receives_one_create_call_nfr11() -> None:
@@ -135,7 +134,7 @@ def test_book_double_submit_native_receives_one_create_call_nfr11() -> None:
 
     async def native(request: httpx.Request) -> httpx.Response:
         native_calls.append(request)
-        return httpx.Response(200, json={"id": "77"})
+        return httpx.Response(201, json={"id": "77", "status": "booked"})
 
     store = AnonymousSlotStore()
     issued = store.issue(candidate(hours_from_now=48), NOW)
@@ -143,8 +142,8 @@ def test_book_double_submit_native_receives_one_create_call_nfr11() -> None:
 
     async def scenario() -> list[object]:
         return await asyncio.gather(
-            service.book("token", "7", issued.slot_token, REQUEST, NOW),
-            service.book("token", "7", issued.slot_token, REQUEST, NOW),
+            service.book("token", issued.slot_token, REQUEST, NOW),
+            service.book("token", issued.slot_token, REQUEST, NOW),
             return_exceptions=True,
         )
 
@@ -165,14 +164,14 @@ def test_book_notice_no_independent_minimum_enforced_beyond_openemr() -> None:
     """
 
     async def native(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"id": "9001"})
+        return httpx.Response(201, json={"id": "9001", "status": "booked"})
 
     store = AnonymousSlotStore()
     near_term = candidate(hours_from_now=5 / 60)
     issued = store.issue(near_term, NOW)
     service, _ = booking_service(httpx.MockTransport(native), store)
 
-    chat_result = run(service.book("token", "7", issued.slot_token, REQUEST, NOW))
+    chat_result = run(service.book("token", issued.slot_token, REQUEST, NOW))
 
     assert chat_result == BookedAppointment(
         id="9001", starts_at=near_term.starts_at, ends_at=near_term.ends_at

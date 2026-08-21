@@ -2,6 +2,7 @@
 
 namespace AeaiPortalChat;
 
+use AeaiPortalChat\Controller\AppointmentBookController;
 use AeaiPortalChat\Controller\AppointmentCancelController;
 use AeaiPortalChat\Controller\AssessmentDraftController;
 use AeaiPortalChat\Controller\PortalChatController;
@@ -26,5 +27,6 @@ class Bootstrap
         (new PortalChatController())->subscribeToEvents($this->eventDispatcher);
         (new AssessmentDraftController())->subscribeToEvents($this->eventDispatcher);
         (new AppointmentCancelController())->subscribeToEvents($this->eventDispatcher);
+        (new AppointmentBookController())->subscribeToEvents($this->eventDispatcher);
     }
 }

@@ -49,11 +49,7 @@ from ai_server.openemr.adapter import (
 from ai_server.openemr.demographics import OpenEmrDemographicsAdapter, OpenEmrDemographicsSettings
 from ai_server.privacy.gate import PrivacyGate
 from ai_server.scheduling.appointments import AnonymousAppointmentStore, AppointmentDiscoveryService
-from ai_server.scheduling.booking import (
-    BookingService,
-    OpenEmrBookingAdapter,
-    OpenEmrBookingSettings,
-)
+from ai_server.scheduling.booking import BookingService, OpenEmrBookingAdapter
 from ai_server.scheduling.cancel import AppointmentCancelAdapter, CancellationService
 from ai_server.scheduling.reschedule import RescheduleService
 from ai_server.scheduling.slots import AnonymousSlotStore, SlotDiscoveryService
@@ -279,12 +275,11 @@ def _build_scheduling_tool(
 
     Mirrors `_build_chat_service`'s/`_build_onboarding_service`'s tolerance of absent
     OpenEMR configuration (TICK-034 AC5, TICK-036): every environment missing the
-    Standard/FHIR/Portal API base URLs or the admin-configured booking fields keeps
-    today's fixed no-action tool and empty `open_slots`/`current_appointments` instead
-    of failing startup.
+    FHIR/Portal API base URLs or the admin-configured booking fields keeps today's
+    fixed no-action tool and empty `open_slots`/`current_appointments` instead of
+    failing startup.
     """
     try:
-        booking_settings = OpenEmrBookingSettings.from_environment()
         schedule_settings = OpenEmrScheduleSettings.from_environment()
         booking_tool_settings = BookingToolSettings.from_environment()
         portal_settings = OpenEmrPortalSettings.from_environment()
@@ -295,7 +290,10 @@ def _build_scheduling_tool(
     # token issued in an earlier turn can still be booked/cancelled in a later one.
     slot_store = AnonymousSlotStore()
     appointment_store = AnonymousAppointmentStore()
-    booking_service = BookingService(slot_store, OpenEmrBookingAdapter(booking_settings, client))
+    # Booking and cancellation both go through the module-added Portal routes now
+    # (TICK-040), so they share the one portal_settings instance -- no separate
+    # Standard API booking settings needed anymore.
+    booking_service = BookingService(slot_store, OpenEmrBookingAdapter(portal_settings, client))
     cancellation_service = CancellationService(
         appointment_store, AppointmentCancelAdapter(portal_settings, client)
     )

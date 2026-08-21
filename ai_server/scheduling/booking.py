@@ -1,16 +1,26 @@
-"""Book a genuinely open slot through the mapped OpenEMR Standard API endpoint.
+"""Book a genuinely open slot through the module-added Portal API endpoint.
 
 Booking is deliberately kept out of the read-only `OpenEmrScheduleAdapter`
 (`ai_server/openemr/adapter.py`) -- that adapter's own tests assert it exposes no
 booking, cancel, or policy method (TICK-018 AC4, "This adapter adds no booking,
-eligibility, notice, or scheduling default"). This module owns the one write path
-`evidence/TICK-001/ENDPOINT_MATRIX.md` records as "Supported locally": the Standard
-API `POST /api/patient/{pid}/appointment`, proven in TICK-001's own probe (`200` with
-`{"id": "..."}` for the documented required fields). `OpenEmrBookingAdapter` mirrors
-`ai_server/openemr/demographics.py`'s shape exactly, including its most important
-property: every method takes the caller's already-delegated bearer token and the
-caller's already-established numeric patient id as explicit arguments; this module
-never stores, caches, resolves, or infers either one itself.
+eligibility, notice, or scheduling default"). This module owns the one write path.
+
+TICK-040: the Standard API route this originally called
+(`POST /api/patient/{pid}/appointment`, TICK-001's own probe) is gated by a staff
+ACL check (`RestConfig::request_authorization_check()` -> `AclMain::aclCheckCore()`
+against a logged-in staff `authUser`), never an OAuth scope -- structurally
+unreachable for a genuine patient-context bearer token (confirmed directly in the
+pinned image's own source; see `tickets/TICK-040-add-portal-booking-route.md`). This
+now calls `AppointmentBookController`'s module-added Portal route instead
+(`openemr_modules/aeai-portal-chat`), the same `RestApiExtend` mechanism
+`AppointmentCancelController` (TICK-036/041) already uses successfully -- enforced by
+`AuthorizationListener`'s OAuth-scope check, which a patient token can actually
+satisfy. That route resolves the caller's numeric OpenEMR patient id itself, from the
+bearer token server-side, so this adapter no longer takes or sends one.
+
+`OpenEmrBookingAdapter` mirrors `ai_server/openemr/demographics.py`'s shape
+otherwise: every method takes the caller's already-delegated bearer token as an
+explicit argument; this module never stores, caches, resolves, or infers it itself.
 
 `BookingService` is the only caller allowed to supply real OpenEMR timing to the
 adapter: it always resolves a slot token through `AnonymousSlotStore.resolve()`
@@ -23,22 +33,16 @@ attempt fails on `resolve()` itself, with no OpenEMR call and no invented commit
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from datetime import datetime
 
 import httpx
 
-from ai_server.openemr.adapter import OpenEmrConfigurationError, OpenEmrRequestError
+from ai_server.onboarding.draft_client import OpenEmrPortalSettings
+from ai_server.openemr.adapter import OpenEmrRequestError
 from ai_server.scheduling.slots import AnonymousSlotStore, SlotTokenError
 
-_APPOINTMENT_PATH = "/patient/{patient_id}/appointment"
-# list_options 'apptstat' (sql/database.sql): '-' == "- None", OpenEMR's own default
-# status for a freshly booked slot with no reminder/check-in history yet. Not a
-# cancellation code (contrast `cancel.py`'s status) and not a status this module
-# invents -- it is the example value OpenEMR's own Standard API documentation uses for
-# this same field.
-_BOOKED_STATUS = "-"
+_APPOINTMENT_PATH = "/portal/patient/appointment"
 
 
 class SlotBookingError(Exception):
@@ -72,54 +76,37 @@ class BookedAppointment:
     ends_at: datetime
 
 
-@dataclass(frozen=True)
-class OpenEmrBookingSettings:
-    """Validated configuration for the OpenEMR Standard API booking boundary."""
-
-    api_base_url: str
-
-    @classmethod
-    def from_environment(cls) -> OpenEmrBookingSettings:
-        """Parse the required Standard API base URL once during application startup."""
-        base_url = os.environ.get("OPENEMR_API_BASE_URL")
-        if not base_url:
-            raise OpenEmrConfigurationError("OPENEMR_API_BASE_URL is required")
-        return cls(api_base_url=base_url.rstrip("/"))
-
-
 class OpenEmrBookingAdapter:
-    """Creates one appointment through the mapped Standard API route only.
+    """Creates one appointment through the module-added Portal route only.
 
-    Every method takes the caller's already-delegated bearer token and the caller's
-    already-established numeric patient id; like `OpenEmrDemographicsAdapter`, this
-    adapter never stores, caches, or otherwise retains either one, and never resolves
-    "the logged-in patient" itself.
+    Every method takes the caller's already-delegated bearer token; like
+    `OpenEmrDemographicsAdapter`, this adapter never stores, caches, or otherwise
+    retains it, and never resolves "the logged-in patient" itself -- the Portal route
+    does that server-side, from the token, so this adapter no longer takes or sends a
+    patient id at all (TICK-040).
     """
 
-    def __init__(self, settings: OpenEmrBookingSettings, client: httpx.AsyncClient) -> None:
+    def __init__(self, settings: OpenEmrPortalSettings, client: httpx.AsyncClient) -> None:
         self._settings = settings
         self._client = client
 
     async def create_appointment(
         self,
         access_token: str,
-        patient_id: str,
         *,
         starts_at: datetime,
         ends_at: datetime,
         request: AppointmentRequest,
     ) -> str:
-        """POST the required Standard API fields; return only OpenEMR's new event id.
+        """POST the required fields; return only OpenEMR's new appointment id.
 
-        Raises `OpenEmrRequestError` for any non-200 response or an unusable body --
+        Raises `OpenEmrRequestError` for any non-201 response or an unusable body --
         never returns a fabricated id (AC3).
         """
         body: dict[str, object] = {
             "pc_catid": request.category_id,
             "pc_title": request.title,
             "pc_duration": int((ends_at - starts_at).total_seconds()),
-            "pc_hometext": "Booked by the AI scheduling assistant",
-            "pc_apptstatus": _BOOKED_STATUS,
             "pc_eventDate": starts_at.date().isoformat(),
             "pc_startTime": starts_at.strftime("%H:%M"),
             "pc_facility": request.facility_id,
@@ -127,16 +114,15 @@ class OpenEmrBookingAdapter:
         }
         if request.provider_id is not None:
             body["pc_aid"] = request.provider_id
-        path = _APPOINTMENT_PATH.format(patient_id=patient_id)
         try:
             response = await self._client.post(
-                f"{self._settings.api_base_url}{path}",
+                f"{self._settings.portal_base_url}{_APPOINTMENT_PATH}",
                 json=body,
                 headers={"Authorization": f"Bearer {access_token}"},
             )
         except httpx.HTTPError as exc:
             raise OpenEmrRequestError("booking the appointment in OpenEMR failed") from exc
-        if response.status_code != 200:
+        if response.status_code != 201:
             raise OpenEmrRequestError(
                 f"OpenEMR booking request failed with status {response.status_code}"
             )
@@ -145,9 +131,9 @@ class OpenEmrBookingAdapter:
         except ValueError as exc:
             raise OpenEmrRequestError("OpenEMR returned an invalid booking response") from exc
         identifier = payload.get("id") if isinstance(payload, dict) else None
-        if isinstance(identifier, bool) or not isinstance(identifier, (str, int)):
+        if isinstance(identifier, bool) or not isinstance(identifier, str) or not identifier:
             raise OpenEmrRequestError("OpenEMR returned an invalid booking response")
-        return str(identifier)
+        return identifier
 
 
 class BookingService:
@@ -167,7 +153,6 @@ class BookingService:
     async def book(
         self,
         access_token: str,
-        patient_id: str,
         slot_token: str,
         request: AppointmentRequest,
         now: datetime,
@@ -187,7 +172,6 @@ class BookingService:
             raise SlotBookingError(str(exc)) from exc
         identifier = await self._adapter.create_appointment(
             access_token,
-            patient_id,
             starts_at=candidate.starts_at,
             ends_at=candidate.ends_at,
             request=request,

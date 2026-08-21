@@ -26,7 +26,6 @@ from ai_server.scheduling.booking import (
     AppointmentRequest,
     BookingService,
     OpenEmrBookingAdapter,
-    OpenEmrBookingSettings,
     SlotBookingError,
 )
 from ai_server.scheduling.cancel import AppointmentCancelAdapter, CancellationService
@@ -37,7 +36,6 @@ from ai_server.scheduling.reschedule import (
 )
 from ai_server.scheduling.slots import AnonymousSlotStore, CandidateSlot
 
-API_BASE_URL = "https://openemr.test/apis/default/api"
 PORTAL_BASE_URL = "https://openemr.test/apis/default"
 TZ = timezone(timedelta(hours=-5))
 NOW = datetime(2026, 8, 25, 9, 0, tzinfo=TZ)
@@ -74,7 +72,7 @@ def service_with(
     booking = BookingService(
         slot_store,
         OpenEmrBookingAdapter(
-            OpenEmrBookingSettings(api_base_url=API_BASE_URL),
+            OpenEmrPortalSettings(portal_base_url=PORTAL_BASE_URL),
             httpx.AsyncClient(transport=httpx.MockTransport(book_handler)),
         ),
     )
@@ -96,7 +94,7 @@ def test_happy_path_books_the_new_slot_then_cancels_the_original() -> None:
 
     async def book_handler(request: httpx.Request) -> httpx.Response:
         call_order.append("book")
-        return httpx.Response(200, json={"id": "new-openemr-id"})
+        return httpx.Response(201, json={"id": "new-openemr-id", "status": "booked"})
 
     async def cancel_handler(request: httpx.Request) -> httpx.Response:
         call_order.append("cancel")
@@ -174,7 +172,7 @@ def test_a_conflicting_target_slot_rejected_by_openemr_leaves_the_original_untou
 
 def test_cancellation_failure_after_a_successful_rebook_reports_the_confirmed_booking() -> None:
     async def book_handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"id": "new-openemr-id"})
+        return httpx.Response(201, json={"id": "new-openemr-id", "status": "booked"})
 
     async def cancel_handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(500)
@@ -198,7 +196,7 @@ def test_cancellation_of_a_stale_appointment_token_after_a_successful_rebook_is_
     still booked successfully and that must not be silently lost."""
 
     async def book_handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"id": "new-openemr-id"})
+        return httpx.Response(201, json={"id": "new-openemr-id", "status": "booked"})
 
     def cancel_handler(request: httpx.Request) -> httpx.Response:
         raise AssertionError("no OpenEMR cancel call is permitted for an unknown appointment token")
