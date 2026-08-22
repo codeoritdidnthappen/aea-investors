@@ -106,23 +106,30 @@ Three mechanics make it work, and each is load-bearing:
    at render starts an OAuth flow for a panel the patient never opened — and when that flow
    needs a login, the breakout script navigates the *top-level* window off the dashboard.
    The patient is thrown off the page they just signed in to, having clicked nothing
-   (FR-37). This is also what makes the rule safe to state absolutely: a dashboard that
+   (FR-32). This is also what makes the rule safe to state absolutely: a dashboard that
    spawns no chat iframe at render cannot be redirected into itself.
-2. **`/oauth/launch` short-circuits on a live session.** With a valid `ai_session` it serves
-   the chat directly rather than starting a fresh authorization each time the panel opens.
+2. **`/oauth/launch` short-circuits on a live session, subject to the same rule.** With a
+   valid `ai_session` it skips the authorization round trip — serving the chat when it is
+   running in the panel, and redirecting to the dashboard when it is running at top level.
+   The short-circuit is not an exception to the invariant: a live session reached at top
+   level must not be answered with the full-page chat.
 3. **The callback reads its own position from `Sec-Fetch-Dest`, never from a parameter.**
    Browsers send `document` for a top-level navigation and `iframe` for one into a frame,
-   so the server can resolve the destination itself without a client-side interstitial. An
-   absent or unrecognised value is treated as top level, because the dashboard is the safe
-   destination — it strands nobody. No `next=` or return URL is involved, and none may be
-   added.
+   so the server resolves the destination itself with no client-side interstitial on the
+   normal path. Neither default is safe when the header is absent: assuming top level
+   redirects a panel into rendering the dashboard nested inside its own chart, and assuming
+   in-panel strands a top-level visitor on the full-page chat. So absence is not guessed —
+   it falls back to a minimal document that performs the frame check in the client and
+   navigates accordingly. Chrome, the only supported target (NFR-19, NFR-35), always sends
+   the header, so this path should never run in practice. No `next=` or return URL is
+   involved, and none may be added.
 
 Note that `/oauth/launch` is the patient-facing entry point, not a development affordance:
 it is the panel's `src`, taken from `AEAI_PORTAL_CHAT_URL` when set and otherwise from
-`PortalChatController::DEFAULT_CHAT_LAUNCH_URL`. The probe scripts reach the chat through
-that same URL, so a top-level visit now lands on the dashboard; they are unaffected because
-they read the callback's `Location` header and need only the session cookie, which is still
-set either way.
+`PortalChatController::DEFAULT_CHAT_LAUNCH_URL`. Nothing else depends on its top-level
+behaviour — the probe scripts under `scripts/` do not use it, driving OpenEMR's
+`/oauth2/default/authorize` with their own `http://localhost:8910/callback` and exchanging
+tokens themselves.
 
 Two settings are involved in the destination and they are **not** interchangeable, however
 similar they look. The post-login redirect target decides where the patient lands. The chat
@@ -386,7 +393,7 @@ Position is read from `Sec-Fetch-Dest`, defaulting to top level when absent. The
 target and the `POST /api/chat` origin allowlist are configured separately, so the
 destination can never be changed by editing a CSRF setting, or vice versa.
 **Consequence:** The patient can never be stranded on a full-page chat, which is what FR-2
-and FR-36 ask for. A top-level visit to the chat's own URL lands on the dashboard rather
+and FR-31 ask for. A top-level visit to the chat's own URL lands on the dashboard rather
 than the chat — accepted deliberately, since the chat is not a standalone application.
 OpenEMR's native portal login already lands on `portal/home.php` and is not modified by
 this decision. **This flow is settled. Do not change it.** A future ticket proposing to
