@@ -21,6 +21,14 @@ adapter no longer sends or needs a patient id at all, matching
 name, date of birth, and address were all explicitly confirmed or corrected. An
 unconfirmed, partial, revoked, or failed OCR result therefore has no path to a write
 (AC1, AC3): there is no constructor that accepts a missing field.
+
+An address on its own is a second, narrower confirmed unit (`ConfirmedAddress`, built
+only by `confirm_address`, TICK-049) so a patient who only wants to move house does not
+have to re-confirm a name and date of birth that are not changing. Both units keep the
+address structured all the way to the wire: OpenEMR's `patient_data` has its own
+`street`, `street_line_2`, `city`, `state`, and `postal_code` columns, so flattening a
+validated `Address` into one `street` line (as this module did before TICK-049) threw
+away structure OpenEMR itself models.
 """
 
 from __future__ import annotations
@@ -30,13 +38,31 @@ from dataclasses import dataclass
 import httpx
 
 from ai_server.onboarding.draft_client import OpenEmrPortalSettings
+from ai_server.onboarding.fields import Address, FieldValidationError, validate_address
 from ai_server.openemr.adapter import OpenEmrRequestError
 
 _DEMOGRAPHICS_PATH = "/portal/patient/demographics"
 
 
 class IdentityNotConfirmedError(Exception):
-    """Raised when name, date of birth, and address were not all explicitly confirmed."""
+    """Raised when a field required for the attempted write was not explicitly confirmed."""
+
+
+@dataclass(frozen=True)
+class ConfirmedAddress:
+    """Only an explicitly confirmed, fully validated address; every component non-empty.
+
+    Kept component-wise rather than as one formatted line so each part can land in its
+    own OpenEMR column (AC2). `street2` is the single genuinely optional component --
+    most addresses have no unit/apartment line, and inventing one would fabricate a
+    value the patient never gave (FR-23).
+    """
+
+    street1: str
+    city: str
+    state: str
+    zip_code: str
+    street2: str | None = None
 
 
 @dataclass(frozen=True)
@@ -57,14 +83,51 @@ class ConfirmedIdentity:
     given_name: str
     family_name: str
     date_of_birth: str
-    address: str
+    address: ConfirmedAddress
+
+
+def confirm_address(address: Address | None) -> ConfirmedAddress:
+    """Build a write-eligible address only once it is confirmed and fully valid (AC5).
+
+    `address` is the `Address` the patient explicitly confirmed or corrected. Re-running
+    `fields.validate_address` here rather than trusting the dataclass keeps one set of
+    address rules (`ONBOARDING_CONTRACT.md` row 5: real two-letter state/territory code,
+    five- or nine-digit ZIP) and puts them at the write boundary itself, so a
+    hand-constructed or partially-validated `Address` -- an invalid state, a malformed
+    ZIP, a blank city -- is refused before any request is made, exactly as `None` is.
+    """
+    if address is None:
+        raise IdentityNotConfirmedError("identity fields not confirmed: address")
+    try:
+        validated = validate_address(
+            {
+                "street1": address.street1,
+                "street2": address.street2,
+                "city": address.city,
+                "state": address.state,
+                "zip_code": address.zip_code,
+            }
+        )
+    except FieldValidationError as exc:
+        raise IdentityNotConfirmedError(
+            f"address is not fully validated: {'; '.join(exc.details)}"
+        ) from exc
+    return ConfirmedAddress(
+        street1=validated.street1,
+        city=validated.city,
+        state=validated.state,
+        zip_code=validated.zip_code,
+        # `validate_address` returns `""` for a whitespace-only second line; collapse
+        # that to `None` so "no second line" has exactly one representation here.
+        street2=validated.street2 or None,
+    )
 
 
 def confirm_identity(
     given_name: str | None,
     family_name: str | None,
     date_of_birth: str | None,
-    address: str | None,
+    address: Address | None,
 ) -> ConfirmedIdentity:
     """Build a write-eligible identity only once every required field is confirmed (AC1).
 
@@ -83,12 +146,12 @@ def confirm_identity(
     missing = [field for field, value in fields.items() if not value]
     if missing:
         raise IdentityNotConfirmedError(f"identity fields not confirmed: {', '.join(missing)}")
-    assert given_name and family_name and date_of_birth and address  # narrows for the type checker
+    assert given_name and family_name and date_of_birth  # narrows for the type checker
     return ConfirmedIdentity(
         given_name=given_name,
         family_name=family_name,
         date_of_birth=date_of_birth,
-        address=address,
+        address=confirm_address(address),
     )
 
 
@@ -112,12 +175,28 @@ class OpenEmrDemographicsAdapter:
         `identity` can only exist via `confirm_identity`, so there is no code path
         from an unconfirmed, partial, revoked, or failed OCR value to this call.
         """
-        body = {
-            "fname": identity.given_name,
-            "lname": identity.family_name,
-            "DOB": identity.date_of_birth,
-            "street": identity.address,
-        }
+        await self._put(
+            access_token,
+            {
+                "fname": identity.given_name,
+                "lname": identity.family_name,
+                "DOB": identity.date_of_birth,
+                **_address_body(identity.address),
+            },
+        )
+
+    async def write_confirmed_address(self, access_token: str, address: ConfirmedAddress) -> None:
+        """Write only the confirmed address, leaving name and date of birth untouched.
+
+        The body carries address columns and nothing else, so `PatientService::update()`
+        builds an `UPDATE` that names only those columns -- an omitted field is never
+        written, and therefore never blanked (AC1). This is the address-only path
+        TICK-050 needs; it takes a `ConfirmedAddress`, so an unconfirmed or only
+        partially validated address still has no route to a write (AC5).
+        """
+        await self._put(access_token, _address_body(address))
+
+    async def _put(self, access_token: str, body: dict[str, str]) -> None:
         try:
             response = await self._client.put(
                 f"{self._settings.portal_base_url}{_DEMOGRAPHICS_PATH}",
@@ -128,3 +207,27 @@ class OpenEmrDemographicsAdapter:
             raise OpenEmrRequestError("writing confirmed demographics to OpenEMR failed") from exc
         if response.status_code != 200:
             raise OpenEmrRequestError("writing confirmed demographics to OpenEMR failed")
+
+
+def _address_body(address: ConfirmedAddress) -> dict[str, str]:
+    """Map a confirmed address onto OpenEMR's own `patient_data` address columns (AC2).
+
+    Keys are the real column names `PatientService::update()` writes through
+    (`BaseService::buildUpdateColumns` drops any key that is not a column), matching how
+    this body already names `fname`/`lname`/`DOB` rather than inventing a wire vocabulary.
+
+    An address is written as one whole unit, `street_line_2` included and sent empty when
+    the patient gave no second line. Omitting it instead would leave the previous
+    address's apartment/unit line sitting on the record -- verified against a real
+    OpenEMR in `evidence/TICK-049/ADDRESS_WRITE_EVIDENCE.md` -- so the stored address
+    would no longer be the address the patient confirmed. Only `street_line_2` is ever
+    sent empty; every other component is required to be non-empty by `confirm_address`,
+    and the endpoint refuses an empty value for any of them.
+    """
+    return {
+        "street": address.street1,
+        "street_line_2": address.street2 or "",
+        "city": address.city,
+        "state": address.state,
+        "postal_code": address.zip_code,
+    }
