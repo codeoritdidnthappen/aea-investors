@@ -87,6 +87,50 @@ The authorization code is delivered to the AI server callback, not relayed throu
 iframe JavaScript. Replays, expired state, and mismatched state or nonce values fail
 closed. The iframe receives no delegated OpenEMR credential.
 
+**Invariant — the chat is a panel, never a landing page.** An authorization that
+completes at top level lands the patient on the portal dashboard. One that completes
+inside the chat panel loads the chat in that panel. The patient is never left on the
+standalone chat page and is never returned to whatever page they were on when the session
+ended. Fixed by [ADR-8](#adr-8--the-chat-is-a-panel-never-a-landing-page).
+
+The rule is stated over the flow's *position*, not the patient's intent. "Did they type a
+password?" is not something the callback can know: a live OAuth2 provider session
+completes the whole exchange with no prompt at all, whether the flow is running at top
+level or in the panel. Position is knowable, and it is what actually determines whether
+landing on a full-page chat would strand the patient.
+
+Three mechanics make it work, and each is load-bearing:
+
+1. **The chat authorizes only when opened.** The dashboard's AI Chat panel must not carry
+   a live `src` at render. A hidden iframe still loads, so an `/oauth/launch` `src` present
+   at render starts an OAuth flow for a panel the patient never opened — and when that flow
+   needs a login, the breakout script navigates the *top-level* window off the dashboard.
+   The patient is thrown off the page they just signed in to, having clicked nothing
+   (FR-37). This is also what makes the rule safe to state absolutely: a dashboard that
+   spawns no chat iframe at render cannot be redirected into itself.
+2. **`/oauth/launch` short-circuits on a live session.** With a valid `ai_session` it serves
+   the chat directly rather than starting a fresh authorization each time the panel opens.
+3. **The callback reads its own position from `Sec-Fetch-Dest`, never from a parameter.**
+   Browsers send `document` for a top-level navigation and `iframe` for one into a frame,
+   so the server can resolve the destination itself without a client-side interstitial. An
+   absent or unrecognised value is treated as top level, because the dashboard is the safe
+   destination — it strands nobody. No `next=` or return URL is involved, and none may be
+   added.
+
+Note that `/oauth/launch` is the patient-facing entry point, not a development affordance:
+it is the panel's `src`, taken from `AEAI_PORTAL_CHAT_URL` when set and otherwise from
+`PortalChatController::DEFAULT_CHAT_LAUNCH_URL`. The probe scripts reach the chat through
+that same URL, so a top-level visit now lands on the dashboard; they are unaffected because
+they read the callback's `Location` header and need only the session cookie, which is still
+set either way.
+
+Two settings are involved in the destination and they are **not** interchangeable, however
+similar they look. The post-login redirect target decides where the patient lands. The chat
+origin allowlist decides which `Origin` may call `POST /api/chat`, and is the only CSRF
+defense on that route, because the AI session cookie is `SameSite=None` for the cross-site
+iframe. Collapsing them into one value — as `AI_SESSION_SUCCESS_REDIRECT_URI` originally did
+— means any change to where a patient lands silently rewrites who may call the chat API.
+
 This flow is based on OpenEMR's documented
 [OAuth/OIDC and EHR launch support](https://github.com/openemr/openemr/blob/master/Documentation/api/AUTHENTICATION.md).
 
@@ -331,6 +375,23 @@ production healthcare compliance.
 
 **Decision:** Dependency failure directs the user to OpenEMR's existing scheduler.
 **Consequence:** There is one scheduling source of truth and no duplicate fallback UI.
+
+### ADR-8 — The chat is a panel, never a landing page
+
+**Decision:** An authorization completing at top level lands on the portal dashboard; one
+completing inside the panel loads the chat there. The destination takes no input: no
+`next=`, `redirect=`, or equivalent return-URL parameter may be added to reinstate "send
+them back where they were", however reasonable that looks as a usability improvement.
+Position is read from `Sec-Fetch-Dest`, defaulting to top level when absent. The redirect
+target and the `POST /api/chat` origin allowlist are configured separately, so the
+destination can never be changed by editing a CSRF setting, or vice versa.
+**Consequence:** The patient can never be stranded on a full-page chat, which is what FR-2
+and FR-36 ask for. A top-level visit to the chat's own URL lands on the dashboard rather
+than the chat — accepted deliberately, since the chat is not a standalone application.
+OpenEMR's native portal login already lands on `portal/home.php` and is not modified by
+this decision. **This flow is settled. Do not change it.** A future ticket proposing to
+land a top-level authorization anywhere other than the dashboard is rejected on this ADR
+alone, regardless of the reason given.
 
 ---
 
