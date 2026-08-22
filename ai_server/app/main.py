@@ -1,11 +1,11 @@
 import asyncio
-from contextlib import asynccontextmanager
-from datetime import datetime
+from contextlib import asynccontextmanager, suppress
+from datetime import datetime, timedelta
 from typing import AsyncIterator, Callable
 from urllib.parse import urlsplit
 
 import httpx
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 
 from ai_server.app.address_chat import (
@@ -72,6 +72,91 @@ def _origin_of(url: str) -> str:
     return f"{parts.scheme}://{parts.netloc}".lower()
 
 
+def _chat_origin(settings: AuthSettings) -> str:
+    """The one origin the chat page is served from, and so the only origin a chat turn
+    may come from.
+
+    Derived from `success_redirect_uri` because that is the URL /oauth/callback sends
+    the browser to, so it is the page doing the fetching. TICK-051 splits that setting
+    into a separate chat-origin value; this function is the single place both
+    `chat_turn` and `logout` read it, so that split repoints both at once instead of
+    leaving one behind.
+    """
+    return _origin_of(settings.success_redirect_uri)
+
+
+def _logout_origins(settings: AuthSettings) -> tuple[str, ...]:
+    """The origins allowed to end an AI session.
+
+    The chat origin, exactly as `chat_turn` requires, plus -- only when configured --
+    the OpenEMR portal's own origin. That second entry is not a relaxation for
+    convenience: the portal session cookie is `SameSite=Strict` (verified live against
+    OpenEMR 8.3.0, evidence/TICK-055/PORTAL_LOGOUT_MECHANISM.md), so a sign-out click
+    must remain a same-site top-level navigation to `portal/logout.php` or the portal
+    session is never destroyed. That forecloses routing sign-out through the chat
+    origin, and leaves a cross-origin call made *from* the portal page as the only
+    mechanism that ends both sessions. Every such call carries
+    `Origin: <portal origin>`, so a chat-origin-only check here would reject it and
+    make the whole hook the silent no-op TICK-055 AC2 calls a failure.
+
+    An origin that is neither of these -- any other site the patient has open -- still
+    cannot end the session, which is what AC4 requires.
+    """
+    origins = [_chat_origin(settings)]
+    if settings.portal_origin is not None:
+        origins.append(_origin_of(settings.portal_origin))
+    return tuple(origins)
+
+
+async def _sweep_expired_sessions(
+    store: SessionStore, clock: Callable[[], datetime], interval_seconds: float
+) -> None:
+    """Delete expired session rows forever, every `interval_seconds`.
+
+    `active_session` only deletes an expired row when its handle is presented again,
+    and the `ai_session` cookie has no `max_age`, so closing the browser strands the
+    row and its encrypted tokens in SQLite permanently (NFR-31/NFR-33, TICK-055 AC5).
+    Startup alone would not bound that for a container that runs for weeks.
+    """
+    while True:
+        await asyncio.sleep(interval_seconds)
+        await asyncio.to_thread(store.purge_expired, clock())
+
+
+def _expiry_notice(expires_at: datetime | None, now: datetime, window: timedelta) -> str | None:
+    """Warn the patient once their session is inside its final `window`, else `None`.
+
+    The AI session's TTL is absolute: `create_session` stamps `expires_at` once and no
+    code path ever extends it (TICK-055 AC6 keeps it that way, deliberately). A patient
+    mid-conversation is therefore cut off at a fixed instant, and being cut off without
+    warning is the part that is unacceptable, not the cut itself.
+    """
+    if expires_at is None:
+        return None
+    remaining = expires_at - now
+    if remaining > window:
+        return None
+    minutes = max(1, int(remaining.total_seconds() // 60))
+    return (
+        f"Heads up: this chat session ends in about {minutes} "
+        f"minute{'' if minutes == 1 else 's'}, and you'll need to sign in from your "
+        "patient portal again to keep chatting.\n\n"
+    )
+
+
+def _with_notice(notice: str | None, stream: AsyncIterator[str]) -> AsyncIterator[str]:
+    """Prefix a streamed reply with a plain-text notice, if there is one."""
+    if notice is None:
+        return stream
+
+    async def prefixed() -> AsyncIterator[str]:
+        yield notice
+        async for chunk in stream:
+            yield chunk
+
+    return prefixed()
+
+
 def create_app(
     settings: AuthSettings | None = None,
     authorization: AuthorizationService | None = None,
@@ -107,6 +192,16 @@ def create_app(
         store = SessionStore(configured_settings.database_path, configured_settings.encryption_key)
         await asyncio.to_thread(store.initialize)
         configured_session_store = store
+        # Before serving anything: every row stranded by a browser that was simply
+        # closed (the `ai_session` cookie has no `max_age`, so its handle is never
+        # presented again and `active_session` never gets the chance to delete it
+        # lazily) goes now, not whenever someone happens to revisit it (TICK-055 AC5).
+        await asyncio.to_thread(store.purge_expired, clock())
+        sweep = asyncio.create_task(
+            _sweep_expired_sessions(
+                store, clock, configured_settings.sweep_interval.total_seconds()
+            )
+        )
         if configured_authorization is None:
             # OPENEMR_OAUTH_TOKEN_URL/JWKS_URL (deploy/local/.env.example) call
             # OpenEMR's container directly (`https://openemr/...`), bypassing Caddy,
@@ -167,9 +262,16 @@ def create_app(
             address_http_client = httpx.AsyncClient(timeout=30.0, verify=False)
             owned_http_clients.append(address_http_client)
             configured_address_service = _build_address_service(address_http_client, store, clock)
-        yield
-        for owned_client in owned_http_clients:
-            await owned_client.aclose()
+        try:
+            yield
+        finally:
+            # The sweep loop never returns on its own, so without this every test that
+            # enters `lifespan_context` would leak a task holding the store open.
+            sweep.cancel()
+            with suppress(asyncio.CancelledError):
+                await sweep
+            for owned_client in owned_http_clients:
+                await owned_client.aclose()
 
     server = FastAPI(title="Intake AI Server", version="0.1.0", lifespan=lifespan)
 
@@ -199,7 +301,7 @@ def create_app(
         # declared Content-Type, so neither gives CSRF protection on its own. Only
         # a same-origin fetch from the served chat page sends a matching Origin.
         origin = request.headers.get("origin")
-        if origin is None or origin.lower() != _origin_of(configured_settings.success_redirect_uri):
+        if origin is None or origin.lower() != _chat_origin(configured_settings):
             raise AuthError("request origin is not allowed", 403)
         handle = request.cookies.get(configured_settings.cookie_name)
         now = clock()
@@ -209,6 +311,16 @@ def create_app(
         if not valid:
             raise AuthError("an active AI session is required", 401)
         assert handle is not None  # narrows for the type checker; `valid` already required it
+        # TICK-055 AC6: the 8-hour TTL stays absolute -- the stored refresh token is
+        # never redeemed (evidence/TICK-055/DECISIONS.md records why) -- so the cut has
+        # to be announced. Prefixed to whichever reply this turn produces rather than
+        # pushed from a new endpoint, so the chat page keeps its single fetch and the
+        # patient sees it in the transcript where they are already reading.
+        notice = _expiry_notice(
+            await asyncio.to_thread(configured_session_store.expires_at, handle, now),
+            now,
+            configured_settings.expiry_warning_window,
+        )
         cursor = await asyncio.to_thread(configured_session_store.load_cursor, handle, now)
         address = configured_address_service or unavailable_address_service(
             configured_session_store, clock
@@ -222,7 +334,9 @@ def create_app(
                 configured_session_store, clock
             )
             return StreamingResponse(
-                onboarding.stream_reply(handle, turn.message, turn.image_base64),
+                _with_notice(
+                    notice, onboarding.stream_reply(handle, turn.message, turn.image_base64)
+                ),
                 media_type="text/plain",
             )
         # Ahead of the Groq-backed service below and entirely local, exactly as
@@ -230,7 +344,7 @@ def create_app(
         # external LLM (NFR-2, TICK-050).
         if address_update_mode(cursor, address.has_pending_update(handle), turn.message):
             return StreamingResponse(
-                address.stream_reply(handle, turn.message, turn.image_base64),
+                _with_notice(notice, address.stream_reply(handle, turn.message, turn.image_base64)),
                 media_type="text/plain",
             )
         service = configured_chat_service or unavailable_chat_service()
@@ -239,8 +353,54 @@ def create_app(
         access_token = await asyncio.to_thread(configured_session_store.access_token, handle, now)
         patient_id = await asyncio.to_thread(configured_session_store.patient_uuid, handle, now)
         return StreamingResponse(
-            service.stream_reply(turn.message, access_token, patient_id), media_type="text/plain"
+            _with_notice(notice, service.stream_reply(turn.message, access_token, patient_id)),
+            media_type="text/plain",
         )
+
+    @server.post("/api/logout")
+    async def logout(request: Request) -> Response:
+        """End the AI session: delete its row outright and clear the cookie.
+
+        Deliberately not a GET. A GET would be reachable by any off-origin `<img>` or
+        redirect with no `Origin` header to check, which is the CSRF sink TICK-055 AC4
+        forbids; a POST always carries an `Origin` a browser will not let a page forge.
+
+        Idempotent, and it never reports whether a session existed: a caller presenting
+        someone else's guessed handle learns nothing from the response, and a patient
+        whose session had already expired still gets their cookie cleared.
+        """
+        if configured_settings is None or configured_session_store is None:
+            raise AuthError("the chat service is unavailable", 503)
+        origin = request.headers.get("origin")
+        if origin is None or origin.lower() not in _logout_origins(configured_settings):
+            raise AuthError("request origin is not allowed", 403)
+        handle = request.cookies.get(configured_settings.cookie_name)
+        if handle is not None:
+            # The row carries the encrypted access and refresh tokens, so this is the
+            # step that actually ends the patient's exposure -- not the cookie clear
+            # below, which a shared browser or a stale tab could survive.
+            await asyncio.to_thread(configured_session_store.delete_session, handle)
+            # Both services keep the patient's own half-finished answers in this
+            # process's memory keyed by the handle (`_SessionState.identity`, a pending
+            # address update). Dropping the row while leaving those behind would keep
+            # patient data alive past the logout that was supposed to end it.
+            if configured_onboarding_service is not None:
+                configured_onboarding_service.discard(handle)
+            if configured_address_service is not None:
+                configured_address_service.discard(handle)
+        response = Response(status_code=204)
+        # Every attribute /oauth/callback set has to be repeated or the browser treats
+        # this as a different cookie and leaves the original in place. Starlette's
+        # `delete_cookie` defaults to `samesite="lax"`, which Chrome drops outright
+        # when the response arrives in the cross-site context the portal hook creates.
+        response.delete_cookie(
+            configured_settings.cookie_name,
+            path="/",
+            httponly=True,
+            secure=True,
+            samesite="none",
+        )
+        return response
 
     @server.get("/oauth/launch")
     async def oauth_launch() -> RedirectResponse:

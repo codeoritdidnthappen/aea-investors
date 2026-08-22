@@ -291,6 +291,17 @@ class OnboardingChatService:
     clock: Callable[[], datetime] = utc_now
     _sessions: dict[str, _SessionState] = field(default_factory=dict)
 
+    def discard(self, handle: str) -> None:
+        """Drop any in-progress onboarding for this session, exactly as completion does.
+
+        `_SessionState.identity` holds the patient's own answers in this process's
+        memory until the flow completes. Logout (TICK-055) has to drop them with the
+        stored row -- deleting the encrypted tokens while leaving the patient's name and
+        date of birth in a dict keyed by a now-dead handle would defeat the point.
+        Mirrors `AddressChatService.discard`; nothing was written, so nothing is undone.
+        """
+        self._sessions.pop(handle, None)
+
     async def stream_reply(
         self, handle: str, message: str, image_base64: str | None = None
     ) -> AsyncIterator[str]:

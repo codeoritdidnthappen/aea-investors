@@ -1,0 +1,8 @@
+end_session_endpoint: https://emr.localhost/oauth2/default/logout
+revocation_endpoint: <ABSENT>
+introspection_endpoint: https://emr.localhost/oauth2/default/introspect
+frontchannel_logout_supported: <ABSENT>
+backchannel_logout_supported: <ABSENT>
+frontchannel_logout_session_supported: <ABSENT>
+set-cookie: App=PortalOpenEMR; expires=Sun, 22 Aug 2027 21:45:31 GMT; Max-Age=31536000; path=/; HttpOnly; SameSite=strict
+set-cookie: PortalOpenEMR=20223fdc437a6ef093836bb13cef969a; expires=Sun, 23 Aug 2026 05:32:11 GMT; Max-Age=28000; path=/; HttpOnly; SameSite=Strict

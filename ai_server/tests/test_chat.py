@@ -46,6 +46,12 @@ def settings(tmp_path: Path) -> AuthSettings:
         success_redirect_uri="https://chat.test/",
         session_ttl=timedelta(minutes=30),
         state_ttl=timedelta(minutes=5),
+        # These suites assert exact reply text against a deliberately short
+        # 30-minute test TTL, which is inside TICK-055's default 30-minute
+        # expiry warning window -- so every turn here would carry the notice.
+        # Production's TTL is 8 hours; disable the warning rather than restate
+        # it in assertions that are about something else.
+        expiry_warning_window=timedelta(0),
     )
 
 
