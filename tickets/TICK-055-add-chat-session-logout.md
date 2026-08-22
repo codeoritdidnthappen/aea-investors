@@ -8,9 +8,9 @@ estimate: M
 depends_on: [TICK-008]
 labels: [auth, privacy, chat, bug]
 source: [FR-1, NFR-31]
-status: todo
+status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/110
-builder_commit: null
+builder_commit: 97bb1b0
 ---
 ## Context
 
