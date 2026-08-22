@@ -8,8 +8,9 @@ estimate: L
 depends_on: [TICK-049, TICK-035, TICK-042]
 labels: [chat, demographics, privacy, backend]
 source: [FR-6, FR-17, FR-26, NFR-2, NFR-19]
-status: todo
+status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/100
+builder_commit: 635bbe3
 ---
 ## Context
 

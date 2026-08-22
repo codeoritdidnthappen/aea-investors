@@ -8,8 +8,9 @@ estimate: S
 depends_on: [TICK-010, TICK-034]
 labels: [chat, groq, bug]
 source: [FR-18, FR-19, NFR-19]
-status: todo
+status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/98
+builder_commit: 0645cae
 ---
 ## Context
 
