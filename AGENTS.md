@@ -63,15 +63,19 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 ## 5. Git Workflow
 
-**This project uses GitLab (Gauntlet AI, self-hosted at `labs.gauntletai.com`).**
+**This project uses GitHub, via `gh`.**
 
-Read [`GIT_WORKFLOW_GAUNTLET.md`](GIT_WORKFLOW_GAUNTLET.md) before any git work — it is the
-authoritative guidance for branching, commits, merge requests, and the merge gate. Use `glab`
-(not `gh`), and open **merge requests**, not pull requests.
+Read [`GIT_WORKFLOW_COIDH.md`](GIT_WORKFLOW_COIDH.md) before any git work — it is the
+authoritative guidance for branching, commits, pull requests, and the merge gate.
 
-Whenever a local file in `tickets/` is created or updated, create or update its linked GitHub
-issue in the same task. Keep its title, description, acceptance criteria, status, and closure
-state aligned with the local ticket; use the ticket's `remote_url` as the issue reference.
+Whenever a local file in `tickets/` is created or updated:
+- Create or update its linked GitHub issue in the same task. Keep its title, description,
+  acceptance criteria, status, and closure state aligned with the local ticket; record the
+  issue URL in the ticket's `remote_url` field.
+- Commit the ticket file(s) locally and land them on `main` through the standard PR flow in
+  `GIT_WORKFLOW_COIDH.md` (fresh branch, push, `gh pr create`, `gh pr merge --rebase
+  --delete-branch`). Don't leave a filed ticket sitting uncommitted or stuck on an unmerged
+  branch.
 
 ---
 
