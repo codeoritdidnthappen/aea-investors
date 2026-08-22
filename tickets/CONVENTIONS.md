@@ -7,9 +7,15 @@ same ticket.
 
 Each acceptance criterion is independently observable. Dependencies name only local
 ticket IDs and are intentionally shallow. Labels are applied on publication if they
-exist; missing GitLab labels will not be invented without confirmation.
+exist; missing GitHub labels will not be invented without confirmation.
 
-GitLab issues are project-scoped work items and support labels and cross-references;
-the publication plan therefore creates the dependency roots first and reconciles each
-returned issue URL into its local file. Sources: [GitLab Issues](https://docs.gitlab.com/user/project/issues/),
-[GitLab Issues API](https://docs.gitlab.com/api/issues/).
+Issues live in GitHub and are managed with `gh` (see
+[GIT_WORKFLOW_COIDH.md](../GIT_WORKFLOW_COIDH.md), which documents the SSH host alias
+that makes `-R owner/repo` mandatory on every `gh` call). The publication plan creates
+the dependency roots first and reconciles each returned issue URL into its local file's
+`remote_url`. A ticket and its issue are kept aligned in both directions: title, body,
+and closure state. Sources: [GitHub Issues](https://docs.github.com/en/issues),
+[GitHub CLI](https://cli.github.com/manual/gh_issue).
+
+An earlier revision of this file described GitLab; the project has only ever published
+to GitHub.

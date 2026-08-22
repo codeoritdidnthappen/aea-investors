@@ -110,9 +110,24 @@ uv run --locked --group dev pytest
 uv run uvicorn ai_server.app.main:app --host 127.0.0.1 --port 8000
 ```
 
-`GET /health` returns a non-sensitive liveness response. `GET /` serves the embedded
-chat page and `POST /api/chat` streams a turn's reply to it, gated on the AI-session
-cookie. The portal module is added by its dedicated ticket.
+The AI server exposes six routes:
+
+| Route | Purpose |
+|---|---|
+| `GET /health` | Non-sensitive liveness and dependency reachability |
+| `GET /` | The embedded chat page |
+| `POST /api/chat` | Streams a turn's reply, gated on the AI-session cookie and an `Origin` check |
+| `POST /api/logout` | Ends the AI session and clears its cookie; the portal calls this on sign-out |
+| `GET /oauth/launch` | The portal panel's entry point; skips the round trip when a session is already live |
+| `GET /oauth/callback` | Exchanges the code and resolves where the patient lands |
+
+Where an authorization lands the patient is a fixed invariant, not a setting: top-level
+completion goes to the portal dashboard, in-panel completion loads the chat in the panel.
+See [ADR-8](ARCHITECTURE.md#adr-8--the-chat-is-a-panel-never-a-landing-page).
+
+The OpenEMR portal module lives in
+[openemr_modules/aeai-portal-chat](openemr_modules/aeai-portal-chat); it adds the
+dashboard tile and the chat panel.
 
 The full local demo topology — pinned OpenEMR, MariaDB, and the AI server as
 separate Docker Compose services with persistent local state — lives in
@@ -129,3 +144,6 @@ separate Docker Compose services with persistent local state — lives in
 | [ONBOARDING_CONTRACT.md](ONBOARDING_CONTRACT.md) | Minimal v1 field, draft, completion, and supportive-content contract |
 | [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md) | Durable decision log and open questions |
 | [CHANGES.log](CHANGES.log) | Chronological planning history |
+| [GIT_WORKFLOW_COIDH.md](GIT_WORKFLOW_COIDH.md) | Branching, commits, pull requests, and the merge gate |
+| [AI_USAGE.md](AI_USAGE.md) | Pinned runtime models, OCR engine, and prompt-contract version |
+| [tickets/BACKLOG.md](tickets/BACKLOG.md) | Epics, execution order, and requirement traceability |

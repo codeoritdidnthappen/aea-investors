@@ -2,8 +2,8 @@
 
 Living state: what was decided, why, what remains open, and where work stands.
 
-**Last updated:** 2026-08-18
-**Phase:** architecture updated. No application code written.
+**Last updated:** 2026-08-22
+**Phase:** implementation. 54 of 56 tickets done; one blocked on tooling, one open spike.
 
 ---
 
@@ -45,6 +45,12 @@ Living state: what was decided, why, what remains open, and where work stands.
 | 32 | Use Caddy for public ingress and automatic Let's Encrypt management | One reserved IP and sslip.io hostnames provide free HTTPS routing | Locked |
 | 33 | Target current stable desktop and Android Chrome, prioritizing desktop | Keeps v1 verification within one browser family | Locked |
 | 34 | Use the approved minimal V1 onboarding contract | Captures only identity, contact preference, service goal, visit preference, and optional accommodations; excludes clinical history and other unnecessary sensitive fields | Locked |
+| 35 | The chat is a panel inside the portal, never a landing page | An authorization completing at top level lands on the dashboard; one completing in the panel loads the chat there. Stated over the flow's position because intent ("did they type a password?") is unknowable at the callback | Locked (ADR-8, FR-31) |
+| 36 | No return-URL parameter may influence that destination | `next=`/`redirect=` would reintroduce "send them back where they were" and is an open-redirect surface; position comes from `Sec-Fetch-Dest` instead | Locked (ADR-8) |
+| 37 | The chat starts no authorization until the patient opens it | A hidden iframe still loads, so a live `src` at render began an OAuth flow nobody asked for and the breakout script threw the patient off the dashboard | Locked (FR-32) |
+| 38 | The redirect target and the chat origin allowlist are separate, separately named settings | One value did both jobs, so repointing the destination silently rewrote the only CSRF defense on `POST /api/chat`. Renamed rather than reused so a stale deployment fails to boot | Locked (TICK-051) |
+| 39 | Portal sign-out ends the AI session | Portal logout could not reach the `ai_session` cookie on the chat origin, leaving a live delegated token usable for up to 8 hours after the patient believed they had signed out | Locked (TICK-055) |
+| 40 | The 8-hour session TTL stays absolute and the patient is warned before it lands | The stored refresh token is deliberately not redeemed: sliding renewal on a delegated medical-record token is a policy question, and it could not be honestly verified inside a privacy fix without driving a session across a real 8-hour boundary | Locked (TICK-055 AC6, `evidence/TICK-055/DECISIONS.md`) |
 
 ### Superseded decisions
 
@@ -55,30 +61,35 @@ Vercel, and AI-owned scheduling tables are superseded by decisions 3–15 and 22
 
 ## 2. Open questions
 
+| # | Question | Status |
+|---|---|---|
+| O-3 | Which existing endpoints in the pinned OpenEMR version cover availability, office hours, holiday closures, rescheduling, cancellation, logged-in-patient demographics, and assessment persistence? | Resolved by TICK-001 — `evidence/TICK-001/ENDPOINT_MATRIX.md` |
+| O-10 | Which supported extension hook embeds the iframe in the patient portal on the pinned OpenEMR release? | Resolved by TICK-002 — `evidence/TICK-002/PORTAL_HOOK_EVIDENCE.md` |
+| O-11 | Which native OpenEMR form, document, or other patient-record resource represents the structured assessment? | Resolved by TICK-001 and implemented in TICK-017 |
+| O-12 | Which functional, visual, accessibility, or performance differences are acceptable on Android Chrome? | Recorded by TICK-004; verification (TICK-025) is blocked on emulator access |
+
+### Still open
+
 | # | Question | Blocks |
 |---|---|---|
-| O-3 | Which existing endpoints in the pinned OpenEMR version cover availability, office hours, holiday closures, rescheduling, cancellation, logged-in-patient demographics, and assessment persistence? | OpenEMR adapter |
-| O-10 | Which supported extension hook embeds the iframe in the patient portal on the pinned OpenEMR release? | OpenEMR portal integration |
-| O-11 | Which native OpenEMR form, document, or other patient-record resource represents the structured assessment? | OpenEMR endpoint spike |
-| O-12 | Which functional, visual, accessibility, or performance differences are acceptable on Android Chrome? | Mobile acceptance criteria |
-
-Endpoint verification O-3 must happen before scheduling implementation. Missing API
-coverage may not be bypassed with direct database access.
+| O-13 | Can OpenEMR 8.3.0's OAuth2 provider accept an authenticated portal session instead of demanding a second sign-in? | TICK-056 (spike). Decides whether opening the chat is one click or a second login and consent |
+| O-14 | Can Android Chrome acceptance be verified without emulator access? | TICK-025, blocked
 
 ---
 
-## 3. Proposed repository shape
+## 3. Repository shape
 
-This layout is proposed, not yet locked:
+The layout as built:
 
-    openemr-module/    Minimal module and iframe launch wrapper
-    ai-server/         FastAPI, LangGraph, chat UI, adapters, and privacy gate
-    eval/
-      ocr/             Synthetic identity documents and labels
-      intents/         Synthetic chat and scheduling utterances
-      privacy/         Seeded PHI/PII prompts and expected reject/allow labels
-    load/              k6 scripts
-    deploy/            OCI and local Docker configuration
+    ai_server/           FastAPI, chat orchestration, privacy gate, OCR, OpenEMR adapters
+    openemr_modules/     aeai-portal-chat: dashboard tile, chat panel, portal controllers
+    openemr_overrides/   Pinned vendor twig templates with the iframe-breakout addition
+    deploy/local/        Docker Compose topology, Caddy ingress, patient-auth runbook
+    scripts/             Probes, evaluation harnesses, and the CI verification gates
+    tickets/             Ticket files, conventions, and the traceability backlog
+    evidence/            Per-ticket verification records
+    requirements/        The original product briefs
+    docs/                Release governance
 
 OpenEMR itself remains an upstream dependency and is not copied into this repository.
 
@@ -93,7 +104,8 @@ OpenEMR itself remains an upstream dependency and is not copied into this reposi
 - Every external LLM request is schema-checked and capturable in tests so the privacy
   boundary can be proven with seeded sensitive values.
 - Appointment facts come from OpenEMR API responses.
-- No application code is written until the OpenEMR endpoint spike resolves O-3.
+- Endpoint coverage is proven before it is relied on; missing API coverage blocks a
+  feature and is never bypassed with direct database access.
 - Groq Zero Data Retention must be verified before model traffic is enabled; it does not
   replace the local outbound PHI/PII gate.
 - Presidio rejects on any built-in or custom recognizer match; fixture values remain
@@ -108,6 +120,23 @@ OpenEMR itself remains an upstream dependency and is not copied into this reposi
 
 ## 5. Status
 
-The onboarding-field and supportive-content contract is approved. Next work should
-resolve the remaining OpenEMR integration questions, beginning with endpoint coverage,
-before scaffolding either integration.
+54 of 56 tickets are done. The portal chat, guided onboarding, consented OCR,
+demographics and address writes, scheduling (book and cancel), the privacy gate, the
+local Docker topology, and the patient sign-in flow are all implemented and verified.
+
+Two remain:
+
+- **TICK-025** — Android Chrome acceptance, `blocked` on emulator access.
+- **TICK-056** — the spike on whether the second OAuth sign-in can be avoided (O-13).
+
+Reschedule stays permanently out of scope: no OpenEMR service method exists for it
+(TICK-020), and TICK-031 delivered book and cancel-by-status instead.
+
+Known gaps not yet ticketed:
+
+- **No OCI deployment exists on `main`.** TICK-022 and TICK-023 were narrowed to the
+  local topology; the two-VM OCI configuration decisions 22–24 describe was drafted but
+  never merged, and survives only on the `archive/oci-cloud-deploy` tag. Decisions 22–24
+  therefore record intent, not deployed reality.
+- **Session renewal.** Decision 40 keeps the absolute 8-hour cut on purpose; redeeming
+  the stored refresh token is a coherent separate ticket nobody has filed.
