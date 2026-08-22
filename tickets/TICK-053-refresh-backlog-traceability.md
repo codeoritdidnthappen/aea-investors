@@ -8,9 +8,9 @@ estimate: M
 depends_on: []
 labels: [documentation]
 source: []
-status: todo
+status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/106
-builder_commit: null
+builder_commit: ab845ec
 ---
 ## Context
 
