@@ -60,6 +60,16 @@ that boundary.
   an opaque AI session.
 - **FR-4 [must]** The iframe communicates only with the AI server and never calls an
   OpenEMR endpoint directly.
+- **FR-31 [must]** The chat is a panel inside the portal, never a landing page. An
+  authorization that completes at top level lands the patient on the portal dashboard;
+  one that completes inside the chat panel loads the chat in that panel. The patient is
+  never left on the standalone chat page, and is never returned to the page they were on
+  when their session ended. No `next=`, `redirect=`, or equivalent parameter may
+  influence either destination. Fixed invariant:
+  see [ADR-8](ARCHITECTURE.md#adr-8--the-chat-is-a-panel-never-a-landing-page).
+- **FR-32 [must]** The chat begins no authorization until the patient opens it. Rendering
+  the portal dashboard must not start an OAuth flow, navigate the patient anywhere, or
+  prompt for credentials on behalf of a panel the patient has not opened.
 
 ### Guided onboarding
 
