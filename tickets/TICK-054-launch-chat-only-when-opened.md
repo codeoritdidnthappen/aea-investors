@@ -7,7 +7,7 @@ priority: P1
 estimate: M
 depends_on: [TICK-032, TICK-045]
 labels: [portal, chat, auth, bug]
-source: [FR-2, FR-37]
+source: [FR-2, FR-32]
 status: todo
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/108
 builder_commit: null
@@ -61,6 +61,12 @@ launch.
 - [ ] The panel's authorization begins only when the patient opens the AI
       Chat tile, and opening it still works with both mouse and keyboard
       (NFR-19's existing bar for this panel).
+- [ ] The panel's `src` is assigned once. Collapsing and re-opening the
+      panel does not reload the iframe: the chat transcript lives only in
+      the panel's DOM (NFR-33 forbids persisting it server-side, and nothing
+      stores it client-side), so a reload on every `show.bs.collapse` would
+      silently discard the patient's whole conversation when they collapse
+      the panel to check appointments and come back.
 - [ ] No OpenEMR token or patient identifier enters the DOM as part of the
       deferred load. FR-4 and TICK-002's single-AI-server-origin property
       still hold: the panel's only network target remains the AI server.
@@ -84,7 +90,7 @@ controller against the host copy before trusting the result.
 
 Where an authorization lands the patient (TICK-051). Avoiding a redundant
 authorization when the panel is reopened with a live session: that is
-`/oauth/launch`'s short-circuit, delivered by TICK-051 AC5, and asserting it
+`/oauth/launch`'s short-circuit, delivered by TICK-051's `/oauth/launch` criterion, and asserting it
 here would make this ticket unbuildable in dependency order. The breakout script
 (TICK-045) and its fallback banner (TICK-046), both of which are correct
 and stay. The separate question of whether OpenEMR's OAuth2 provider can be
