@@ -237,8 +237,11 @@ class OnboardingFlow:
             given_name and family_name and date_of_birth and address
         )  # narrows for the type checker
 
+        # The validated `Address` is handed over structured, not flattened into one
+        # `street` line: OpenEMR models street/street_line_2/city/state/postal_code as
+        # separate columns, so the components land in their own columns (TICK-049).
         confirmed: ConfirmedIdentity = confirm_identity(
-            given_name, family_name, date_of_birth, _format_address(address)
+            given_name, family_name, date_of_birth, address
         )
         # A failure here (network, non-200) propagates as `OpenEmrRequestError` and
         # nothing further runs: the draft is never marked completed, matching
@@ -294,13 +297,3 @@ class OnboardingFlow:
             # not leak the draft client's own exception type past it.
             return {"error": [str(exc)]}
         return {"draft": draft, "error": None}
-
-
-def _format_address(address: Address) -> str:
-    """Reshape a validated `Address` into the single-line string the demographics
-    adapter's Standard API `street` field expects; nothing here is fabricated, only
-    reformatted from already-confirmed components."""
-    line = address.street1
-    if address.street2:
-        line = f"{line}, {address.street2}"
-    return f"{line}, {address.city}, {address.state} {address.zip_code}"

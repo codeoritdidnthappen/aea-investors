@@ -255,14 +255,55 @@ def test_ac3_completion_writes_demographics_and_finalizes_the_native_assessment(
     assert server.drafts[cursor.draft_uuid]["status"] == "completed"
     assert len(server.demographics_writes) == 1
     demographics_body = json.loads(server.demographics_writes[0].content)
+    # All four fields still travel together (AC4), and the address now arrives as
+    # OpenEMR's own columns rather than one concatenated `street` line (TICK-049).
     assert demographics_body == {
         "fname": "Avery",
         "lname": "Alden",
         "DOB": "1990-01-01",
-        "street": "100 Maple Avenue, Springfield, IL 62704",
+        "street": "100 Maple Avenue",
+        "street_line_2": "",
+        "city": "Springfield",
+        "state": "IL",
+        "postal_code": "62704",
     }
     assert record.given_name == "Avery"
     assert record.draft_fields["help_type"] == "both"
+
+
+def test_tick_049_completion_sends_street_line_2_only_when_the_patient_gave_one() -> None:
+    server = _SyntheticOpenEmr()
+    flow = _flow(server)
+    cursor = run(flow.start("token"))
+    for field, value in _REQUIRED_COMPLETE_FIELDS.items():
+        run(flow.checkpoint_field("token", cursor, field, value, NOW))
+
+    identity = {
+        **_IDENTITY,
+        "address": {**_IDENTITY["address"], "street2": "Apt 4B"},
+    }
+    record = run(flow.complete("token", cursor, identity, NOW))
+
+    demographics_body = json.loads(server.demographics_writes[0].content)
+    assert demographics_body["street"] == "100 Maple Avenue"
+    assert demographics_body["street_line_2"] == "Apt 4B"
+    assert record.address.street2 == "Apt 4B"
+
+
+def test_tick_049_completion_refuses_an_invalid_state_or_zip_before_any_write() -> None:
+    for broken in ({"state": "Illinois"}, {"zip_code": "62"}):
+        server = _SyntheticOpenEmr()
+        flow = _flow(server)
+        cursor = run(flow.start("token"))
+        for field, value in _REQUIRED_COMPLETE_FIELDS.items():
+            run(flow.checkpoint_field("token", cursor, field, value, NOW))
+
+        identity = {**_IDENTITY, "address": {**_IDENTITY["address"], **broken}}
+        with pytest.raises(OnboardingIncompleteError):
+            run(flow.complete("token", cursor, identity, NOW))
+
+        assert server.demographics_writes == []
+        assert server.drafts[cursor.draft_uuid]["status"] == "draft"
 
 
 def test_ac3_completion_never_joins_then_re_splits_a_multi_word_family_name() -> None:

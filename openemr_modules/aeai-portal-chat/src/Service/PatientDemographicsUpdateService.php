@@ -32,7 +32,40 @@ use Symfony\Component\HttpFoundation\JsonResponse;
  */
 class PatientDemographicsUpdateService
 {
-    private const REQUIRED_STRING_FIELDS = ['fname', 'lname', 'DOB', 'street'];
+    /**
+     * The `patient_data` columns a patient may write about themselves, by their real
+     * OpenEMR column names. Every one is optional (TICK-049): `PatientService::update()`
+     * builds its `UPDATE` from the keys actually passed
+     * (`BaseService::buildUpdateColumns`) and `PatientValidator`'s
+     * DATABASE_UPDATE_CONTEXT requires only `uuid`, so omitting a field leaves the
+     * stored value alone rather than blanking it. That is what makes an address-only
+     * write possible without re-confirming a name and date of birth that are not
+     * changing. Address components are separate columns here rather than one
+     * concatenated `street` line, so what is stored matches what the patient confirmed.
+     *
+     * Anything outside this list is refused, not dropped: a request that asked to write
+     * a field this endpoint cannot write must not come back `200 updated`.
+     */
+    private const WRITABLE_STRING_FIELDS = [
+        'fname',
+        'lname',
+        'DOB',
+        'street',
+        'street_line_2',
+        'city',
+        'state',
+        'postal_code',
+    ];
+
+    /**
+     * The only field that may be sent empty, meaning "clear it". An address is written
+     * as a whole unit, so a patient moving to an address with no apartment/unit line
+     * must be able to clear the previous one -- otherwise the stored address is a
+     * blend of the old and new. Every other field here has no such "not applicable"
+     * state, and an empty value for one of them can only be a mistake, so it stays a
+     * 400 rather than silently blanking a name or a date of birth.
+     */
+    private const CLEARABLE_STRING_FIELDS = ['street_line_2'];
 
     public function update(?string $patientUuid, array $body): JsonResponse
     {
@@ -64,9 +97,16 @@ class PatientDemographicsUpdateService
         $errors = [];
         $fields = [];
 
-        foreach (self::REQUIRED_STRING_FIELDS as $field) {
-            $value = $body[$field] ?? null;
-            if (!is_string($value) || $value === '') {
+        foreach ($body as $field => $value) {
+            if (!in_array($field, self::WRITABLE_STRING_FIELDS, true)) {
+                $errors[] = "$field is not a writable demographics field";
+                continue;
+            }
+            if (!is_string($value)) {
+                $errors[] = "$field must be a string";
+                continue;
+            }
+            if ($value === '' && !in_array($field, self::CLEARABLE_STRING_FIELDS, true)) {
                 $errors[] = "$field must be a non-empty string";
                 continue;
             }
@@ -75,6 +115,15 @@ class PatientDemographicsUpdateService
 
         if (!empty($errors)) {
             return $this->errorResponse(400, 'validation failed', $errors);
+        }
+
+        // A body with nothing recognised in it must not report success having written
+        // nothing; a partial write is allowed, an empty one is not.
+        if (empty($fields)) {
+            return $this->errorResponse(400, 'validation failed', [
+                'at least one demographics field is required: '
+                    . implode(', ', self::WRITABLE_STRING_FIELDS),
+            ]);
         }
 
         return $fields;
