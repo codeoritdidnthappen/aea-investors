@@ -10,7 +10,7 @@ labels: [documentation, bug]
 source: [NFR-18]
 status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/105
-builder_commit: 8d70a9e
+builder_commit: 3919531
 ---
 ## Context
 
