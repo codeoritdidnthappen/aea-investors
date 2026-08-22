@@ -8,8 +8,9 @@ estimate: XS
 depends_on: [TICK-045]
 labels: [portal, chat, cleanup]
 source: [FR-2]
-status: todo
+status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/94
+builder_commit: 2bc12ee
 ---
 ## Context
 
