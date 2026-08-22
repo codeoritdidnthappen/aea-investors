@@ -10,7 +10,7 @@ labels: [chat, demographics, privacy, backend]
 source: [FR-6, FR-17, FR-26, NFR-2, NFR-19]
 status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/100
-builder_commit: 635bbe3
+builder_commit: fff44c1
 ---
 ## Context
 

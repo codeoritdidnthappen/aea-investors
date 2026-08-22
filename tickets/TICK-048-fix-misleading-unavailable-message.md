@@ -10,7 +10,7 @@ labels: [chat, groq, bug]
 source: [FR-18, FR-19, NFR-19]
 status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/98
-builder_commit: 0645cae
+builder_commit: c09924d
 ---
 ## Context
 
