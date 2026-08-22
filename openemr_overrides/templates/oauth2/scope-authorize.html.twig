@@ -93,8 +93,13 @@
                     + 'font:bold 1rem/1.4 sans-serif;text-decoration:underline;');
                 (document.body || document.documentElement).appendChild(link);
             }, 1500);
-            // The top frame navigating away unloads this one, so a breakout that
-            // did work cancels the fallback before a patient can see it.
+            // The top frame navigating away unloads this one, which cancels the
+            // fallback. `pagehide` only fires once the new top-level document
+            // commits, though, so a breakout that succeeds more slowly than the
+            // timeout above will show the banner briefly on its way out. That is
+            // cosmetic -- the link points at this same page -- but it is not the
+            // zero-flash guarantee it may look like: the margin is the timeout
+            // minus the top-level navigation's commit time (~25-80ms locally).
             window.addEventListener('pagehide', function () {
                 window.clearTimeout(aeaiBreakoutTimer);
             });

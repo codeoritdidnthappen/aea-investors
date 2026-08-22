@@ -245,6 +245,11 @@ async function main() {
           fallback ? `"${fallback.text}" ${fallback.rect.width}x${fallback.rect.height}px` : 'absent',
         );
 
+        // Without this, a missing fallback throws a TypeError on the next line
+        // and the run dies on an unhandled rejection instead of reporting the
+        // FAIL above and exiting non-zero.
+        if (!fallback) continue;
+
         // Click it for real, through Chrome's own input pipeline, at the
         // fallback's position in the top frame's viewport.
         const x = IFRAME_LEFT + fallback.rect.x + fallback.rect.width / 2;
