@@ -24,6 +24,9 @@ import pytest
 from ai_server.app.address_chat import (
     ADDRESS_PROMPT,
     CANCELLED_RESPONSE,
+    EXPIRED_RESPONSE,
+    GAVE_UP_RESPONSE,
+    IMAGE_IGNORED_RESPONSE,
     WRITE_FAILED_RESPONSE,
     AddressChatService,
     address_update_mode,
@@ -762,3 +765,133 @@ def test_the_address_never_reaches_groq(tmp_path: Path) -> None:
         serialized = payload.model_dump_json()
         for secret in (STREET, UNIT, CITY, ZIP_CODE):
             assert secret not in serialized
+
+
+# --- Review findings 1-4: the flow must never trap the patient ----------------------
+
+
+def test_repeated_unparseable_replies_release_the_patient_instead_of_looping(
+    tmp_path: Path,
+) -> None:
+    """Review finding 1. A patient who says "I moved" and then changes the subject was
+    answered with address validation errors on every subsequent turn, with no route back
+    to the rest of the chat unless they guessed a cancel phrase."""
+    store = _store(tmp_path)
+    handle = _bound_session(store)
+    service, server = _service(store)
+
+    # Deliberately NOT derived from `_MAX_UNPARSEABLE_REPLIES`: a bound taken from the
+    # code under test would follow the code anywhere it went, including to "never".
+    # This is the independent product requirement -- a patient must be released within a
+    # handful of turns -- so raising the threshold past it is a real failure.
+    tolerable_turns = 5
+
+    async def scenario() -> None:
+        assert await _send(service, handle, "I moved") == ADDRESS_PROMPT
+        released_after = None
+        for turn in range(1, tolerable_turns + 1):
+            # Not an address -- an ordinary scheduling question.
+            reply = await _send(service, handle, "when is my next appointment?")
+            if reply == GAVE_UP_RESPONSE:
+                released_after = turn
+                break
+            assert "could not be accepted" in reply
+            assert "CANCEL" in reply, "every rejection must name the way out"
+
+        assert released_after is not None, (
+            f"still trapped in the address flow after {tolerable_turns} non-address "
+            "replies; the patient has no route back to the rest of the chat"
+        )
+        # Released: the route no longer sends this session here, so the next turn
+        # reaches the ordinary chat path.
+        assert service.has_pending_update(handle) is False
+        assert server.demographics_writes == []
+
+    asyncio.run(scenario())
+
+
+def test_the_prompt_and_rejections_both_tell_the_patient_how_to_stop(tmp_path: Path) -> None:
+    """Review finding 1: CANCEL was only ever mentioned at the review stage, which a
+    patient who never sends a parseable address never reaches."""
+    assert "CANCEL" in ADDRESS_PROMPT
+
+
+def test_a_pending_address_expires_instead_of_being_committed_much_later(
+    tmp_path: Path,
+) -> None:
+    """Review finding 2. A bare "yes" long after the review must not commit an address
+    the patient can no longer see."""
+    store = _store(tmp_path)
+    handle = _bound_session(store, ttl=timedelta(hours=8))
+    server = _SyntheticOpenEmr()
+    client = httpx.AsyncClient(transport=httpx.MockTransport(server.handler))
+    adapter = OpenEmrDemographicsAdapter(
+        OpenEmrPortalSettings(portal_base_url=PORTAL_BASE_URL), client
+    )
+    clock_now = NOW
+
+    def clock() -> datetime:
+        return clock_now
+
+    service = AddressChatService(demographics=adapter, session_store=store, clock=clock)
+
+    async def scenario() -> None:
+        nonlocal clock_now
+        await _send(service, handle, "update my address")
+        review = await _send(service, handle, "910 Birch Terrace, Naperville, IL 60540")
+        assert "910 Birch Terrace" in review
+
+        clock_now = NOW + timedelta(minutes=30)
+        expired = await _send(service, handle, "yes")
+        assert expired == EXPIRED_RESPONSE
+        assert server.demographics_writes == [], "a stale pending address must not write"
+        assert service.has_pending_update(handle) is False
+
+    asyncio.run(scenario())
+
+
+def test_a_natural_affirmation_with_a_comma_confirms_rather_than_erroring(
+    tmp_path: Path,
+) -> None:
+    """Review finding 3. "Yes, save it" fell through to the address parser and came back
+    as a list of address validation errors."""
+    store = _store(tmp_path)
+    handle = _bound_session(store)
+    service, server = _service(store)
+
+    async def scenario() -> None:
+        await _send(service, handle, "update my address")
+        await _send(service, handle, "910 Birch Terrace, Naperville, IL 60540")
+        saved = await _send(service, handle, "Yes, save it")
+        assert "could not be accepted" not in saved
+        assert "Saved." in saved
+        assert len(server.demographics_writes) == 1
+
+    asyncio.run(scenario())
+
+
+def test_an_attached_image_is_acknowledged_not_parsed_as_an_address(tmp_path: Path) -> None:
+    """Review finding 4. The image was dropped with no acknowledgement and its JSON
+    action body was parsed as an address."""
+    store = _store(tmp_path)
+    handle = _bound_session(store)
+    service, server = _service(store)
+
+    async def scenario() -> None:
+        await _send(service, handle, "update my address")
+        chunks = [
+            chunk
+            async for chunk in service.stream_reply(
+                handle,
+                json.dumps({"action": "upload_identity_document"}),
+                image_base64="c3ludGhldGlj",
+            )
+        ]
+        reply = "".join(chunks)
+        assert reply == IMAGE_IGNORED_RESPONSE
+        assert "could not be accepted" not in reply
+        assert server.demographics_writes == []
+        # The flow is still exactly where it was.
+        assert service.has_pending_update(handle) is True
+
+    asyncio.run(scenario())
