@@ -263,6 +263,10 @@ async function main() {
         return res.result.value;
       };
 
+      // Per-case, so "the patched login page was the one served" cannot be
+      // satisfied by an interception from the previous case.
+      patchedLoginUrls.length = 0;
+
       console.log(`\n### real-app case "${caseName}": host page ${hostPage}`);
       await browser.send('Page.enable', {}, sessionId);
       await browser.send('Page.navigate', { url: hostPage }, sessionId);
@@ -355,6 +359,11 @@ async function main() {
           fallback ? `"${fallback.text}" ${fallback.rect.width}x${fallback.rect.height}px` : 'absent',
         );
         await screenshot(browser, sessionId, 'blocked-fallback-visible');
+
+        // Without this, a missing fallback throws a TypeError on the next line
+        // and the run dies on an unhandled rejection instead of reporting the
+        // FAIL above and exiting non-zero.
+        if (!fallback) continue;
 
         // Click it for real, through Chrome's own input pipeline.
         const x = IFRAME_LEFT + fallback.rect.x + fallback.rect.width / 2;
