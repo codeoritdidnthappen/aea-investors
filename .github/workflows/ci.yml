@@ -11,6 +11,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
       - run: uv run --locked python scripts/verify_release_governance.py --artifact-root .
+      - run: uv run --locked python scripts/verify_backlog_traceability.py
       - run: uv run --locked --group dev ruff format --check .
       - run: uv run --locked --group dev ruff check .
       - run: uv run --locked --group dev pytest
