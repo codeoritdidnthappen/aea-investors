@@ -43,7 +43,8 @@ def settings(tmp_path: Path) -> AuthSettings:
         client_id="synthetic-client",
         client_secret="synthetic-secret",
         redirect_uri="https://chat.test/oauth/callback",
-        success_redirect_uri="https://chat.test/",
+        dashboard_redirect_uri="https://emr.test/portal/home.php",
+        chat_origin="https://chat.test",
         session_ttl=timedelta(minutes=30),
         state_ttl=timedelta(minutes=5),
         # These suites assert exact reply text against a deliberately short
@@ -168,8 +169,8 @@ def test_ac1_chat_turn_rejects_a_missing_or_mismatched_origin(tmp_path: Path) ->
 
 def test_ac1_chat_turn_origin_check_is_case_insensitive(tmp_path: Path) -> None:
     # Real browsers always send Origin lowercased; a config value with any
-    # uppercase (e.g. AI_SESSION_SUCCESS_REDIRECT_URI) must still match it.
-    configured = dataclasses.replace(settings(tmp_path), success_redirect_uri="https://Chat.Test/")
+    # uppercase (e.g. AI_SESSION_CHAT_ORIGIN) must still match it.
+    configured = dataclasses.replace(settings(tmp_path), chat_origin="https://Chat.Test")
     handle = active_session_cookie(configured)
     app = create_app(
         configured,
@@ -715,3 +716,39 @@ def test_ticket_010_privacy_rejection_still_never_calls_the_model(tmp_path: Path
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+def test_ac9_the_settings_split_did_not_disable_the_chat_origin_check(
+    tmp_path: Path,
+) -> None:
+    """TICK-051 AC9: `POST /api/chat` still accepts the chat page's own same-origin
+    fetch and still rejects everything else, now that the allowlist is its own setting.
+
+    This is the regression the split could have caused silently. The Origin check is
+    the *only* CSRF defense on this route -- the session cookie is `SameSite=None` so
+    that it survives the cross-site portal iframe, which means it rides along on any
+    origin's request and proves nothing about who sent it. A split that repointed the
+    allowlist at the dashboard, or dropped it, would leave every test above passing.
+
+    The dashboard's own origin is asserted rejected specifically: it is the value the
+    single pre-TICK-051 setting would have taken once the destination was fixed.
+    """
+    configured = settings(tmp_path)
+    handle = active_session_cookie(configured)
+    app = create_app(
+        configured,
+        clock=lambda: NOW,
+        chat_service=ScriptedChatService(chunks=["Hel", "lo!"]),
+    )
+
+    accepted = asyncio.run(_post_chat(app, cookie=handle, origin="https://chat.test"))
+    assert accepted.status_code == 200
+
+    dashboard_origin = asyncio.run(_post_chat(app, cookie=handle, origin="https://emr.test"))
+    assert dashboard_origin.status_code == 403
+
+    foreign_origin = asyncio.run(_post_chat(app, cookie=handle, origin="https://attacker.test"))
+    assert foreign_origin.status_code == 403
+
+    absent_origin = asyncio.run(_post_chat(app, cookie=handle, origin=None))
+    assert absent_origin.status_code == 403

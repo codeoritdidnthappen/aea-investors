@@ -67,7 +67,8 @@ def settings(tmp_path: Path) -> AuthSettings:
         client_id="synthetic-client",
         client_secret="synthetic-secret",
         redirect_uri="https://chat.test/oauth/callback",
-        success_redirect_uri="https://chat.test/",
+        dashboard_redirect_uri="https://emr.test/portal/home.php",
+        chat_origin="https://chat.test",
         session_ttl=timedelta(minutes=30),
         state_ttl=timedelta(minutes=5),
         # These suites assert exact reply text against a deliberately short

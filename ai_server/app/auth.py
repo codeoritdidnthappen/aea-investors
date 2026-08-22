@@ -45,7 +45,23 @@ class AuthSettings:
     client_id: str
     client_secret: str
     redirect_uri: str
-    success_redirect_uri: str
+    # Where a patient lands once an authorization completes at top level: the portal
+    # dashboard (FR-31, ADR-8). Read only by main.py's `/oauth/callback` and
+    # `/oauth/launch`, and never compared against an `Origin` header.
+    #
+    # This and `chat_origin` below are deliberately two settings and are **not**
+    # interchangeable, however similar they look. They were one value
+    # (`AI_SESSION_SUCCESS_REDIRECT_URI`) until TICK-051, which meant repointing the
+    # destination at the dashboard would also have made `emr.localhost` the only origin
+    # allowed to call `POST /api/chat` -- 403-ing the chat page's own fetch on every
+    # turn. Splitting them is what makes the destination safe to change.
+    dashboard_redirect_uri: str
+    # The one origin the chat page is served from, and so the only origin `POST
+    # /api/chat` accepts (main.py's `_chat_origin`). This is the *only* CSRF defense on
+    # that route -- the AI session cookie is `SameSite=None` so it survives the
+    # cross-site portal iframe, which means the cookie alone proves nothing about who
+    # sent the request. Never used as a redirect destination.
+    chat_origin: str
     # The OpenEMR portal's own origin, when the chat is embedded in one. Logout is the
     # only route that accepts it (main.py's `/api/logout`), and only because the portal
     # session cookie is `SameSite=Strict` (verified live, evidence/TICK-055): a
@@ -112,7 +128,15 @@ class AuthSettings:
             "OPENEMR_OAUTH_CLIENT_ID",
             "OPENEMR_OAUTH_CLIENT_SECRET",
             "OPENEMR_OAUTH_REDIRECT_URI",
-            "AI_SESSION_SUCCESS_REDIRECT_URI",
+            # Both required, and both new in TICK-051. The single
+            # `AI_SESSION_SUCCESS_REDIRECT_URI` they replace was deliberately *renamed*
+            # rather than kept and re-meant: this check only fires on a missing
+            # variable, so a deployment that added the new chat-origin setting and
+            # forgot to repoint the old redirect target would have booted cleanly with
+            # the patient still landing on the full-page chat and nothing anywhere
+            # saying so. Under the new names that deployment fails to start.
+            "AI_SESSION_DASHBOARD_REDIRECT_URI",
+            "AI_SESSION_CHAT_ORIGIN",
         )
         values = {name: os.environ.get(name) for name in required}
         missing = [name for name, value in values.items() if not value]
@@ -124,25 +148,25 @@ class AuthSettings:
             raise RuntimeError("AI_SESSION_ENCRYPTION_KEY must be base64url encoded") from exc
         if len(key) != 32:
             raise RuntimeError("AI_SESSION_ENCRYPTION_KEY must decode to exactly 32 bytes")
-        success_redirect_uri = str(values["AI_SESSION_SUCCESS_REDIRECT_URI"])
-        parsed_success_redirect = urlsplit(success_redirect_uri)
-        if not parsed_success_redirect.scheme or not parsed_success_redirect.netloc:
-            # main.py's /api/chat Origin check derives the chat page's expected
-            # origin from this value; a relative URL would make every legitimate
-            # request 403 forever instead of failing loudly here at startup.
-            raise RuntimeError("AI_SESSION_SUCCESS_REDIRECT_URI must be an absolute URL")
-        # Optional, unlike the ten above: a deployment that does not embed the chat in
-        # an OpenEMR portal has no second origin to trust, and leaving this unset keeps
-        # logout chat-origin-only rather than failing startup.
+        # Applied to both halves of the TICK-051 split, not just one. A relative
+        # dashboard URL would send the patient to a path on the chat host instead of
+        # the portal; a relative chat origin would never match a browser's `Origin`
+        # header and would 403 every legitimate chat turn forever. Both fail loudly
+        # here at startup instead.
+        dashboard_redirect_uri = _absolute_url(
+            "AI_SESSION_DASHBOARD_REDIRECT_URI", str(values["AI_SESSION_DASHBOARD_REDIRECT_URI"])
+        )
+        chat_origin = _absolute_url("AI_SESSION_CHAT_ORIGIN", str(values["AI_SESSION_CHAT_ORIGIN"]))
+        # Optional, unlike the eleven above: a deployment that does not embed the chat
+        # in an OpenEMR portal has no second origin to trust, and leaving this unset
+        # keeps logout chat-origin-only rather than failing startup.
         portal_origin = os.environ.get("AI_SESSION_PORTAL_ORIGIN") or None
         if portal_origin is not None:
-            parsed_portal_origin = urlsplit(portal_origin)
-            if not parsed_portal_origin.scheme or not parsed_portal_origin.netloc:
-                # Same reason as success_redirect_uri above: main.py compares this
-                # against an Origin header, and a relative value would silently never
-                # match, turning the portal sign-out hook into the exact silent no-op
-                # TICK-055 exists to remove.
-                raise RuntimeError("AI_SESSION_PORTAL_ORIGIN must be an absolute URL")
+            # Same reason as chat_origin above: main.py compares this against an Origin
+            # header, and a relative value would silently never match, turning the
+            # portal sign-out hook into the exact silent no-op TICK-055 exists to
+            # remove.
+            portal_origin = _absolute_url("AI_SESSION_PORTAL_ORIGIN", portal_origin)
         return cls(
             database_path=Path(str(values["AI_SESSION_DATABASE_PATH"])),
             encryption_key=key,
@@ -153,9 +177,24 @@ class AuthSettings:
             client_id=str(values["OPENEMR_OAUTH_CLIENT_ID"]),
             client_secret=str(values["OPENEMR_OAUTH_CLIENT_SECRET"]),
             redirect_uri=str(values["OPENEMR_OAUTH_REDIRECT_URI"]),
-            success_redirect_uri=success_redirect_uri,
+            dashboard_redirect_uri=dashboard_redirect_uri,
+            chat_origin=chat_origin,
             portal_origin=portal_origin,
         )
+
+
+def _absolute_url(name: str, value: str) -> str:
+    """Return `value` unchanged, or fail startup if it is not an absolute URL.
+
+    Shared by every setting main.py either redirects to or compares against an
+    `Origin` header. A relative value in any of them fails silently and permanently at
+    request time -- a redirect to the wrong host, or a 403 on every chat turn -- so it
+    has to be caught here, at boot, where the error names the variable.
+    """
+    parsed = urlsplit(value)
+    if not parsed.scheme or not parsed.netloc:
+        raise RuntimeError(f"{name} must be an absolute URL")
+    return value
 
 
 @dataclass(frozen=True)

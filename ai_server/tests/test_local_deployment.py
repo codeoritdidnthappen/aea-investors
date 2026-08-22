@@ -131,3 +131,74 @@ def test_ai_server_service_never_joins_the_mariadb_network() -> None:
     # The top-level network definitions still declare both networks.
     assert "emr:" in top_level_networks
     assert "app:" in top_level_networks
+
+
+# --- TICK-051: the destination and the chat origin ship as two wired settings -------
+
+
+def test_the_split_settings_are_both_wired_with_a_required_variable_guard() -> None:
+    """TICK-051 AC8: a new setting without a matching compose entry either fails the
+    boot check or silently leaves the container on the old single value, so compose and
+    `.env.example` are checked together here.
+
+    Both carry a `:?` required-variable guard rather than a `:-` default (contrast
+    `AI_SESSION_PORTAL_ORIGIN`, which is genuinely optional): a deployment that has not
+    repointed its `.env` must stop at `docker compose up`, not start with the patient
+    still landing on the full-page chat.
+    """
+    compose = _compose_text()
+    env_example = (_DEPLOY_LOCAL / ".env.example").read_text(encoding="utf-8")
+
+    assert "AI_SESSION_DASHBOARD_REDIRECT_URI: ${AI_SESSION_DASHBOARD_REDIRECT_URI:?" in compose
+    assert "AI_SESSION_CHAT_ORIGIN: ${AI_SESSION_CHAT_ORIGIN:?" in compose
+    assert "AI_SESSION_DASHBOARD_REDIRECT_URI=https://emr.localhost/portal/home.php" in env_example
+    assert "AI_SESSION_CHAT_ORIGIN=https://chat.localhost" in env_example
+
+
+def test_the_replaced_single_redirect_setting_is_no_longer_wired_anywhere() -> None:
+    """TICK-051 AC10: renamed, not reused.
+
+    A surviving `AI_SESSION_SUCCESS_REDIRECT_URI` *entry* is the exact failure the
+    rename exists to prevent -- the AI server no longer reads that name, so an entry
+    still carrying it looks configured while doing nothing at all.
+
+    Checked as assignments and compose keys rather than as bare text, because both
+    files mention the old name deliberately, in the comments explaining what replaced
+    it. Removing that explanation is not the goal; removing the wiring is.
+    """
+    compose = _compose_text()
+    env_example = (_DEPLOY_LOCAL / ".env.example").read_text(encoding="utf-8")
+
+    for line in compose.splitlines():
+        assert not line.strip().startswith("AI_SESSION_SUCCESS_REDIRECT_URI:")
+    assert "${AI_SESSION_SUCCESS_REDIRECT_URI" not in compose
+    for line in env_example.splitlines():
+        assert not line.startswith("AI_SESSION_SUCCESS_REDIRECT_URI=")
+
+
+def test_the_two_settings_are_documented_as_not_interchangeable() -> None:
+    """TICK-051 AC8: each file carries a comment saying so.
+
+    They look near-identical in a `.env`, and collapsing them back into one is the
+    single change that reintroduces both bugs at once (ADR-8 forbids it). The comment
+    is what a person editing these files actually reads.
+    """
+    compose = _compose_text()
+    env_example = (_DEPLOY_LOCAL / ".env.example").read_text(encoding="utf-8")
+
+    for text in (compose, env_example):
+        # Matched on the word alone: both comments wrap across lines, and pinning the
+        # exact surrounding phrasing would make this a formatting test.
+        assert "interchangeable" in text
+
+
+def test_the_dashboard_destination_and_the_chat_origin_are_different_hosts() -> None:
+    """TICK-051 AC2: the shipped values must actually differ, or the split is inert.
+
+    A deployment where both point at the chat host passes every structural check above
+    and still strands the patient on the full-page chat.
+    """
+    env_example = (_DEPLOY_LOCAL / ".env.example").read_text(encoding="utf-8")
+
+    assert "AI_SESSION_DASHBOARD_REDIRECT_URI=https://emr.localhost" in env_example
+    assert "AI_SESSION_CHAT_ORIGIN=https://chat.localhost" in env_example
