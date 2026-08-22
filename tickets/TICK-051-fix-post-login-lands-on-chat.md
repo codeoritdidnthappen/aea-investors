@@ -7,7 +7,7 @@ priority: P1
 estimate: M
 depends_on: [TICK-045, TICK-046, TICK-054]
 labels: [chat, auth, bug]
-source: [FR-2, FR-36]
+source: [FR-2, FR-31]
 status: todo
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/104
 builder_commit: null
@@ -61,7 +61,7 @@ Position is knowable server-side: browsers send `Sec-Fetch-Dest: document`
 for a top-level navigation and `Sec-Fetch-Dest: iframe` for one into a
 frame. So `/oauth/callback` stays a `303` and needs no client-side
 interstitial. Absent or unrecognised values are treated as top level,
-because the dashboard strands nobody. FR-36 and ADR-8 forbid any
+because the dashboard strands nobody. FR-31 and ADR-8 forbid any
 `next=`/`redirect=` parameter, and none is required.
 
 ## Acceptance Criteria
@@ -77,10 +77,17 @@ because the dashboard strands nobody. FR-36 and ADR-8 forbid any
       visit to `/oauth/launch` that completes with no prompt at all.
 - [ ] The destination is unconditional: it does not vary with the portal
       page the patient was on when the session ended. `/oauth/callback`
-      accepts `code` and `state` and nothing else -- unknown query
-      parameters are rejected or explicitly discarded by an allowlist in the
-      handler, not merely ignored by FastAPI's signature binding, so a later
-      return-URL parameter cannot be quietly honoured.
+      honours `code` and `state` only: any other query parameter is
+      explicitly discarded rather than acted on, by an allowlist in the
+      handler and not merely by FastAPI's signature binding, so a later
+      return-URL parameter cannot be quietly honoured. Discarded, **not**
+      rejected -- rejecting unknown parameters would break the authorization
+      denial path, which arrives as
+      `?error=access_denied&error_description=...&state=...` from
+      `scope-authorize.html.twig`, and RFC 9207's `iss`.
+- [ ] A denial (`error=access_denied`) returns the patient to the portal
+      dashboard with no session issued, rather than 422-ing or stranding
+      them. It is an expected outcome, not a malformed request.
 - [ ] An authorization completing **inside the panel** loads the chat in
       that panel and navigates nothing. `Sec-Fetch-Dest` is what
       distinguishes the two; an absent or unrecognised value is treated as
@@ -90,8 +97,12 @@ because the dashboard strands nobody. FR-36 and ADR-8 forbid any
       not persist across a page load, so the panel will be closed -- that is
       accepted, and the tile must be present and obvious (TICK-032) rather
       than the patient being left to hunt for it.
-- [ ] `GET /oauth/launch` serves the chat directly when a valid `ai_session`
-      is already present, instead of starting another authorization.
+- [ ] `GET /oauth/launch` skips the authorization round trip when a valid
+      `ai_session` is already present -- serving the chat when it is running
+      in the panel, and redirecting to the dashboard when it is running at
+      top level. The short-circuit obeys the same `Sec-Fetch-Dest` rule as
+      the callback; it is not an exception to it. A live session reached at
+      top level must never be answered with the full-page chat.
 - [ ] `POST /api/chat` still accepts the chat page's own same-origin fetch
       and still rejects a request carrying any other `Origin`, or none. A
       test asserts the rejection, so the split cannot silently disable the
@@ -110,14 +121,16 @@ because the dashboard strands nobody. FR-36 and ADR-8 forbid any
       repoint the old one boot cleanly with the bug still present and no
       error anywhere. A rename makes that boot check fire.
 - [ ] OpenEMR's native portal login is confirmed to still land on
-      `portal/home.php`. It is not modified by this ticket, but FR-36 covers
+      `portal/home.php`. It is not modified by this ticket, but FR-31 covers
       it, so it is verified rather than assumed.
 
 ## Testing
 
 Unit tests over `/oauth/callback` driving `Sec-Fetch-Dest` directly
-(`document` -> dashboard, `iframe` -> chat, absent -> dashboard, unknown
-value -> dashboard), asserting an unexpected query parameter is refused, over `/oauth/launch`'s short-circuit with a live session, and over
+(`document` -> dashboard, `iframe` -> chat, absent -> client-side frame
+check), asserting an unexpected query parameter is discarded and that an
+`error=access_denied` callback returns to the dashboard without a session,
+over `/oauth/launch`'s short-circuit with a live session, and over
 `chat_turn`'s origin check with the settings split -- good origin accepted,
 foreign origin and absent origin both 403.
 
