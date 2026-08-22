@@ -44,7 +44,7 @@ import asyncio
 import json
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import AsyncIterator, Callable
 
 from ai_server.app.auth import SessionStore, utc_now
@@ -70,7 +70,14 @@ ADDRESS_PROMPT = (
     "I can update the mailing address on your record. What is your new address? "
     "Please send the street, city, state, and ZIP code together, for example: "
     f"{_EXAMPLE_ADDRESS}. Include an apartment or unit line if you have one. "
-    "Nothing is saved until you have checked it and confirmed."
+    "Nothing is saved until you have checked it and confirmed. "
+    "Reply CANCEL at any time to stop and go back to the rest of the chat."
+)
+
+IMAGE_IGNORED_RESPONSE = (
+    "I can't read an address from a photo here, so that upload wasn't used and nothing "
+    "was saved. Please type the address instead, or reply CANCEL to stop the address "
+    "update."
 )
 
 CANCELLED_RESPONSE = (
@@ -90,6 +97,31 @@ WRITE_FAILED_RESPONSE = (
 # does, and saying it twice in one reply reads as a glitch (caught in the live transcript
 # in `evidence/TICK-050/`).
 _NOT_CONFIRMED_PREFIX = "I didn't recognise that as a confirmation. "
+
+# A patient who asked to change their address and then typed something else entirely
+# ("when is my next appointment?") must not be held in this flow forever: every reply
+# would parse as a bad address and be answered with a validation list, with no route
+# back to the rest of the chat unless they guessed a cancel phrase (TICK-050 review
+# finding 1). After this many consecutive unparseable replies at the collect stage, the
+# update is abandoned and the turn is answered by the ordinary chat path instead.
+_MAX_UNPARSEABLE_REPLIES = 3
+
+GAVE_UP_RESPONSE = (
+    "I couldn't read an address in that, so I've stopped the address update -- nothing "
+    "was saved and your record is unchanged. If you did want to change your address, "
+    'just say "update my address" to start again.'
+)
+
+# A pending address that has sat unconfirmed this long is dropped rather than left to be
+# committed later by a bare "yes" the patient no longer connects to it (review finding
+# 2). Also bounds `_sessions`, which is otherwise only ever cleared by an explicit
+# cancel, a successful write, or `discard`.
+_PENDING_TTL = timedelta(minutes=10)
+
+EXPIRED_RESPONSE = (
+    "That address update timed out, so nothing was saved and your record is unchanged. "
+    'Say "update my address" if you would still like to change it.'
+)
 
 # Substring-matched, like onboarding's start corpus: every phrase here names the
 # address itself, so it cannot collide with a scheduling request ("change my
@@ -157,6 +189,12 @@ def _normalize(message: str) -> str:
     one so "I've moved" matches whichever way it was typed.
     """
     folded = message.strip().lower().replace("’", "'")
+    # Commas are dropped so a natural affirmation ("Yes, save it") matches the same
+    # phrase as its comma-free form. Without this it fell through to the address parser,
+    # whose output then tripped the has-a-comma heuristic, and the patient's own
+    # confirmation came back as a list of address validation errors (review finding 3).
+    # Only phrase matching uses this; parsing always reads the raw message.
+    folded = folded.replace(",", " ")
     return " ".join(folded.split()).rstrip(".!?")
 
 
@@ -289,7 +327,8 @@ def _rejection_text(details: list[str]) -> str:
     return (
         "That address could not be accepted: "
         + "; ".join(details)
-        + f". Please send the whole address again, for example: {_EXAMPLE_ADDRESS}."
+        + f". Please send the whole address again, for example: {_EXAMPLE_ADDRESS}. "
+        "Or reply CANCEL to stop the address update and go back to the rest of the chat."
     )
 
 
@@ -342,6 +381,10 @@ class _AddressSessionState:
     """
 
     pending: Address | None = None
+    # Consecutive replies at the collect stage that could not be read as an address.
+    unparseable_replies: int = 0
+    # When this state last changed, for `_PENDING_TTL`.
+    touched_at: datetime | None = None
 
 
 @dataclass
@@ -374,7 +417,9 @@ class AddressChatService:
         """
         self._sessions.pop(handle, None)
 
-    async def stream_reply(self, handle: str, message: str) -> AsyncIterator[str]:
+    async def stream_reply(
+        self, handle: str, message: str, image_base64: str | None = None
+    ) -> AsyncIterator[str]:
         """Yield the fixed unavailable message, or this turn's reply."""
         if self.demographics is None:
             yield UNAVAILABLE_ADDRESS_RESPONSE
@@ -394,12 +439,33 @@ class AddressChatService:
             yield SUPPORTIVE_CONTENT[distress]
             return
 
+        if image_base64 is not None:
+            # An identity photo is only ever read by guided onboarding's OCR. Routing it
+            # here would silently discard it *and* parse its JSON action body as an
+            # address, so the patient would get address validation errors and no hint
+            # that the upload was ignored (review finding 4). Say so instead, and leave
+            # the flow exactly where it was.
+            yield IMAGE_IGNORED_RESPONSE
+            return
+
         state = self._sessions.get(handle)
+        if (
+            state is not None
+            and state.touched_at is not None
+            and now - state.touched_at > _PENDING_TTL
+        ):
+            # Stale: drop it rather than let a later bare "yes" commit an address the
+            # patient typed long enough ago that it is no longer in front of them.
+            self._sessions.pop(handle, None)
+            state = None
+            yield EXPIRED_RESPONSE
+            return
+
         if state is None:
             # The triggering turn itself: only ever prompt. The trigger phrase is not
             # parsed as an address, so a patient never has to repeat themselves into a
             # rejection on the very first turn.
-            self._sessions[handle] = _AddressSessionState()
+            self._sessions[handle] = _AddressSessionState(touched_at=now)
             yield ADDRESS_PROMPT
             return
 
@@ -409,6 +475,7 @@ class AddressChatService:
             return
 
         if state.pending is not None:
+            state.touched_at = now
             async for chunk in self._handle_confirmation(handle, access_token, state, message):
                 yield chunk
             return
@@ -418,9 +485,19 @@ class AddressChatService:
         except FieldValidationError as exc:
             # Rejected entirely locally, naming the specific component at fault; the
             # session stays in exactly this stage, so the patient corrects it in place
-            # rather than restarting the flow (AC5).
+            # rather than restarting the flow (AC5) -- but not indefinitely, so a
+            # patient who has moved on to another subject is released instead of being
+            # answered with address errors forever (review finding 1).
+            state.unparseable_replies += 1
+            state.touched_at = now
+            if state.unparseable_replies >= _MAX_UNPARSEABLE_REPLIES:
+                self._sessions.pop(handle, None)
+                yield GAVE_UP_RESPONSE
+                return
             yield _rejection_text(exc.details)
             return
+        state.unparseable_replies = 0
+        state.touched_at = now
         state.pending = address
         yield _review_summary(address)
 

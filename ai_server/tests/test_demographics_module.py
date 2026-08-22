@@ -53,8 +53,17 @@ def test_no_field_is_required_so_a_partial_address_only_write_is_possible() -> N
 
 def test_an_unrecognised_field_is_refused_rather_than_silently_dropped() -> None:
     service = _service_text()
-    assert "is not a writable demographics field" in service
+    assert "field(s) in the request are not writable" in service
     assert "in_array($field, self::WRITABLE_STRING_FIELDS, true)" in service
+
+
+def test_unrecognised_field_names_are_counted_not_reflected_back_to_the_caller() -> None:
+    """The 400 body must not be built from caller-supplied key names: one entry per
+    unknown key would let a caller size the response with its own strings."""
+    service = _service_text()
+    assert '$errors[] = "$field is not a writable demographics field";' not in service
+    assert "$unwritable++;" in service
+    assert "$unwritable . ' field(s) in the request are not writable '" in service
 
 
 def test_only_the_second_street_line_may_be_sent_empty_to_clear_it() -> None:

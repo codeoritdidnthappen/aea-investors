@@ -230,7 +230,8 @@ def create_app(
         # external LLM (NFR-2, TICK-050).
         if address_update_mode(cursor, address.has_pending_update(handle), turn.message):
             return StreamingResponse(
-                address.stream_reply(handle, turn.message), media_type="text/plain"
+                address.stream_reply(handle, turn.message, turn.image_base64),
+                media_type="text/plain",
             )
         service = configured_chat_service or unavailable_chat_service()
         # Retrieved for this call only (TICK-034 AC1): never persisted, logged, or

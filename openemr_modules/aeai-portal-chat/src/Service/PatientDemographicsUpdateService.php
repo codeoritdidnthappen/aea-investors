@@ -97,9 +97,14 @@ class PatientDemographicsUpdateService
         $errors = [];
         $fields = [];
 
+        $unwritable = 0;
+
         foreach ($body as $field => $value) {
             if (!in_array($field, self::WRITABLE_STRING_FIELDS, true)) {
-                $errors[] = "$field is not a writable demographics field";
+                // Counted, not echoed. Reflecting each unrecognised key back would let a
+                // caller size the error body with its own strings, one entry per key.
+                // The writable list below is all a legitimate caller needs.
+                $unwritable++;
                 continue;
             }
             if (!is_string($value)) {
@@ -111,6 +116,12 @@ class PatientDemographicsUpdateService
                 continue;
             }
             $fields[$field] = $value;
+        }
+
+        if ($unwritable > 0) {
+            $errors[] = $unwritable . ' field(s) in the request are not writable '
+                . 'demographics fields; writable fields are: '
+                . implode(', ', self::WRITABLE_STRING_FIELDS);
         }
 
         if (!empty($errors)) {
