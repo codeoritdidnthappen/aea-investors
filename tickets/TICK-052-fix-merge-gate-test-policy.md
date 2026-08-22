@@ -8,9 +8,9 @@ estimate: S
 depends_on: []
 labels: [documentation, bug]
 source: [NFR-18]
-status: todo
+status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/105
-builder_commit: null
+builder_commit: 8d70a9e
 ---
 ## Context
 
