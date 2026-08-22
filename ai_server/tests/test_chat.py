@@ -15,6 +15,7 @@ import pytest
 
 from ai_server.app.auth import AuthSettings, OAuthTokens, SessionStore
 from ai_server.app.chat import (
+    ASSISTANT_UNAVAILABLE_RESPONSE,
     CHAT_PAGE_HTML,
     ChatService,
     NoActionTool,
@@ -22,7 +23,7 @@ from ai_server.app.chat import (
     unavailable_chat_service,
 )
 from ai_server.app.main import create_app
-from ai_server.llm.groq import UNAVAILABLE_RESPONSE, GroqWorkflow
+from ai_server.llm.groq import PLANNING_FAILED_RESPONSE, GroqWorkflow
 from ai_server.ocr.service import MAX_UPLOAD_BYTES
 from ai_server.privacy.gate import OutboundPayload, PrivacyGate
 from ai_server.scheduling.appointments import AnonymousAppointmentToken
@@ -248,8 +249,37 @@ def test_ac3_unavailable_chat_service_streams_the_fixed_fallback_text(
     response = asyncio.run(_post_chat(app, cookie=handle))
 
     assert response.status_code == 200
-    assert response.text == UNAVAILABLE_RESPONSE
-    assert "OpenEMR" in UNAVAILABLE_RESPONSE
+    assert response.text == ASSISTANT_UNAVAILABLE_RESPONSE
+    # FR-19 still wants a route to OpenEMR's own scheduling UI from this path.
+    assert "OpenEMR portal menu" in ASSISTANT_UNAVAILABLE_RESPONSE
+
+
+def test_ticket_048_unconfigured_groq_message_is_distinct_and_not_misleading() -> None:
+    """`chat.py`'s deployment fault and `groq.py`'s per-turn planning fault are two
+    different failures and now say two different things (TICK-048)."""
+    assert ASSISTANT_UNAVAILABLE_RESPONSE != PLANNING_FAILED_RESPONSE
+
+    # The turn may have been about anything, so this reports the *assistant* as
+    # unavailable rather than claiming scheduling assistance specifically failed...
+    assert "could not handle your request" in ASSISTANT_UNAVAILABLE_RESPONSE
+    assert "Scheduling assistance is unavailable" not in ASSISTANT_UNAVAILABLE_RESPONSE
+    # ...and it never sends a patient portal user to the staff-only native screen.
+    assert "native scheduling screen" not in ASSISTANT_UNAVAILABLE_RESPONSE
+    # The one scheduling mention is a conditional next step, not a diagnosis, and it
+    # names the same patient-reachable place the client-side fallback panel does.
+    assert "To book or change an appointment" in ASSISTANT_UNAVAILABLE_RESPONSE
+    assert "OpenEMR portal menu" in CHAT_PAGE_HTML
+
+
+def test_ticket_048_unconfigured_groq_answers_a_non_scheduling_turn_the_same_way() -> None:
+    """The reported turn -- an address change -- reaches the `workflow is None` call
+    site directly and gets the assistant-unavailable text, not a scheduling verdict."""
+
+    async def run() -> list[str]:
+        service = unavailable_chat_service()
+        return [chunk async for chunk in service.stream_reply("I need to change my address.")]
+
+    assert asyncio.run(run()) == [ASSISTANT_UNAVAILABLE_RESPONSE]
 
 
 def test_ac3_page_ships_a_client_side_fallback_panel_with_openemr_instructions() -> None:

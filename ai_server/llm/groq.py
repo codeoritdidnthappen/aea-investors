@@ -20,8 +20,16 @@ from ai_server.privacy.gate import (
 )
 
 GROQ_MODEL = "openai/gpt-oss-120b"
-UNAVAILABLE_RESPONSE = (
-    "Scheduling assistance is unavailable. Please use OpenEMR's native scheduling screen."
+# Planning failed for *this* turn (TICK-048). The turn is not necessarily a scheduling
+# turn -- a patient can ask about an address change, records, or billing, and the
+# planner cannot express any of those -- so this must not claim scheduling is what
+# broke, and must not point at OpenEMR's native scheduling screen, which is a staff
+# screen no patient portal user can reach. `ChatService` has its own, distinct string
+# for the unrelated "Groq is not configured at all" deployment fault.
+PLANNING_FAILED_RESPONSE = (
+    "Sorry -- I could not work out how to handle that request, so nothing was done. "
+    "Please try rewording it, or contact the clinic directly if it is something this "
+    "chat cannot do."
 )
 
 
@@ -282,7 +290,7 @@ class GroqWorkflow:
         try:
             plan = PlanningOutput.model_validate_json(await self._client.complete(payload))
         except (GroqUnavailableError, ValidationError, httpx.HTTPError):
-            yield UNAVAILABLE_RESPONSE
+            yield PLANNING_FAILED_RESPONSE
             return
 
         result = await tool.execute(plan)
