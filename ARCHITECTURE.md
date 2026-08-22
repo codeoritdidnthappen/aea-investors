@@ -115,14 +115,12 @@ Three mechanics make it work, and each is load-bearing:
    level must not be answered with the full-page chat.
 3. **The callback reads its own position from `Sec-Fetch-Dest`, never from a parameter.**
    Browsers send `document` for a top-level navigation and `iframe` for one into a frame,
-   so the server resolves the destination itself with no client-side interstitial on the
-   normal path. Neither default is safe when the header is absent: assuming top level
-   redirects a panel into rendering the dashboard nested inside its own chart, and assuming
-   in-panel strands a top-level visitor on the full-page chat. So absence is not guessed —
-   it falls back to a minimal document that performs the frame check in the client and
-   navigates accordingly. Chrome, the only supported target (NFR-19, NFR-35), always sends
-   the header, so this path should never run in practice. No `next=` or return URL is
-   involved, and none may be added.
+   so the server resolves the destination itself with no client-side interstitial at all.
+   An absent or unrecognised value is treated as top level, matching ADR-8: the dashboard
+   strands nobody, since a patient sent there is one click from the chat, whereas the
+   full-page chat leaves them with the portal gone. Chrome, the only supported target
+   (NFR-19, NFR-35), always sends the header, so that default should not run in practice.
+   No `next=` or return URL is involved, and none may be added.
 
 Note that `/oauth/launch` is the patient-facing entry point, not a development affordance:
 it is the panel's `src`, taken from `AEAI_PORTAL_CHAT_URL` when set and otherwise from
