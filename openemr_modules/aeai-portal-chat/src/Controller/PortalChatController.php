@@ -33,6 +33,7 @@ use Symfony\Component\EventDispatcher\GenericEvent;
 class PortalChatController
 {
     private const DEFAULT_CHAT_LAUNCH_URL = 'https://chat.localhost/oauth/launch';
+    private const DEFAULT_CHAT_LOGOUT_URL = 'https://chat.localhost/api/logout';
     private const CARD_ID = 'aeai-portal-chat';
 
     public function subscribeToEvents(EventDispatcherInterface $eventDispatcher): void
@@ -85,7 +86,60 @@ class PortalChatController
             . 'data-src="' . $escapedUrl . '" '
             . 'style="width:100%;min-height:640px;border:0;"></iframe>'
             . '</div></div>'
-            . $this->deferredLoadScript();
+            . $this->deferredLoadScript()
+            . $this->signOutScript();
+    }
+
+    /**
+     * Ends the AI session when the patient signs out of the portal.
+     *
+     * OpenEMR's portal logout destroys its own PHP session. It cannot touch the
+     * `ai_session` cookie, which is scoped to the AI server's separate origin, so
+     * before TICK-055 the AI session -- holding the patient's encrypted OpenEMR access
+     * and refresh tokens -- stayed usable for the rest of its 8-hour TTL, and
+     * navigating straight to the chat origin after "logging out" resumed chatting as
+     * that patient.
+     *
+     * The mechanism is a `sendBeacon` POST, and the reason it is not the more obvious
+     * redirect chain is load-bearing: OpenEMR 8.3.0 sets its `PortalOpenEMR` session
+     * cookie `SameSite=Strict` (verified live,
+     * evidence/TICK-055/PORTAL_LOGOUT_MECHANISM.md). Routing sign-out through the chat
+     * origin and back would strip that cookie from the return trip, so `logout.php`
+     * would run without a session and the *portal* would never actually log out. The
+     * sign-out click therefore has to stay the same-site top-level navigation it
+     * already is, and the AI session has to be ended by a call made alongside it.
+     *
+     * `sendBeacon` is the only such call that is specified to survive the page unload
+     * that immediately follows -- a plain `fetch`/XHR is cancelled with the document,
+     * and an image GET would need a state-changing GET endpoint, which is exactly the
+     * CSRF sink the AI server refuses to expose. It sends the `ai_session` cookie
+     * (`SameSite=None`) and an `Origin` header the AI server checks against its own
+     * configured allowlist, so this is a request only the portal can make.
+     *
+     * Known gap, recorded rather than hidden: both RenderEvents fire only from
+     * portal/home.php, so this covers sign-out from the dashboard. A sign-out from
+     * another portal page is not intercepted and the AI session survives to its TTL.
+     * The AI server's own `/api/logout` is what a fix for that would call too.
+     */
+    private function signOutScript(): string
+    {
+        $logoutUrl = getenv('AEAI_PORTAL_CHAT_LOGOUT_URL') ?: self::DEFAULT_CHAT_LOGOUT_URL;
+        $escapedLogoutUrl = htmlspecialchars($logoutUrl, ENT_QUOTES, 'UTF-8');
+        return '<script>(function () {'
+            . 'var endpoint = "' . $escapedLogoutUrl . '";'
+            . 'function endAiSession() {'
+            . 'if (navigator.sendBeacon) { navigator.sendBeacon(endpoint); }'
+            . '}'
+            . 'function bind() {'
+            . 'var links = document.querySelectorAll("a[href$=\'logout.php\']");'
+            . 'for (var i = 0; i < links.length; i += 1) {'
+            . 'links[i].addEventListener("click", endAiSession);'
+            . '}'
+            . '}'
+            . 'if (document.readyState === "loading") {'
+            . 'document.addEventListener("DOMContentLoaded", bind);'
+            . '} else { bind(); }'
+            . '}());</script>';
     }
 
     /**

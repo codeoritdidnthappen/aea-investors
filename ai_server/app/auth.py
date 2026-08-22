@@ -46,9 +46,27 @@ class AuthSettings:
     client_secret: str
     redirect_uri: str
     success_redirect_uri: str
+    # The OpenEMR portal's own origin, when the chat is embedded in one. Logout is the
+    # only route that accepts it (main.py's `/api/logout`), and only because the portal
+    # session cookie is `SameSite=Strict` (verified live, evidence/TICK-055): a
+    # sign-out click has to stay a same-site top-level navigation to `portal/logout.php`
+    # or the portal session is not ended at all, so the AI session must be ended by a
+    # cross-origin call made *from* the portal page rather than by redirecting through
+    # the chat origin. `None` leaves logout chat-origin-only.
+    portal_origin: str | None = None
     cookie_name: str = "ai_session"
     session_ttl: timedelta = timedelta(hours=8)
     state_ttl: timedelta = timedelta(minutes=10)
+    # How long before `session_ttl` lands the patient is told the session is ending.
+    # The TTL is deliberately absolute (TICK-055 AC6: the stored refresh token is never
+    # redeemed, see evidence/TICK-055/DECISIONS.md), so the cut is announced rather
+    # than avoided.
+    expiry_warning_window: timedelta = timedelta(minutes=30)
+    # An expired row is deleted lazily by `active_session`, but only if the handle is
+    # ever presented again -- an abandoned session is never revisited, so its encrypted
+    # tokens would otherwise sit in SQLite forever (NFR-31/NFR-33). main.py's lifespan
+    # sweeps on startup and then on this interval.
+    sweep_interval: timedelta = timedelta(hours=1)
     # Patient-context (`patient/*`) only -- never `user/*` (TICK-033). A `user/*` scope
     # forces OpenEMR's registration flow to treat this confidential client as needing
     # the full staff resource-permission consent screen; a genuine patient should never
@@ -113,6 +131,18 @@ class AuthSettings:
             # origin from this value; a relative URL would make every legitimate
             # request 403 forever instead of failing loudly here at startup.
             raise RuntimeError("AI_SESSION_SUCCESS_REDIRECT_URI must be an absolute URL")
+        # Optional, unlike the ten above: a deployment that does not embed the chat in
+        # an OpenEMR portal has no second origin to trust, and leaving this unset keeps
+        # logout chat-origin-only rather than failing startup.
+        portal_origin = os.environ.get("AI_SESSION_PORTAL_ORIGIN") or None
+        if portal_origin is not None:
+            parsed_portal_origin = urlsplit(portal_origin)
+            if not parsed_portal_origin.scheme or not parsed_portal_origin.netloc:
+                # Same reason as success_redirect_uri above: main.py compares this
+                # against an Origin header, and a relative value would silently never
+                # match, turning the portal sign-out hook into the exact silent no-op
+                # TICK-055 exists to remove.
+                raise RuntimeError("AI_SESSION_PORTAL_ORIGIN must be an absolute URL")
         return cls(
             database_path=Path(str(values["AI_SESSION_DATABASE_PATH"])),
             encryption_key=key,
@@ -124,6 +154,7 @@ class AuthSettings:
             client_secret=str(values["OPENEMR_OAUTH_CLIENT_SECRET"]),
             redirect_uri=str(values["OPENEMR_OAUTH_REDIRECT_URI"]),
             success_redirect_uri=success_redirect_uri,
+            portal_origin=portal_origin,
         )
 
 
@@ -440,6 +471,36 @@ class SessionStore:
                 connection.execute("DELETE FROM sessions WHERE handle_hash = ?", (handle_hash,))
                 return False
         return row is not None
+
+    def delete_session(self, handle: str) -> bool:
+        """Delete one session row outright, returning whether a row was actually there.
+
+        Deliberately unconditional on `expires_at`: logout must remove the encrypted
+        access and refresh tokens, not merely mark the session dead, so an already
+        expired-but-unswept row is removed too (TICK-055 AC1). No `now` argument for the
+        same reason -- there is no clock at which a logged-out session should survive.
+        """
+        with self._connect() as connection:
+            result = connection.execute(
+                "DELETE FROM sessions WHERE handle_hash = ?", (_hash(handle),)
+            )
+        return result.rowcount > 0
+
+    def expires_at(self, handle: str, now: datetime) -> datetime | None:
+        """Return when an active session's absolute TTL lands, or `None` if it is
+        absent or already expired.
+
+        The TTL is stamped once by `create_session` and never extended (TICK-055 AC6),
+        so this is a fixed wall-clock instant the chat turn can warn the patient about
+        before it cuts the conversation off.
+        """
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT expires_at FROM sessions WHERE handle_hash = ?", (_hash(handle),)
+            ).fetchone()
+        if row is None or row[0] <= _timestamp(now):
+            return None
+        return datetime.fromtimestamp(row[0], tz=timezone.utc)
 
     def save_cursor(self, handle: str, cursor: str, now: datetime) -> None:
         """Persist the non-patient onboarding workflow cursor for an active session.

@@ -44,6 +44,9 @@ services:
       # Read by the aeai-portal-chat module (TICK-012) as the iframe's only src; the
       # local default points at Caddy's chat hostname, never at OpenEMR itself.
       AEAI_PORTAL_CHAT_URL: ${AEAI_PORTAL_CHAT_URL:-https://chat.localhost/oauth/launch}
+      # Read by the same module (TICK-055) as the endpoint its sign-out hook beacons,
+      # so portal logout also ends the AI session holding the patient's tokens.
+      AEAI_PORTAL_CHAT_LOGOUT_URL: ${AEAI_PORTAL_CHAT_LOGOUT_URL:-https://chat.localhost/api/logout}
     ports:
       - "${OPENEMR_HTTP_PORT:-8080}:80"
       - "${OPENEMR_HTTPS_PORT:-8443}:443"
@@ -128,6 +131,10 @@ services:
       OPENEMR_OAUTH_CLIENT_SECRET: ${OPENEMR_OAUTH_CLIENT_SECRET:?set OPENEMR_OAUTH_CLIENT_SECRET in deploy/local/.env}
       OPENEMR_OAUTH_REDIRECT_URI: ${OPENEMR_OAUTH_REDIRECT_URI:?set OPENEMR_OAUTH_REDIRECT_URI in deploy/local/.env}
       AI_SESSION_SUCCESS_REDIRECT_URI: ${AI_SESSION_SUCCESS_REDIRECT_URI:?set AI_SESSION_SUCCESS_REDIRECT_URI in deploy/local/.env}
+      # The portal origin allowed to end an AI session at /api/logout (TICK-055).
+      # Optional: unset, logout stays chat-origin-only and portal sign-out cannot
+      # reach it. Never accepted by /api/chat.
+      AI_SESSION_PORTAL_ORIGIN: ${AI_SESSION_PORTAL_ORIGIN:-https://emr.localhost}
       # Default LLM path requires no paid service (NFR-20); GROQ_API_KEY is Groq's
       # free tier and is optional until chat/LLM endpoints are wired in.
       LLM_PROVIDER: ${LLM_PROVIDER:-groq}
