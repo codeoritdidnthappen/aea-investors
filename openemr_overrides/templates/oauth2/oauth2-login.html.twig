@@ -38,10 +38,29 @@
 {% extends "oauth2/oauth2-base.html.twig" %}
 {% block title %}{{ "OpenEMR Authorization"|xlt }}{% endblock %}
 {% block scripts %}
+    {#
+    # TICK-047: this entire `scripts` block is duplicated, byte for byte, in both
+    # openemr_overrides/templates/oauth2/oauth2-login.html.twig and
+    # openemr_overrides/templates/oauth2/scope-authorize.html.twig. If you change
+    # one, change the other identically -- ai_server/tests/test_oauth2_breakout_override.py
+    # fails CI if the two copies ever drift apart.
+    #
+    # It is deliberately NOT hoisted into the shared `scripts` block of
+    # oauth2-base.html.twig, which both files extend. Overriding the base would
+    # mean bind-mounting a pinned copy of the vendor template that renders the
+    # <head>/setupHeader/<body> skeleton for *every* OAuth2 page, so a copy left
+    # stale by an OpenEMR upgrade would silently degrade all of them instead of
+    # just the two pages TICK-045 verified. It would also silently extend
+    # breakout to patient-select.html.twig -- the only other template extending
+    # the base, which defines no `scripts` block of its own and is not reachable
+    # in this deployment's portal flow, so that behavior change could not be
+    # live-verified.
+    #}
     <script>
         // TICK-045: break out of any embedding iframe (the AI Chat portal panel,
-        // in particular) before this login/MFA form paints, so re-authentication
-        // is always a full top-level page. See the file header comment above.
+        // in particular) before this sign-in/consent form paints, so
+        // re-authentication is always a full top-level page. See the file header
+        // comment above.
         if (window.top !== window.self) {
             window.top.location.href = window.location.href;
         }
