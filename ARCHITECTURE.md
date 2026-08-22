@@ -68,19 +68,32 @@ flowchart LR
 
 ~~~mermaid
 sequenceDiagram
-    participant User
+    participant P as Patient
     participant OpenEMR
+    participant UI as Chat panel (iframe)
     participant AI as AI server
-    participant UI as Chat iframe
 
-    User->>OpenEMR: Log in and open AI Chat
-    OpenEMR->>OpenEMR: Verify user session and launch permission
-    OpenEMR->>AI: OAuth/SMART callback with one-time code
-    AI->>OpenEMR: Exchange code using registered client and PKCE
-    OpenEMR-->>AI: User-scoped access and refresh tokens
-    AI->>AI: Validate state/nonce and store tokens encrypted
-    AI-->>UI: Establish secure HttpOnly AI session
-    UI-->>User: Render chat
+    P->>OpenEMR: Sign in to the patient portal
+    OpenEMR-->>P: Portal dashboard (panel closed, no src yet)
+    Note over UI: data-src holds the launch URL.<br/>Nothing loads until the tile is opened (FR-32).
+    P->>UI: Open the AI Chat tile
+    UI->>AI: GET /oauth/launch
+    alt Live ai_session
+        AI-->>UI: Chat page, no authorization round trip
+    else No session
+        AI->>OpenEMR: 302 to authorize (PKCE)
+        OpenEMR-->>P: Sign-in / consent, broken out to top level
+        P->>OpenEMR: Credentials and consent
+        OpenEMR->>AI: GET /oauth/callback with one-time code
+        AI->>OpenEMR: Exchange code with PKCE
+        OpenEMR-->>AI: Patient-scoped access and refresh tokens
+        AI->>AI: Validate state/nonce, encrypt tokens, issue AI session
+        AI-->>P: Sec-Fetch-Dest document -> portal dashboard (FR-31, ADR-8)
+    end
+    P->>UI: Chat turn
+    UI->>AI: POST /api/chat (Origin-checked)
+    P->>OpenEMR: Sign out
+    OpenEMR->>AI: POST /api/logout, session deleted
 ~~~
 
 The authorization code is delivered to the AI server callback, not relayed through
@@ -167,10 +180,10 @@ no parallel non-AI scheduler.
 
 | Component | Responsibility | Interfaces and owned data | Requirements |
 |---|---|---|---|
-| OpenEMR module | Add the authenticated AI Chat entry and iframe wrapper | OpenEMR module hooks; no appointment data ownership | FR-1–FR-4 |
+| OpenEMR module | Add the authenticated AI Chat dashboard tile and panel, hold the launch URL in `data-src` until the patient opens it, and end the AI session on portal sign-out | OpenEMR module hooks; no appointment data ownership | FR-1–FR-4, FR-32 |
 | OpenEMR | Login, OAuth/SMART authorization, appointment system of record, role visibility | Existing REST/FHIR APIs and MariaDB | FR-3, FR-9–FR-17 |
 | Chat UI | Render conversation, local error states, and streamed chunks | FastAPI only; AI-session cookie | FR-2, FR-4, FR-18–FR-19 |
-| FastAPI | OAuth callback, AI-session boundary, streaming API, dependency health | SQLite WAL session plumbing and encrypted delegated tokens | FR-3–FR-4, FR-18–FR-19; NFR-6–NFR-10, NFR-30–NFR-33 |
+| FastAPI | OAuth launch and callback, position-resolved destination, AI-session boundary and logout, streaming API, dependency health | SQLite WAL session plumbing and encrypted delegated tokens | FR-1, FR-3–FR-4, FR-18–FR-19, FR-31; NFR-6–NFR-10, NFR-30–NFR-33 |
 | LangGraph | Model the conversation and deterministic scheduling-tool transitions | Calls privacy gate, OpenEMR adapter, and LLM adapter | FR-5, FR-8–FR-20 |
 | PrivacyGate | Run local Presidio, block unsafe prompts, and enforce outbound schema | Pinned local models and custom recognizers; no retained prompt data | NFR-2–NFR-5, NFR-8, NFR-27–NFR-28 |
 | OpenEMR adapter | Translate scheduling tools into existing API calls | No database access and no appointment persistence | FR-9–FR-17 |

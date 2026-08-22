@@ -27,6 +27,14 @@ Fill in `.env`:
   local-only values.
 - `AI_SESSION_ENCRYPTION_KEY`: generate with
   `python -c "import secrets, base64; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())"`.
+- `AI_SESSION_DASHBOARD_REDIRECT_URI` and `AI_SESSION_CHAT_ORIGIN`: both required.
+  The first is where an authorization completing at top level sends the patient
+  (`https://emr.localhost/portal/home.php`); the second is the only origin allowed to
+  call `POST /api/chat` (`https://chat.localhost`). They are **not** interchangeable —
+  see [ADR-8](../../ARCHITECTURE.md#adr-8--the-chat-is-a-panel-never-a-landing-page).
+  TICK-051 split them out of a single `AI_SESSION_SUCCESS_REDIRECT_URI`, deliberately
+  renaming rather than reusing it, so a stack still carrying only the old variable
+  fails to start instead of booting with the wrong destination.
 - `OPENEMR_OAUTH_*`: registered after OpenEMR is up (step 3 below). The AI server
   will fail to start without these; that is expected until you register a client.
 
