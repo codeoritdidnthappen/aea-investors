@@ -10,7 +10,7 @@ labels: [portal, chat, cleanup]
 source: [FR-2]
 status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/94
-builder_commit: 2bc12ee
+builder_commit: 70f56fc
 ---
 ## Context
 
