@@ -58,6 +58,27 @@ def test_breakout_scripts_block_still_breaks_out_of_an_embedding_iframe() -> Non
     assert "window.top.location.href = window.location.href;" in block
 
 
+def test_breakout_scripts_block_falls_back_when_the_top_navigation_is_blocked() -> None:
+    """TICK-046: a silently blocked breakout must surface something clickable.
+
+    Browsers only let a frame navigate the top frame without a user gesture when
+    the two are same-origin; otherwise the assignment above is a silent no-op and
+    the patient stays trapped in the 640px panel. The fallback link is the visible,
+    actionable escape hatch -- live-verified in real Chrome, both blocked and
+    unblocked, in evidence/TICK-046/LIVE_VERIFICATION_2026-08-21.md.
+    """
+    block = _scripts_block(_LOGIN_TEMPLATE)
+
+    assert "window.setTimeout(" in block
+    assert "Click here to sign in" in block
+    # target="_top" is what turns the click into the top-level navigation the
+    # silent assignment failed to make.
+    assert "link.target = '_top';" in block
+    # A breakout that did work must not flash the fallback on its way out.
+    assert "window.clearTimeout(aeaiBreakoutTimer);" in block
+    assert "'pagehide'" in block
+
+
 def test_breakout_scripts_block_points_at_its_duplicate_in_the_sibling_template() -> None:
     block = _scripts_block(_LOGIN_TEMPLATE)
 
