@@ -8,9 +8,9 @@ estimate: M
 depends_on: [TICK-032, TICK-045]
 labels: [portal, chat, auth, bug]
 source: [FR-2, FR-32]
-status: todo
+status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/108
-builder_commit: null
+builder_commit: 22fe3ed
 ---
 ## Context
 
