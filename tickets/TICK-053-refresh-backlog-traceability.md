@@ -10,7 +10,7 @@ labels: [documentation]
 source: []
 status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/106
-builder_commit: ab845ec
+builder_commit: b1d51e9
 ---
 ## Context
 

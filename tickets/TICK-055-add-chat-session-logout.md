@@ -10,7 +10,7 @@ labels: [auth, privacy, chat, bug]
 source: [FR-1, NFR-31]
 status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/110
-builder_commit: 97bb1b0
+builder_commit: bfd6650
 ---
 ## Context
 
