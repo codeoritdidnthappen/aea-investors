@@ -69,6 +69,35 @@
         // re-authentication is always a full top-level page. See the file header
         // comment above.
         if (window.top !== window.self) {
+            // TICK-046: a blocked top-level navigation is silent -- no error, no
+            // event. Chrome only allows a frame to navigate the top frame without
+            // a user gesture when the two are same-origin, so if this deployment's
+            // topology ever puts the embedding page on a different origin than
+            // this one (as it briefly did during TICK-045's live verification),
+            // the assignment below simply does nothing and the patient is left
+            // staring at the unusable 640px embedded form. Assume that happened if
+            // this document is still here shortly afterwards, and offer a link
+            // instead: a real click carries the user gesture browsers do accept
+            // for a cross-origin top-level navigation.
+            var aeaiBreakoutTimer = window.setTimeout(function () {
+                if (document.getElementById('aeai-breakout-fallback')) {
+                    return;
+                }
+                var link = document.createElement('a');
+                link.id = 'aeai-breakout-fallback';
+                link.href = window.location.href;
+                link.target = '_top';
+                link.textContent = 'Click here to sign in';
+                link.setAttribute('style', 'position:fixed;top:0;left:0;right:0;z-index:2147483647;'
+                    + 'display:block;padding:1rem;background:#842029;color:#fff;text-align:center;'
+                    + 'font:bold 1rem/1.4 sans-serif;text-decoration:underline;');
+                (document.body || document.documentElement).appendChild(link);
+            }, 1500);
+            // The top frame navigating away unloads this one, so a breakout that
+            // did work cancels the fallback before a patient can see it.
+            window.addEventListener('pagehide', function () {
+                window.clearTimeout(aeaiBreakoutTimer);
+            });
             window.top.location.href = window.location.href;
         }
     </script>
