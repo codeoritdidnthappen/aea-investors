@@ -25,6 +25,7 @@ from ai_server.app.auth import (
     SessionStore,
     utc_now,
 )
+from ai_server.app.chat import CHAT_PAGE_HTML
 from ai_server.app.main import create_app
 
 NOW = datetime(2026, 8, 18, tzinfo=timezone.utc)
@@ -54,7 +55,8 @@ def settings(tmp_path: Path) -> AuthSettings:
         client_id="synthetic-client",
         client_secret="synthetic-secret",
         redirect_uri="https://chat.test/oauth/callback",
-        success_redirect_uri="https://chat.test/",
+        dashboard_redirect_uri="https://emr.test/portal/home.php",
+        chat_origin="https://chat.test",
         session_ttl=timedelta(minutes=30),
         state_ttl=timedelta(minutes=5),
     )
@@ -81,19 +83,17 @@ def test_ac1_environment_settings_require_a_32_byte_key(
         "OPENEMR_OAUTH_CLIENT_ID": "synthetic-client",
         "OPENEMR_OAUTH_CLIENT_SECRET": "synthetic-secret",
         "OPENEMR_OAUTH_REDIRECT_URI": "https://chat.test/oauth/callback",
-        "AI_SESSION_SUCCESS_REDIRECT_URI": "https://chat.test/",
+        "AI_SESSION_DASHBOARD_REDIRECT_URI": "https://emr.test/portal/home.php",
+        "AI_SESSION_CHAT_ORIGIN": "https://chat.test",
     }
     for name, value in environment.items():
         monkeypatch.setenv(name, value)
     assert AuthSettings.from_environment().encryption_key == b"k" * 32
 
 
-def test_ac1_environment_settings_require_an_absolute_success_redirect_uri(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    # main.py's /api/chat Origin check derives its expected origin from this value;
-    # a relative URL must fail loudly here, not 403 every request forever.
-    environment = {
+def _complete_environment(tmp_path: Path) -> dict[str, str]:
+    """Every variable `AuthSettings.from_environment()` requires, all valid."""
+    return {
         "AI_SESSION_DATABASE_PATH": str(tmp_path / "sessions.sqlite3"),
         "AI_SESSION_ENCRYPTION_KEY": base64.urlsafe_b64encode(b"k" * 32).decode("ascii"),
         "OPENEMR_OAUTH_AUTHORIZE_URL": "https://openemr.test/authorize",
@@ -103,13 +103,94 @@ def test_ac1_environment_settings_require_an_absolute_success_redirect_uri(
         "OPENEMR_OAUTH_CLIENT_ID": "synthetic-client",
         "OPENEMR_OAUTH_CLIENT_SECRET": "synthetic-secret",
         "OPENEMR_OAUTH_REDIRECT_URI": "https://chat.test/oauth/callback",
-        "AI_SESSION_SUCCESS_REDIRECT_URI": "/",
+        "AI_SESSION_DASHBOARD_REDIRECT_URI": "https://emr.test/portal/home.php",
+        "AI_SESSION_CHAT_ORIGIN": "https://chat.test",
     }
+
+
+# --- TICK-051 AC1: the destination and the chat-origin allowlist are two settings ---
+
+
+@pytest.mark.parametrize(
+    "variable",
+    ["AI_SESSION_DASHBOARD_REDIRECT_URI", "AI_SESSION_CHAT_ORIGIN"],
+)
+def test_ac1_both_split_settings_must_be_absolute_urls(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, variable: str
+) -> None:
+    """TICK-051 AC1: the boot-time absolute-URL check applies to *both* halves of the
+    split, not only to the one that inherited the old code path.
+
+    A relative dashboard URL sends the patient to a path on the chat host instead of
+    the portal; a relative chat origin never matches a browser `Origin` header and 403s
+    every chat turn forever. Both have to fail here, at boot, naming the variable.
+    """
+    environment = _complete_environment(tmp_path)
+    environment[variable] = "/"
     for name, value in environment.items():
         monkeypatch.setenv(name, value)
-    with pytest.raises(
-        RuntimeError, match="AI_SESSION_SUCCESS_REDIRECT_URI must be an absolute URL"
-    ):
+
+    with pytest.raises(RuntimeError, match=f"{variable} must be an absolute URL"):
+        AuthSettings.from_environment()
+
+
+@pytest.mark.parametrize(
+    "variable",
+    ["AI_SESSION_DASHBOARD_REDIRECT_URI", "AI_SESSION_CHAT_ORIGIN"],
+)
+def test_ac1_neither_split_setting_can_be_changed_by_editing_the_other(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, variable: str
+) -> None:
+    """TICK-051 AC1: neither setting is derived from the other, so editing one leaves
+    the other exactly where it was.
+
+    This is the whole point of the split. While `POST /api/chat`'s Origin allowlist was
+    derived from the post-login redirect target, repointing the destination at the
+    dashboard -- which FR-31 requires -- would silently have made `emr.localhost` the
+    only origin allowed to call the chat API, 403-ing the chat page's own fetch on
+    every turn.
+    """
+    environment = _complete_environment(tmp_path)
+    environment[variable] = "https://moved.test/somewhere"
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+    configured = AuthSettings.from_environment()
+
+    unchanged = (
+        configured.chat_origin
+        if variable == "AI_SESSION_DASHBOARD_REDIRECT_URI"
+        else configured.dashboard_redirect_uri
+    )
+    assert (
+        unchanged
+        == _complete_environment(tmp_path)[
+            "AI_SESSION_CHAT_ORIGIN"
+            if variable == "AI_SESSION_DASHBOARD_REDIRECT_URI"
+            else "AI_SESSION_DASHBOARD_REDIRECT_URI"
+        ]
+    )
+
+
+def test_ac10_the_renamed_redirect_setting_fails_boot_rather_than_being_reused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """TICK-051 AC10: the redirect setting was renamed, not re-meaned.
+
+    The failure this guards is specific: a deployment that adds the new chat-origin
+    variable but keeps only the old `AI_SESSION_SUCCESS_REDIRECT_URI` -- still pointed
+    at the chat page. `from_environment` only fails on *missing* variables, so had the
+    old name been kept and quietly given a new meaning, that deployment would boot
+    cleanly with the patient still landing on the full-page chat and nothing anywhere
+    reporting it. Under the new name it cannot start at all.
+    """
+    environment = _complete_environment(tmp_path)
+    del environment["AI_SESSION_DASHBOARD_REDIRECT_URI"]
+    environment["AI_SESSION_SUCCESS_REDIRECT_URI"] = "https://chat.test/"
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv("AI_SESSION_DASHBOARD_REDIRECT_URI", raising=False)
+
+    with pytest.raises(RuntimeError, match="AI_SESSION_DASHBOARD_REDIRECT_URI"):
         AuthSettings.from_environment()
 
 
@@ -282,14 +363,27 @@ def test_ac1_forged_or_expired_id_token_fails_closed(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
-async def request(app: FastAPI, path: str) -> httpx.Response:
+async def request(
+    app: FastAPI,
+    path: str,
+    sec_fetch_dest: str | None = "document",
+    cookie: str | None = None,
+) -> httpx.Response:
+    """GET `path`, declaring the position the browser would declare.
+
+    `sec_fetch_dest` defaults to `document` because that is what a real top-level
+    navigation sends and what every pre-TICK-051 caller of this helper was implicitly
+    exercising; pass `None` to omit the header entirely.
+    """
+    headers = {} if sec_fetch_dest is None else {"sec-fetch-dest": sec_fetch_dest}
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
             base_url="https://chat.test",
             follow_redirects=False,
+            cookies={"ai_session": cookie} if cookie else None,
         ) as client:
-            return await client.get(path)
+            return await client.get(path, headers=headers)
 
 
 def test_ac1_launch_uses_pkce_state_nonce_and_proven_scopes(tmp_path: Path) -> None:
@@ -376,7 +470,8 @@ def test_ac3_callback_sets_only_secure_httponly_ai_session_cookie(tmp_path: Path
         )
         cookie = callback.headers["set-cookie"].lower()
         assert callback.status_code == 303
-        assert callback.headers["location"] == configured.success_redirect_uri
+        # TICK-051: the destination is the portal dashboard, not the chat page.
+        assert callback.headers["location"] == configured.dashboard_redirect_uri
         assert "httponly" in cookie
         assert "secure" in cookie
         # The chat page is embedded as a cross-site iframe (TICK-012): samesite=lax
@@ -558,3 +653,257 @@ def test_initialize_migrates_a_sessions_table_predating_patient_columns(
 
     assert store.access_token(handle, NOW) == "access"
     assert store.patient_uuid(handle, NOW) == "synthetic-patient-uuid"
+
+
+# --- TICK-051: the chat is a panel, never a landing page (FR-2/FR-31, ADR-8) --------
+#
+# Every test below drives `Sec-Fetch-Dest` directly rather than through a browser.
+# That header is the entire mechanism the destination rule is stated over, so an ASGI
+# request carrying it exercises exactly what a real navigation would; the live desktop
+# Chrome runs that prove browsers actually send it are recorded under
+# evidence/TICK-051/.
+
+
+async def _completed_authorization(
+    app: FastAPI,
+    service: AuthorizationService,
+    oauth: SyntheticOAuthClient,
+    sec_fetch_dest: str | None = "document",
+    extra_query: str = "",
+) -> httpx.Response:
+    """Drive a real launch/callback pair and return the callback's response."""
+    location = await service.launch_url(NOW)
+    query = parse_qs(urlparse(location).query)
+    oauth.nonce = query["nonce"][0]
+    return await request(
+        app,
+        f"/oauth/callback?code=synthetic-code&state={query['state'][0]}{extra_query}",
+        sec_fetch_dest=sec_fetch_dest,
+    )
+
+
+def _authorization_app(
+    tmp_path: Path,
+) -> tuple[AuthSettings, FastAPI, AuthorizationService, SyntheticOAuthClient]:
+    configured = settings(tmp_path)
+    store = SessionStore(configured.database_path, configured.encryption_key)
+    store.initialize()
+    oauth = SyntheticOAuthClient("placeholder")
+    service = AuthorizationService(configured, store, oauth)
+    return configured, create_app(configured, service, lambda: NOW), service, oauth
+
+
+def test_ac2_a_top_level_authorization_lands_on_the_portal_dashboard(tmp_path: Path) -> None:
+    """TICK-051 AC2: the reported bug. Entering credentials at top level -- which is
+    where TICK-045's breakout script puts the patient -- used to end on the standalone
+    chat page full-screen, with the portal gone. It must end on the dashboard.
+    """
+    configured, app, service, oauth = _authorization_app(tmp_path)
+
+    callback = asyncio.run(_completed_authorization(app, service, oauth))
+
+    assert callback.status_code == 303
+    assert callback.headers["location"] == configured.dashboard_redirect_uri
+    assert "ai_session" in callback.headers["set-cookie"]
+
+
+def test_ac5_an_in_panel_authorization_loads_the_chat_and_navigates_nothing(
+    tmp_path: Path,
+) -> None:
+    """TICK-051 AC5: the panel case is the one that must NOT be redirected. A 3xx here
+    would send the patient's chat panel to the dashboard and render the portal nested
+    inside its own chart.
+    """
+    _, app, service, oauth = _authorization_app(tmp_path)
+
+    callback = asyncio.run(_completed_authorization(app, service, oauth, sec_fetch_dest="iframe"))
+
+    assert callback.status_code == 200
+    assert "location" not in callback.headers
+    assert callback.text == CHAT_PAGE_HTML
+    # The cookie has to carry every attribute the redirect path sets, or the browser
+    # withholds it from the iframe's own fetch("/api/chat") and the panel is inert.
+    cookie = callback.headers["set-cookie"].lower()
+    assert "httponly" in cookie
+    assert "secure" in cookie
+    assert "samesite=none" in cookie
+
+
+@pytest.mark.parametrize("sec_fetch_dest", [None, "empty", "unknown-future-value"])
+def test_ac5_an_absent_or_unrecognised_position_is_treated_as_top_level(
+    tmp_path: Path, sec_fetch_dest: str | None
+) -> None:
+    """TICK-051 AC5: absent or unrecognised means top level, because the dashboard
+    strands nobody -- a patient sent there is one click from the chat, whereas the
+    full-page chat leaves them with the portal gone. Chrome (NFR-19/NFR-35) always
+    sends the header, so this path should not run in practice.
+    """
+    configured, app, service, oauth = _authorization_app(tmp_path)
+
+    callback = asyncio.run(
+        _completed_authorization(app, service, oauth, sec_fetch_dest=sec_fetch_dest)
+    )
+
+    assert callback.status_code == 303
+    assert callback.headers["location"] == configured.dashboard_redirect_uri
+
+
+def test_ac3_the_callback_discards_every_query_parameter_but_code_and_state(
+    tmp_path: Path,
+) -> None:
+    """TICK-051 AC3: FR-31 and ADR-8 forbid a return-URL parameter, so one appearing on
+    this URL must not be able to influence anything. `next` and `redirect` are the two
+    names a future change would reach for; `iss` (RFC 9207) is one a real provider
+    genuinely sends. All three are dropped, and the destination is unchanged.
+    """
+    configured, app, service, oauth = _authorization_app(tmp_path)
+
+    callback = asyncio.run(
+        _completed_authorization(
+            app,
+            service,
+            oauth,
+            extra_query=(
+                "&next=https://chat.test/&redirect=https://attacker.test/&iss=https://openemr.test"
+            ),
+        )
+    )
+
+    assert callback.status_code == 303
+    assert callback.headers["location"] == configured.dashboard_redirect_uri
+
+
+def test_ac3_an_unknown_parameter_is_discarded_not_rejected(tmp_path: Path) -> None:
+    """TICK-051 AC3: discarded, **not** rejected. Rejecting unknown parameters would
+    break the denial path below, which arrives carrying `error_description` and `iss`.
+    A session is still issued here -- the extra parameter changed nothing at all.
+    """
+    configured, app, service, oauth = _authorization_app(tmp_path)
+
+    callback = asyncio.run(
+        _completed_authorization(app, service, oauth, extra_query="&unexpected=whatever")
+    )
+
+    assert callback.status_code == 303
+    assert "ai_session" in callback.headers["set-cookie"]
+    assert database_row(configured.database_path, "SELECT count(*) FROM sessions") == (1,)
+
+
+def test_ac4_a_denied_authorization_returns_to_the_dashboard_without_a_session(
+    tmp_path: Path,
+) -> None:
+    """TICK-051 AC4: declining consent is an expected outcome, not a malformed request.
+
+    The pre-TICK-051 handler declared `code: str, state: str` as required query
+    parameters, so OpenEMR's own denial response -- which carries no `code` -- was
+    answered with a 422 validation error page on the chat host. The patient who simply
+    changed their mind was stranded on it.
+    """
+    configured, app, _, _ = _authorization_app(tmp_path)
+
+    denial = asyncio.run(
+        request(
+            app,
+            "/oauth/callback?error=access_denied"
+            "&error_description=The+user+denied+the+request&state=some-state",
+        )
+    )
+
+    assert denial.status_code == 303
+    assert denial.headers["location"] == configured.dashboard_redirect_uri
+    assert "set-cookie" not in denial.headers
+    assert database_row(configured.database_path, "SELECT count(*) FROM sessions") == (0,)
+
+
+def test_ac7_launch_short_circuits_a_live_session_to_the_chat_inside_the_panel(
+    tmp_path: Path,
+) -> None:
+    """TICK-051 AC7: `/oauth/launch` is the panel's `src`, so it is hit every time the
+    patient opens the panel. With a valid `ai_session` it must skip the authorization
+    round trip entirely rather than re-running the whole OAuth dance.
+    """
+    configured, app, _, _ = _authorization_app(tmp_path)
+    store = SessionStore(configured.database_path, configured.encryption_key)
+    handle = store.create_session(
+        OAuthTokens("synthetic-access", "synthetic-refresh", "nonce"),
+        NOW,
+        configured.session_ttl,
+    )
+
+    launch = asyncio.run(request(app, "/oauth/launch", sec_fetch_dest="iframe", cookie=handle))
+
+    assert launch.status_code == 200
+    assert launch.text == CHAT_PAGE_HTML
+
+
+def test_ac7_a_live_session_at_top_level_gets_the_dashboard_not_the_full_page_chat(
+    tmp_path: Path,
+) -> None:
+    """TICK-051 AC7: the short-circuit obeys the same rule as the callback and is not
+    an exception to it. Serving the standalone chat here would reintroduce exactly the
+    bug this ticket exists to fix, by a second route.
+    """
+    configured, app, _, _ = _authorization_app(tmp_path)
+    store = SessionStore(configured.database_path, configured.encryption_key)
+    handle = store.create_session(
+        OAuthTokens("synthetic-access", "synthetic-refresh", "nonce"),
+        NOW,
+        configured.session_ttl,
+    )
+
+    launch = asyncio.run(request(app, "/oauth/launch", cookie=handle))
+
+    assert launch.status_code == 303
+    assert launch.headers["location"] == configured.dashboard_redirect_uri
+
+
+def test_ac7_launch_still_authorizes_when_the_session_is_absent_or_expired(
+    tmp_path: Path,
+) -> None:
+    """TICK-051 AC7: the short-circuit is a skip, not a replacement. Without a valid
+    session -- none at all, or one that has expired, which is TICK-045's
+    re-authentication path -- the full PKCE launch still runs.
+    """
+    configured, app, _, _ = _authorization_app(tmp_path)
+    store = SessionStore(configured.database_path, configured.encryption_key)
+    expired = store.create_session(
+        OAuthTokens("synthetic-access", "synthetic-refresh", "nonce"),
+        NOW - timedelta(hours=1),
+        timedelta(minutes=30),
+    )
+
+    no_cookie = asyncio.run(request(app, "/oauth/launch", sec_fetch_dest="iframe"))
+    stale = asyncio.run(request(app, "/oauth/launch", sec_fetch_dest="iframe", cookie=expired))
+
+    for response in (no_cookie, stale):
+        assert response.status_code == 302
+        assert response.headers["location"].startswith(configured.authorize_url)
+
+
+def test_ac4_a_denial_inside_the_panel_stays_in_the_panel(tmp_path: Path) -> None:
+    """TICK-051 AC4, at the position AC4 does not name.
+
+    AC4 is written from the top-level case, which is the only one where the patient
+    actually goes anywhere. Applied in the panel, "redirect to the dashboard" would
+    render the portal nested inside its own chart -- the failure ADR-8's narrative
+    calls out. So a denial resolves through the same `_panel_or_dashboard` every other
+    outcome does: the panel keeps the chat, and no session is issued.
+
+    The patient is not stranded either way. They are still on the dashboard with the
+    panel open, and a session-less panel is exactly the state TICK-046's fallback
+    banner exists to explain.
+    """
+    configured, app, _, _ = _authorization_app(tmp_path)
+
+    denial = asyncio.run(
+        request(
+            app,
+            "/oauth/callback?error=access_denied&state=some-state",
+            sec_fetch_dest="iframe",
+        )
+    )
+
+    assert denial.status_code == 200
+    assert "location" not in denial.headers
+    assert "set-cookie" not in denial.headers
+    assert database_row(configured.database_path, "SELECT count(*) FROM sessions") == (0,)

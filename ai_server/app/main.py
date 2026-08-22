@@ -76,13 +76,49 @@ def _chat_origin(settings: AuthSettings) -> str:
     """The one origin the chat page is served from, and so the only origin a chat turn
     may come from.
 
-    Derived from `success_redirect_uri` because that is the URL /oauth/callback sends
-    the browser to, so it is the page doing the fetching. TICK-051 splits that setting
-    into a separate chat-origin value; this function is the single place both
-    `chat_turn` and `logout` read it, so that split repoints both at once instead of
-    leaving one behind.
+    Reads `chat_origin`, which since TICK-051 is a setting of its own rather than the
+    post-login redirect target it used to be derived from. That derivation was the bug:
+    pointing the destination at the portal dashboard -- which FR-31 requires -- would
+    also have made the dashboard's origin the only one allowed to call
+    `POST /api/chat`, 403-ing the chat page's own `fetch()` on every turn.
+
+    This function stays the single place both `chat_turn` and `logout` read the value,
+    so there is one definition of "the chat's origin" rather than two that can drift.
     """
-    return _origin_of(settings.success_redirect_uri)
+    return _origin_of(settings.chat_origin)
+
+
+# The only query parameters `/oauth/callback` acts on. Stated here, and applied in the
+# handler, rather than left to FastAPI's signature binding: FR-31 and ADR-8 forbid any
+# `next=`/`redirect=` return-URL parameter, and an allowlist that is visible in the
+# code is what stops a later change from quietly honouring one. Everything else --
+# RFC 9207's `iss`, OpenEMR's `error_description`, anything a provider adds later --
+# is discarded, not rejected: rejecting unknown parameters would break the
+# authorization denial path, which is an expected outcome and not a malformed request.
+_CALLBACK_HONOURED_PARAMS = frozenset({"code", "state"})
+
+
+def _is_top_level(request: Request) -> bool:
+    """Whether this request is a top-level navigation rather than one into the panel.
+
+    `Sec-Fetch-Dest` is the whole mechanism (ADR-8): browsers send `document` for a
+    top-level navigation and `iframe` for a navigation into a frame, so the server can
+    resolve its own position with no client-side interstitial and, critically, without
+    a return-URL parameter that FR-31 forbids.
+
+    Position is what the rule is stated over, deliberately. "Did the patient type a
+    password?" is unknowable here -- a live OAuth2 provider session completes the whole
+    exchange with no prompt at all, whether the flow is running at top level or in the
+    panel -- but position is knowable, and it is what actually decides whether landing
+    on a full-page chat would strand them.
+
+    Absent or unrecognised values are treated as top level, because the dashboard
+    strands nobody: a patient sent there is one click from the chat, whereas the
+    full-page chat leaves them with the portal gone. Chrome, the only supported target
+    (NFR-19, NFR-35), always sends the header, so this default should not run in
+    practice.
+    """
+    return request.headers.get("sec-fetch-dest", "").strip().lower() != "iframe"
 
 
 def _logout_origins(settings: AuthSettings) -> tuple[str, ...]:
@@ -106,6 +142,52 @@ def _logout_origins(settings: AuthSettings) -> tuple[str, ...]:
     if settings.portal_origin is not None:
         origins.append(_origin_of(settings.portal_origin))
     return tuple(origins)
+
+
+def _panel_or_dashboard(settings: AuthSettings, request: Request) -> Response:
+    """Answer `request` where the patient actually is: the chat in the panel, the
+    portal dashboard at top level.
+
+    The one place the FR-31/ADR-8 invariant is expressed, shared by `/oauth/callback`
+    and `/oauth/launch`'s short-circuit so the short-circuit cannot become an exception
+    to it -- a live session reached at top level must never be answered with the
+    full-page chat.
+
+    Note what this does *not* take: any parameter, from the query string or anywhere
+    else. The destination is unconditional. It does not vary with the portal page the
+    patient was on when their session ended, and no `next=`/`redirect=` value can be
+    introduced later without changing this signature.
+
+    The in-panel answer serves the chat page inline rather than redirecting to it. A
+    redirect would work, but serving it here keeps the panel on one navigation and
+    leaves `GET /` -- the chat's own URL -- as the only route that hands out the
+    standalone page.
+    """
+    if _is_top_level(request):
+        return RedirectResponse(settings.dashboard_redirect_uri, status_code=303)
+    return HTMLResponse(CHAT_PAGE_HTML)
+
+
+def _set_session_cookie(response: Response, settings: AuthSettings, handle: str) -> None:
+    """Attach the opaque AI-session cookie, with the attributes the iframe requires.
+
+    Every attribute is load-bearing and has to be repeated wherever this cookie is set
+    or cleared (see `/api/logout`), or the browser treats it as a different cookie.
+    """
+    response.set_cookie(
+        settings.cookie_name,
+        handle,
+        httponly=True,
+        secure=True,
+        # The chat page is embedded as a cross-site iframe inside the OpenEMR portal
+        # (TICK-012): browsers compute SameSite against the top-level document's site,
+        # so Lax would silently withhold this cookie from the iframe's own
+        # fetch("/api/chat") call. `secure=True` is required for None. This alone
+        # permits cross-site delivery, so chat_turn() enforces an Origin check --
+        # against `chat_origin`, not the redirect target -- as the actual CSRF defense.
+        samesite="none",
+        path="/",
+    )
 
 
 async def _sweep_expired_sessions(
@@ -403,33 +485,69 @@ def create_app(
         return response
 
     @server.get("/oauth/launch")
-    async def oauth_launch() -> RedirectResponse:
-        """Start a stateful PKCE authorization-code launch."""
-        if configured_authorization is None:
+    async def oauth_launch(request: Request) -> Response:
+        """Start a stateful PKCE authorization-code launch, or skip it entirely when the
+        patient already has one.
+
+        This is the patient-facing entry point, not a development affordance: it is the
+        portal panel's `src` (`PortalChatController::DEFAULT_CHAT_LAUNCH_URL`, overridden
+        by `AEAI_PORTAL_CHAT_URL`), so it is hit every time the patient opens the panel.
+        Re-running the whole authorization round trip for a patient who is already
+        signed in is pure latency, and worse: TICK-045's breakout script sends the login
+        page to top level, so a needless launch that OpenEMR decides to prompt on throws
+        the patient off the dashboard they are standing on.
+
+        The short-circuit resolves its destination through the same `_panel_or_dashboard`
+        the callback uses, deliberately. It is not an exception to FR-31: a live session
+        reached at top level gets the dashboard, never the full-page chat (ADR-8).
+        """
+        if (
+            configured_authorization is None
+            or configured_settings is None
+            or configured_session_store is None
+        ):
             raise AuthError("authorization service is unavailable", 503)
+        handle = request.cookies.get(configured_settings.cookie_name)
+        if handle is not None and await asyncio.to_thread(
+            configured_session_store.active_session, handle, clock()
+        ):
+            return _panel_or_dashboard(configured_settings, request)
         return RedirectResponse(await configured_authorization.launch_url(clock()), status_code=302)
 
     @server.get("/oauth/callback")
-    async def oauth_callback(code: str, state: str) -> RedirectResponse:
-        """Exchange one authorization code and issue only an opaque AI-session cookie."""
+    async def oauth_callback(request: Request) -> Response:
+        """Exchange one authorization code and issue only an opaque AI-session cookie.
+
+        Takes the raw query string rather than declaring `code` and `state` as typed
+        parameters. FastAPI's signature binding would discard the rest too, but only as
+        a side effect of what it happens to bind -- and it would answer a denial, which
+        carries no `code`, with a 422 (FR-31, AC3/AC4). The allowlist below is stated in
+        the handler so that it is a decision rather than an accident.
+        """
         if configured_authorization is None or configured_settings is None:
             raise AuthError("authorization service is unavailable", 503)
+        # Everything outside the allowlist is dropped here and never referenced again:
+        # a `next=`/`redirect=` parameter added to this URL by anyone cannot reach the
+        # destination, which `_panel_or_dashboard` derives from position alone.
+        honoured = {
+            name: value
+            for name, value in request.query_params.items()
+            if name in _CALLBACK_HONOURED_PARAMS
+        }
+        # Read outside the allowlist because it selects an outcome rather than
+        # influencing the destination: a denial is answered at the same place a success
+        # at this position would be, just without a session. OpenEMR's consent screen
+        # (scope-authorize.html.twig) sends `?error=access_denied&error_description=
+        # ...&state=...` when the patient declines, which is an ordinary thing for a
+        # patient to do -- not a malformed request to 4xx.
+        if request.query_params.get("error"):
+            return _panel_or_dashboard(configured_settings, request)
+        code, state = honoured.get("code"), honoured.get("state")
+        if code is None or state is None:
+            raise AuthError("authorization response was missing code or state", 400)
         handle = await configured_authorization.callback(code, state, clock())
-        response = RedirectResponse(configured_settings.success_redirect_uri, status_code=303)
-        response.set_cookie(
-            configured_settings.cookie_name,
-            handle,
-            httponly=True,
-            secure=True,
-            # The chat page is embedded as a cross-site iframe inside the OpenEMR
-            # portal (TICK-012): browsers compute SameSite against the top-level
-            # document's site, so Lax would silently withhold this cookie from the
-            # iframe's own fetch("/api/chat") call. `secure=True` is required for
-            # None. This alone permits cross-site delivery, so chat_turn() below
-            # enforces an Origin check as the actual CSRF defense.
-            samesite="none",
-            path="/",
-        )
+        response = _panel_or_dashboard(configured_settings, request)
+        _set_session_cookie(response, configured_settings, handle)
         return response
 
     return server

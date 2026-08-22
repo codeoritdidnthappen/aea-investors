@@ -130,7 +130,23 @@ services:
       OPENEMR_OAUTH_CLIENT_ID: ${OPENEMR_OAUTH_CLIENT_ID:?set OPENEMR_OAUTH_CLIENT_ID in deploy/local/.env}
       OPENEMR_OAUTH_CLIENT_SECRET: ${OPENEMR_OAUTH_CLIENT_SECRET:?set OPENEMR_OAUTH_CLIENT_SECRET in deploy/local/.env}
       OPENEMR_OAUTH_REDIRECT_URI: ${OPENEMR_OAUTH_REDIRECT_URI:?set OPENEMR_OAUTH_REDIRECT_URI in deploy/local/.env}
-      AI_SESSION_SUCCESS_REDIRECT_URI: ${AI_SESSION_SUCCESS_REDIRECT_URI:?set AI_SESSION_SUCCESS_REDIRECT_URI in deploy/local/.env}
+      # TICK-051 split the single AI_SESSION_SUCCESS_REDIRECT_URI into the two
+      # settings below. They are **not** interchangeable and neither may be derived
+      # from the other: the first decides where a patient lands after signing in, the
+      # second decides which Origin may call POST /api/chat and is the only CSRF
+      # defense on that route (the AI session cookie is SameSite=None for the
+      # cross-site portal iframe). Pointing one at the other's value either strands
+      # the patient on the full-page chat or 403s every chat turn.
+      #
+      # Both carry a `:?` required-variable guard rather than a `:-` default, and both
+      # are new names rather than the old one re-meaned, so a deployment still holding
+      # only AI_SESSION_SUCCESS_REDIRECT_URI fails to start here instead of booting
+      # cleanly with the bug still in place.
+      #
+      # Where a top-level authorization lands: the portal dashboard (FR-31, ADR-8).
+      AI_SESSION_DASHBOARD_REDIRECT_URI: ${AI_SESSION_DASHBOARD_REDIRECT_URI:?set AI_SESSION_DASHBOARD_REDIRECT_URI in deploy/local/.env}
+      # The origin the chat page is served from, and the only origin /api/chat accepts.
+      AI_SESSION_CHAT_ORIGIN: ${AI_SESSION_CHAT_ORIGIN:?set AI_SESSION_CHAT_ORIGIN in deploy/local/.env}
       # The portal origin allowed to end an AI session at /api/logout (TICK-055).
       # Optional: unset, logout stays chat-origin-only and portal sign-out cannot
       # reach it. Never accepted by /api/chat.
