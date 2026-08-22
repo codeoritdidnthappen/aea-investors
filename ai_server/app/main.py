@@ -8,6 +8,11 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 
+from ai_server.app.address_chat import (
+    AddressChatService,
+    address_update_mode,
+    unavailable_address_service,
+)
 from ai_server.app.auth import (
     AuthError,
     AuthorizationService,
@@ -74,6 +79,7 @@ def create_app(
     health_service: HealthService | None = None,
     chat_service: ChatService | None = None,
     onboarding_service: OnboardingChatService | None = None,
+    address_service: AddressChatService | None = None,
 ) -> FastAPI:
     """Create the AI server without exposing delegated credentials to the browser."""
 
@@ -82,6 +88,7 @@ def create_app(
     configured_health_service = health_service
     configured_chat_service = chat_service
     configured_onboarding_service = onboarding_service
+    configured_address_service = address_service
     configured_session_store: SessionStore | None = None
     owned_http_clients: list[httpx.AsyncClient] = []
 
@@ -93,6 +100,7 @@ def create_app(
             configured_health_service, \
             configured_chat_service, \
             configured_onboarding_service, \
+            configured_address_service, \
             configured_session_store
         if configured_settings is None:
             configured_settings = AuthSettings.from_environment()
@@ -152,6 +160,13 @@ def create_app(
             configured_onboarding_service = _build_onboarding_service(
                 onboarding_http_client, store, clock
             )
+        if configured_address_service is None:
+            # Same untrusted-self-signed-cert reason as onboarding_http_client above:
+            # the address write hits configured_settings.issuer's host directly through
+            # the same Portal API route, and never calls an external model (TICK-050).
+            address_http_client = httpx.AsyncClient(timeout=30.0, verify=False)
+            owned_http_clients.append(address_http_client)
+            configured_address_service = _build_address_service(address_http_client, store, clock)
         yield
         for owned_client in owned_http_clients:
             await owned_client.aclose()
@@ -195,13 +210,27 @@ def create_app(
             raise AuthError("an active AI session is required", 401)
         assert handle is not None  # narrows for the type checker; `valid` already required it
         cursor = await asyncio.to_thread(configured_session_store.load_cursor, handle, now)
+        address = configured_address_service or unavailable_address_service(
+            configured_session_store, clock
+        )
         if onboarding_mode(cursor, turn.message):
+            # Guided onboarding wins the turn and collects the address itself, so any
+            # half-finished address update is dropped rather than left to resume later
+            # (TICK-050 AC8). It has written nothing, so there is nothing to undo.
+            address.discard(handle)
             onboarding = configured_onboarding_service or unavailable_onboarding_service(
                 configured_session_store, clock
             )
             return StreamingResponse(
                 onboarding.stream_reply(handle, turn.message, turn.image_base64),
                 media_type="text/plain",
+            )
+        # Ahead of the Groq-backed service below and entirely local, exactly as
+        # onboarding is: an address is patient information and must never be sent to an
+        # external LLM (NFR-2, TICK-050).
+        if address_update_mode(cursor, address.has_pending_update(handle), turn.message):
+            return StreamingResponse(
+                address.stream_reply(handle, turn.message), media_type="text/plain"
             )
         service = configured_chat_service or unavailable_chat_service()
         # Retrieved for this call only (TICK-034 AC1): never persisted, logged, or
@@ -347,6 +376,28 @@ def _build_onboarding_service(
     # service into the chat turn for the first time).
     ocr = OcrService(SubprocessTesseractEngine())
     return OnboardingChatService(flow=flow, session_store=session_store, ocr=ocr, clock=clock)
+
+
+def _build_address_service(
+    client: httpx.AsyncClient, session_store: SessionStore, clock: Callable[[], datetime]
+) -> AddressChatService:
+    """Build the real OpenEMR-backed address-update service, or a fixed-unavailable
+    fallback -- mirrors `_build_onboarding_service`'s tolerance of absent configuration,
+    so a demo missing the Portal API base URL degrades this flow instead of failing
+    startup.
+
+    Reuses the same `OpenEmrDemographicsAdapter` type onboarding writes through
+    (TICK-042/TICK-049), so there is one demographics write path, not two.
+    """
+    try:
+        portal_settings = OpenEmrPortalSettings.from_environment()
+    except OpenEmrConfigurationError:
+        return unavailable_address_service(session_store, clock)
+    return AddressChatService(
+        demographics=OpenEmrDemographicsAdapter(portal_settings, client),
+        session_store=session_store,
+        clock=clock,
+    )
 
 
 app = create_app()

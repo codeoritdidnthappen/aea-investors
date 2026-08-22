@@ -509,6 +509,12 @@ CHAT_PAGE_HTML = """<!doctype html>
   }
   #chat-transcript li[data-role="user"] { align-self: flex-end; }
   #chat-transcript li .role-label { display: block; font-size: 0.75rem; font-weight: 600; }
+  /* A reply is inserted with textContent, so HTML would otherwise collapse its line
+     breaks into spaces. The address review (TICK-050) puts each component of a parsed
+     address on its own labelled line, and that structure has to survive to the screen
+     to be readable at all (NFR-19). pre-wrap preserves the newlines while still
+     wrapping long lines normally; no existing single-line reply changes appearance. */
+  #chat-transcript li .message-body { white-space: pre-wrap; }
   #chat-fallback {
     display: none;
     border: 2px solid var(--error-text);
