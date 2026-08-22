@@ -10,7 +10,7 @@ labels: [portal, chat, auth, bug]
 source: [FR-2, NFR-19]
 status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/93
-builder_commit: 9cbdb74
+builder_commit: 1dca917
 ---
 ## Context
 
