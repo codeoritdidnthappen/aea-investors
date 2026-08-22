@@ -17,7 +17,6 @@ from typing import AsyncIterator, Callable
 from pydantic import BaseModel, Field
 
 from ai_server.llm.groq import (
-    UNAVAILABLE_RESPONSE,
     AuthoritativeTool,
     AuthoritativeToolResult,
     GroqWorkflow,
@@ -92,6 +91,22 @@ class ChatTurnRequest(BaseModel):
 
 
 NO_ACTION_SUMMARY = "No scheduling action is available yet in this demo."
+
+# Groq is not configured at all, so the assistant cannot handle *any* request this
+# deployment receives -- a deployment fault, distinct from `PLANNING_FAILED_RESPONSE`'s
+# per-turn planning fault, and deliberately worded as its own string (TICK-048). It
+# reports that the assistant is unavailable rather than that scheduling failed, since
+# the turn may have been about anything. FR-19 still wants a route to OpenEMR's own
+# scheduling UI from this path, so one is offered -- but only for the appointment case
+# it actually covers, and named as the patient's own portal menu (the same place the
+# client-side fallback panel below points at), never the staff-only native scheduling
+# screen a portal user cannot open.
+ASSISTANT_UNAVAILABLE_RESPONSE = (
+    "The AI assistant is not available right now, so it could not handle your request. "
+    "Please try again later, or contact the clinic directly. To book or change an "
+    "appointment in the meantime, use the appointment scheduling option in your "
+    "OpenEMR portal menu."
+)
 
 
 class NoActionTool(AuthoritativeTool):
@@ -365,14 +380,14 @@ class ChatService:
     async def stream_reply(
         self, message: str, access_token: str | None = None, patient_id: str | None = None
     ) -> AsyncIterator[str]:
-        """Yield the fixed unavailable message, or the workflow's streamed reply.
+        """Yield the assistant-unavailable message, or the workflow's streamed reply.
 
         `access_token`/`patient_id` are this turn's delegated OpenEMR credentials
         (TICK-034 AC1); they are used only to build this turn's payload and tool, and
         are held nowhere once this call returns.
         """
         if self.workflow is None:
-            yield UNAVAILABLE_RESPONSE
+            yield ASSISTANT_UNAVAILABLE_RESPONSE
             return
         now = self.clock()
         payload = await self._payload(message, access_token, patient_id, now)

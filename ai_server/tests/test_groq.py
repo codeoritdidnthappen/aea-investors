@@ -5,11 +5,12 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import date
 
+import httpx
 import pytest
 
 from ai_server.llm.groq import (
     GROQ_MODEL,
-    UNAVAILABLE_RESPONSE,
+    PLANNING_FAILED_RESPONSE,
     AuthoritativeToolResult,
     GroqConfigurationError,
     GroqSettings,
@@ -20,13 +21,13 @@ from ai_server.llm.groq import (
 from ai_server.privacy.gate import OutboundPayload, PrivacyGate
 
 
-def payload() -> OutboundPayload:
+def payload(user_message: str = "Please find an appointment.") -> OutboundPayload:
     return OutboundPayload.model_validate(
         {
             "model": GROQ_MODEL,
             "messages": [
                 {"role": "system", "content": "Plan an anonymous scheduling action."},
-                {"role": "user", "content": "Please find an appointment."},
+                {"role": "user", "content": user_message},
             ],
             "scheduling_context": {
                 "current_datetime": "2026-08-18T14:30:00-05:00",
@@ -70,6 +71,26 @@ class CapturingGroqClient:
 
     def stream(self, request: OutboundPayload) -> AsyncIterator[str]:
         return self._stream(request)
+
+
+@dataclass
+class RaisingGroqClient:
+    """A planning client whose `complete` raises one specific transport error.
+
+    `CapturingGroqClient` covers `GroqUnavailableError` (`fail_planning`) and
+    `ValidationError` (an unparseable plan); this covers the third caught planning
+    failure, a raw `httpx.HTTPError` escaping the client (TICK-048).
+    """
+
+    error: Exception
+
+    async def complete(self, request: OutboundPayload) -> str:
+        del request
+        raise self.error
+
+    def stream(self, request: OutboundPayload) -> AsyncIterator[str]:
+        del request
+        raise AssertionError("stream must never run after planning fails")
 
 
 @dataclass
@@ -154,7 +175,7 @@ def test_ticket_010_invalid_plan_never_calls_tool_or_streams() -> None:
     tool = CapturingTool(calls=[])
 
     assert collect(GroqWorkflow(PrivacyGate.create(), client), payload(), tool) == [
-        UNAVAILABLE_RESPONSE
+        PLANNING_FAILED_RESPONSE
     ]
     assert tool.calls == []
     assert len(client.calls) == 1
@@ -165,9 +186,44 @@ def test_ticket_010_model_failure_makes_no_appointment_claim() -> None:
     tool = CapturingTool(calls=[])
 
     assert collect(GroqWorkflow(PrivacyGate.create(), client), payload(), tool) == [
-        UNAVAILABLE_RESPONSE
+        PLANNING_FAILED_RESPONSE
     ]
     assert tool.calls == []
+
+
+@pytest.mark.parametrize(
+    "client",
+    [
+        pytest.param(CapturingGroqClient(fail_planning=True), id="groq_unavailable_error"),
+        pytest.param(CapturingGroqClient('{"intent":"invented"}'), id="validation_error"),
+        pytest.param(RaisingGroqClient(httpx.ConnectError("no route to Groq")), id="http_error"),
+    ],
+)
+def test_ticket_048_planning_failure_never_blames_scheduling(client: object) -> None:
+    """Every planning failure yields the neutral per-turn message, even when the turn
+    was not about scheduling at all (the reported case: an address change)."""
+    tool = CapturingTool(calls=[])
+
+    chunks = collect(
+        GroqWorkflow(PrivacyGate.create(), client),  # type: ignore[arg-type]
+        payload("I need to change my address."),
+        tool,
+    )
+
+    assert chunks == [PLANNING_FAILED_RESPONSE]
+    assert tool.calls == []
+
+
+def test_ticket_048_planning_failure_message_is_neutral_and_actionable() -> None:
+    text = PLANNING_FAILED_RESPONSE.lower()
+
+    # It never claims scheduling specifically, and never sends a patient portal user
+    # to OpenEMR's staff-only native scheduling screen.
+    assert "scheduling" not in text
+    assert "openemr" not in text
+    # It says the assistant could not handle the request, and what to do next.
+    assert "could not work out how to handle that request" in text
+    assert "contact the clinic" in text
 
 
 def test_ticket_010_privacy_rejection_never_calls_groq() -> None:
