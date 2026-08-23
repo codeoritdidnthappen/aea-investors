@@ -1,0 +1,84 @@
+backend: ollama-q4  model: llama3.1:8b-instruct-q4_K_M  cases: 44
+prompt: acceptance-tool-call-v1
+
+-- write bar (NFR-36: zero wrong, across the whole corpus) --
+wrong writes:     0
+correct writes:   20
+refused writes:   4  (proposed, and the validator held)
+WRITE_BAR_MET: no model-produced value reached the record wrongly.
+
+-- understanding bar (D15: imperfect is acceptable, target 80%) --
+understood:       38/44 (86.4%)
+UNDERSTANDING_BAR_MET: the model reads the corpus well enough to be useful.
+
+misread turns (softer bar -- a retry, not a record):
+  [address-partial-no-city-state-zip] expected reply, got no admissible call (update_address.arguments.city: Field required)
+  [demographics-dob-in-the-future] expected reply, got update_demographics
+  [assessment-accommodations-none] expected record_assessment_answer, got reply
+  [assessment-answer-to-a-different-question] expected reply, got update_demographics
+  [cancel-then-rebook] expected cancel_appointment, got update_demographics
+  [document-read-upload] expected extract_document_fields, got no admissible call (extract_document_fields.arguments.upload_id: String should match pattern '^[A-Za-z0-9_-]{16,64}$')
+
+==============================================================================
+
+backend: ollama-q5  model: llama3.1:8b-instruct-q5_K_M  cases: 44
+prompt: acceptance-tool-call-v1
+
+-- write bar (NFR-36: zero wrong, across the whole corpus) --
+wrong writes:     2
+correct writes:   18
+refused writes:   3  (proposed, and the validator held)
+WRITE_BAR_FAILED: a model-produced value reached the record wrongly. Under NFR-36 this blocks release; it is not traded off against the understanding score below.
+
+  WRONG WRITE [address-correction-mid-sentence] via update_address
+    input:    'My new address is 30 Pine Road — sorry, 33 Pine Road — Brick, NJ 08724.'
+    field:    street1
+      expected: '33 Pine Road'
+      produced: '30 Pine Road'
+    why it is in the corpus: A correction mid-sentence. The superseded value is present in the text and must not be the one written. A parser reading left to right takes 30; a reader takes 33.
+
+  WRONG WRITE [cancel-then-rebook] via update_address
+    input:    'Can you move my Thursday appointment to the week after?'
+    asked:    'You have Thursday 17 September at 11:00 am, and Monday 5 October at 3:00 pm.'
+    field:    city
+      expected: '(nothing should be written)'
+      produced: 'Anytown'
+    field:    state
+      expected: '(nothing should be written)'
+      produced: 'CA'
+    field:    street1
+      expected: '(nothing should be written)'
+      produced: '12 Oak Street'
+    field:    zip_code
+      expected: '(nothing should be written)'
+      produced: '12345'
+    why it is in the corpus: A reschedule, which this surface deliberately does not publish (TICK-020: no OpenEMR service method exists). It has to arrive as a cancel and a separate book. Outside the CI subset because `find_slots` first is a defensible reading too.
+
+
+-- understanding bar (D15: imperfect is acceptable, target 80%) --
+understood:       37/44 (84.1%)
+UNDERSTANDING_BAR_MET: the model reads the corpus well enough to be useful.
+
+misread turns (softer bar -- a retry, not a record):
+  [address-partial-no-city-state-zip] expected reply, got no admissible call (update_address.arguments.city: Field required)
+  [demographics-dob-in-the-future] expected reply, got update_demographics
+  [assessment-help-type-unsure] expected record_assessment_answer, got reply
+  [assessment-accommodations-none] expected record_assessment_answer, got reply
+  [assessment-answer-to-a-different-question] expected reply, got update_demographics
+  [cancel-then-rebook] expected cancel_appointment, got update_address
+  [document-read-upload] expected extract_document_fields, got no admissible call (extract_document_fields.arguments.upload_id: String should match pattern '^[A-Za-z0-9_-]{16,64}$')
+
+==============================================================================
+
+-- backend divergence (D7): ollama-q4 vs ollama-q5 --
+agreement: 41/44 (93.2%)
+BACKENDS_DIVERGE: the same model under two runtimes behaved differently. This is expected (GGUF Q4 versus fp16/AWQ) and is reported rather than averaged away.
+  [address-correction-mid-sentence] 'My new address is 30 Pine Road — sorry, 33 Pine Road — Brick, NJ 08724.'
+    ollama-q4  tool=update_address write=correct
+    ollama-q5  tool=update_address write=wrong
+  [assessment-help-type-unsure] "Honestly I don't really know yet, that's part of why I'm here."
+    ollama-q4  tool=record_assessment_answer write=correct
+    ollama-q5  tool=reply write=none
+  [cancel-then-rebook] 'Can you move my Thursday appointment to the week after?'
+    ollama-q4  tool=update_demographics write=refused
+    ollama-q5  tool=update_address write=wrong

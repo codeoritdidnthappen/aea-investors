@@ -1,0 +1,62 @@
+backend: ollama  model: qwen2.5:7b-instruct-q4_K_M  cases: 44
+prompt: acceptance-tool-call-v1
+
+-- write bar (NFR-36: zero wrong, across the whole corpus) --
+wrong writes:     4
+correct writes:   17
+refused writes:   2  (proposed, and the validator held)
+WRITE_BAR_FAILED: a model-produced value reached the record wrongly. Under NFR-36 this blocks release; it is not traded off against the understanding score below.
+
+  WRONG WRITE [address-lead-in-please-with-unit] via update_address
+    input:    'Please change my address to 14 Sycamore Lane, Apt 3, Lakewood, NJ 08701.'
+    field:    street1
+      expected: '14 Sycamore Lane'
+      produced: '14 Sycamore Lane, Apt 3'
+    field:    street2
+      expected: 'Apt 3'
+      produced: '(absent)'
+    why it is in the corpus: A lead-in phrase and a unit line in one sentence. The unit must land in street2, not be swallowed into street1 or dropped.
+
+  WRONG WRITE [demographics-dob-numeric-ambiguous] via update_demographics
+    input:    'My date of birth is 04/03/1985.'
+    field:    date_of_birth
+      expected: '1985-04-03'
+      produced: '1985-03-04'
+    why it is in the corpus: Genuinely ambiguous: 3 April to a US reader, 4 March to most of the rest of the world. The clinic is in New Jersey so the US reading is expected. Deliberately outside the CI subset — it measures a real risk rather than a settled behaviour, and a model that asks instead of guessing is arguably behaving better than the expectation.
+
+  WRONG WRITE [assessment-accommodations-none] via record_assessment_answer
+    input:    'No, nothing like that.'
+    asked:    'Do you need any support at your visit?'
+    field:    answer
+      expected: 'none'
+      produced: 'not_sure_yet'
+    field:    field
+      expected: 'accommodations'
+      produced: 'help_type'
+    why it is in the corpus: "No" is an answer to record, not a refusal to answer. The distinction from `assessment-accommodations-refusal` below is the point.
+
+  WRONG WRITE [assessment-answer-to-a-different-question] via record_assessment_answer
+    input:    "Actually my phone number changed, it's now +15555550199."
+    asked:    'Do you need any support at your visit?'
+    field:    answer
+      expected: '(nothing should be written)'
+      produced: 'phone +15555550199'
+    field:    field
+      expected: '(nothing should be written)'
+      produced: 'preferred_contact'
+    why it is in the corpus: An answer to a different question, with a live write on the other side of it. The failure to avoid is a phone number recorded as an accommodation because a question was pending.
+
+
+-- understanding bar (D15: imperfect is acceptable, target 80%) --
+understood:       36/44 (81.8%)
+UNDERSTANDING_BAR_MET: the model reads the corpus well enough to be useful.
+
+misread turns (softer bar -- a retry, not a record):
+  [address-partial-no-city-state-zip] expected reply, got no admissible call (update_address.arguments.city: Field required)
+  [demographics-name-in-a-sentence] expected update_demographics, got no admissible call (record_assessment_answer.arguments.field: Input should be 'preferred_contact', 'help_type', 'visit_preference' or 'accommodations')
+  [demographics-dob-in-the-future] expected reply, got update_demographics
+  [assessment-answer-to-a-different-question] expected reply, got record_assessment_answer
+  [assessment-question-instead-of-answer] expected ask_general_knowledge, got reply
+  [cancel-then-rebook] expected cancel_appointment, got reply
+  [document-read-upload] expected extract_document_fields, got no admissible call (extract_document_fields.arguments.upload_id: String should match pattern '^[A-Za-z0-9_-]{16,64}$')
+  [general-knowledge-carrying-patient-context] expected ask_general_knowledge, got reply

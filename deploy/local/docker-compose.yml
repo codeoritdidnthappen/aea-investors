@@ -134,10 +134,14 @@ services:
       # registry manifest -- what `/api/tags` reports and what `ollama list` shows
       # truncated in its ID column. The entrypoint refuses to serve on a mismatch.
       #
-      # A ~7B Q4_K_M instruct model per LOCAL_LLM_SPEC D11. Provisional: TICK-062
-      # benchmarks the D11 class and picks the final one. Change both lines together.
-      LLM_MODEL: ${LLM_MODEL:-qwen2.5:7b-instruct-q4_K_M}
-      LLM_MODEL_DIGEST: ${LLM_MODEL_DIGEST:-sha256:845dbda0ea48ed749caafd9e6037047aa19acfcfd82e704d7ca97d631a0b697e}
+      # An 8B Q4_K_M instruct model per LOCAL_LLM_SPEC D11, and no longer provisional:
+      # TICK-062 ran the acceptance corpus over the D11 class and this is what it
+      # picked. It met the NFR-36 write bar at zero wrong writes across all 44 cases;
+      # the previous provisional pin (qwen2.5:7b-instruct-q4_K_M) produced four,
+      # including a date of birth written into the record off by a month. Numbers in
+      # AI_USAGE.md and evidence/TICK-062. Change both lines together.
+      LLM_MODEL: ${LLM_MODEL:-llama3.1:8b-instruct-q4_K_M}
+      LLM_MODEL_DIGEST: ${LLM_MODEL_DIGEST:-sha256:46e0c10c039e019119339687c3c1757cc81b9da49709a3b3924863ba87ca666e}
     # No host port, and no `deploy.resources.reservations.devices` GPU reservation:
     # the first keeps the model server reachable only as `ollama` on the `app`
     # network (never from the host), and the second would make `docker compose up`
@@ -226,7 +230,7 @@ services:
       # pinned model, this is the name the AI server asks for, and a mismatch is a
       # 404 on every turn. Enforced by a test (test_local_deployment.py) rather than
       # left to whoever edits one of the two.
-      LLM_MODEL: ${LLM_MODEL:-qwen2.5:7b-instruct-q4_K_M}
+      LLM_MODEL: ${LLM_MODEL:-llama3.1:8b-instruct-q4_K_M}
       # Optional: Ollama needs no key, other OpenAI-compatible servers (vLLM behind
       # an auth proxy, TICK-067) do.
       LLM_API_KEY: ${LLM_API_KEY:-}

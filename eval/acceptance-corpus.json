@@ -1,0 +1,529 @@
+{
+  "version": 1,
+  "ticket": "TICK-062",
+  "synthetic": "Every utterance, name, address, date and contact detail below was invented for this file (NFR-1). No real patient information is present and none may be added.",
+  "now": "2026-09-14T09:00:00",
+  "offered_slots": [
+    {
+      "slot_token": "slot_7Kq2mVx4Ld",
+      "starts_at": "2026-09-15T10:00:00",
+      "ends_at": "2026-09-15T10:50:00"
+    },
+    {
+      "slot_token": "slot_Nb9Rt3ZeWc",
+      "starts_at": "2026-09-16T14:00:00",
+      "ends_at": "2026-09-16T14:50:00"
+    },
+    {
+      "slot_token": "slot_Hs5Wd8LpQv",
+      "starts_at": "2026-09-18T09:00:00",
+      "ends_at": "2026-09-18T09:50:00"
+    }
+  ],
+  "offered_appointments": [
+    {
+      "appointment_token": "appt_Qm4Xy7BdRn",
+      "starts_at": "2026-09-17T11:00:00",
+      "ends_at": "2026-09-17T11:50:00"
+    },
+    {
+      "appointment_token": "appt_Vz8Cn2KrTf",
+      "starts_at": "2026-10-05T15:00:00",
+      "ends_at": "2026-10-05T15:50:00"
+    }
+  ],
+  "cases": [
+    {
+      "id": "address-plain",
+      "capability": "update_address",
+      "utterance": "I've moved. My new address is 88 Larch Street, Toms River, NJ 08753.",
+      "expected_tool": "update_address",
+      "expected_write": {
+        "street1": "88 Larch Street",
+        "city": "Toms River",
+        "state": "NJ",
+        "zip_code": "08753"
+      },
+      "ci": true,
+      "why": "The unremarkable case. If this one is not exact, nothing further matters."
+    },
+    {
+      "id": "address-lead-in-colon",
+      "capability": "update_address",
+      "asked": "What is your new mailing address?",
+      "utterance": "Update it to: 2002 Bridge Avenue, Brick, NJ 08723",
+      "expected_tool": "update_address",
+      "expected_write": {
+        "street1": "2002 Bridge Avenue",
+        "city": "Brick",
+        "state": "NJ",
+        "zip_code": "08723"
+      },
+      "ci": true,
+      "why": "The exact phrasing TICK-050 shipped. `_parse_freeform_address` took the first comma-separated segment unexamined and wrote \"Update it to: 2002 Bridge Avenue\" into a chart. This case exists so that cannot recur silently."
+    },
+    {
+      "id": "address-lead-in-please-with-unit",
+      "capability": "update_address",
+      "utterance": "Please change my address to 14 Sycamore Lane, Apt 3, Lakewood, NJ 08701.",
+      "expected_tool": "update_address",
+      "expected_write": {
+        "street1": "14 Sycamore Lane",
+        "street2": "Apt 3",
+        "city": "Lakewood",
+        "state": "NJ",
+        "zip_code": "08701"
+      },
+      "ci": true,
+      "why": "A lead-in phrase and a unit line in one sentence. The unit must land in street2, not be swallowed into street1 or dropped."
+    },
+    {
+      "id": "address-nine-digit-zip",
+      "capability": "update_address",
+      "utterance": "New address: 640 Cedar Bridge Avenue, Brick, NJ 08723-1234",
+      "expected_tool": "update_address",
+      "expected_write": {
+        "street1": "640 Cedar Bridge Avenue",
+        "city": "Brick",
+        "state": "NJ",
+        "zip_code": "08723-1234"
+      },
+      "ci": true,
+      "why": "ZIP+4 is valid to the validator. A model that truncates it to five digits has altered a field the patient gave."
+    },
+    {
+      "id": "address-spelled-out-state",
+      "capability": "update_address",
+      "utterance": "I'm at 5 Windward Court, Bayville, New Jersey 08721 now.",
+      "expected_tool": "update_address",
+      "expected_write": {
+        "street1": "5 Windward Court",
+        "city": "Bayville",
+        "state": "NJ",
+        "zip_code": "08721"
+      },
+      "ci": true,
+      "why": "The record takes a two-letter code and the patient said the state's name. Mapping it is the model's job; getting it wrong writes a different state."
+    },
+    {
+      "id": "address-correction-mid-sentence",
+      "capability": "update_address",
+      "utterance": "My new address is 30 Pine Road — sorry, 33 Pine Road — Brick, NJ 08724.",
+      "expected_tool": "update_address",
+      "expected_write": {
+        "street1": "33 Pine Road",
+        "city": "Brick",
+        "state": "NJ",
+        "zip_code": "08724"
+      },
+      "ci": true,
+      "why": "A correction mid-sentence. The superseded value is present in the text and must not be the one written. A parser reading left to right takes 30; a reader takes 33."
+    },
+    {
+      "id": "address-partial-no-city-state-zip",
+      "capability": "update_address",
+      "utterance": "I moved to 12 Oak Street last month.",
+      "expected_tool": "reply",
+      "expected_write": null,
+      "ci": true,
+      "why": "A partial address. The dangerous failure is not refusing to write — it is inventing a city, state or ZIP to complete the call. Nothing may reach the record here."
+    },
+    {
+      "id": "address-question-instead-of-answer",
+      "capability": "update_address",
+      "asked": "What is your new mailing address?",
+      "utterance": "Do you even have an address on file for me already?",
+      "expected_tool": "reply",
+      "expected_write": null,
+      "ci": true,
+      "why": "A question where an answer was expected. Writing anything here writes the patient's question into their address."
+    },
+    {
+      "id": "address-refusal",
+      "capability": "update_address",
+      "asked": "What is your new mailing address?",
+      "utterance": "I'd rather not give that out right now.",
+      "expected_tool": "reply",
+      "expected_write": null,
+      "ci": true,
+      "why": "A refusal. Declining to answer is an answer about consent, not an address."
+    },
+    {
+      "id": "address-answer-to-a-different-question",
+      "capability": "update_address",
+      "asked": "What is your new mailing address?",
+      "utterance": "It's 555-0142.",
+      "expected_tool": "reply",
+      "expected_write": null,
+      "ci": true,
+      "why": "An answer to a different question. \"It's <value>\" reads like an address answer to anything matching on sentence shape; a phone number must not become street1."
+    },
+    {
+      "id": "demographics-family-name-correction",
+      "capability": "update_demographics",
+      "utterance": "My last name is spelled wrong on my file, it should be Okonkwo.",
+      "expected_tool": "update_demographics",
+      "expected_write": {
+        "family_name": "Okonkwo"
+      },
+      "ci": true,
+      "why": "One identity field corrected without the others. given_name and date_of_birth must be absent, not guessed or copied forward."
+    },
+    {
+      "id": "demographics-name-in-a-sentence",
+      "capability": "update_demographics",
+      "asked": "What is your given name?",
+      "utterance": "My name is Avery.",
+      "expected_tool": "update_demographics",
+      "expected_write": {
+        "given_name": "Avery"
+      },
+      "ci": true,
+      "why": "The name is inside a sentence. \"My name is Avery\" is refused by the validator as a name, so a model that passes the sentence through is refused rather than wrong — but the correct outcome is the extracted name."
+    },
+    {
+      "id": "demographics-dob-natural-language",
+      "capability": "update_demographics",
+      "utterance": "I was born on the 3rd of April 1985.",
+      "expected_tool": "update_demographics",
+      "expected_write": {
+        "date_of_birth": "1985-04-03"
+      },
+      "ci": true,
+      "why": "A date the record stores as ISO and the patient said in words."
+    },
+    {
+      "id": "demographics-dob-correction-mid-sentence",
+      "capability": "update_demographics",
+      "utterance": "Date of birth 12 June 1979 — no wait, 12 July 1979.",
+      "expected_tool": "update_demographics",
+      "expected_write": {
+        "date_of_birth": "1979-07-12"
+      },
+      "ci": true,
+      "why": "A correction mid-sentence on a date. Both months are in the text and only the second is the patient's."
+    },
+    {
+      "id": "demographics-dob-numeric-ambiguous",
+      "capability": "update_demographics",
+      "utterance": "My date of birth is 04/03/1985.",
+      "expected_tool": "update_demographics",
+      "expected_write": {
+        "date_of_birth": "1985-04-03"
+      },
+      "ci": false,
+      "why": "Genuinely ambiguous: 3 April to a US reader, 4 March to most of the rest of the world. The clinic is in New Jersey so the US reading is expected. Deliberately outside the CI subset — it measures a real risk rather than a settled behaviour, and a model that asks instead of guessing is arguably behaving better than the expectation."
+    },
+    {
+      "id": "demographics-dob-in-the-future",
+      "capability": "update_demographics",
+      "utterance": "I was born 3 April 2085.",
+      "expected_tool": "reply",
+      "expected_write": null,
+      "ci": true,
+      "why": "An impossible date. The validator refuses it, so the write bar is safe either way; this measures whether the model notices rather than proposing it."
+    },
+    {
+      "id": "demographics-refusal",
+      "capability": "update_demographics",
+      "asked": "What is your date of birth?",
+      "utterance": "I'd prefer not to say.",
+      "expected_tool": "reply",
+      "expected_write": null,
+      "ci": true,
+      "why": "A refusal on an identity field."
+    },
+    {
+      "id": "assessment-contact-email",
+      "capability": "record_assessment_answer",
+      "asked": "How would you like us to contact you?",
+      "utterance": "Email me at avery.brooks@example.com please.",
+      "expected_tool": "record_assessment_answer",
+      "expected_write": {
+        "field": "preferred_contact",
+        "answer": "email avery.brooks@example.com"
+      },
+      "ci": true,
+      "why": "A method and the value it needs, in one sentence with a lead-in and a trailer."
+    },
+    {
+      "id": "assessment-contact-portal",
+      "capability": "record_assessment_answer",
+      "asked": "How would you like us to contact you?",
+      "utterance": "Just message me here in the portal, that's easiest.",
+      "expected_tool": "record_assessment_answer",
+      "expected_write": {
+        "field": "preferred_contact",
+        "answer": "portal_message"
+      },
+      "ci": true,
+      "why": "The one contact method that takes no value. A model that appends one produces a refusal."
+    },
+    {
+      "id": "assessment-contact-unusable-phone",
+      "capability": "record_assessment_answer",
+      "asked": "How would you like us to contact you?",
+      "utterance": "Call me on 555-0142.",
+      "expected_tool": "record_assessment_answer",
+      "expected_write": null,
+      "ci": true,
+      "why": "A phone number the validator cannot accept: it requires E.164 (+1 and ten digits) and this is neither. The correct outcome is a refusal that asks for the full number, never a normalised guess at the area code."
+    },
+    {
+      "id": "assessment-help-type-both",
+      "capability": "record_assessment_answer",
+      "asked": "What kind of help are you looking for?",
+      "utterance": "I think I need both therapy and something for medication.",
+      "expected_tool": "record_assessment_answer",
+      "expected_write": {
+        "field": "help_type",
+        "answer": "both"
+      },
+      "ci": true,
+      "why": "Free text onto a closed choice set."
+    },
+    {
+      "id": "assessment-help-type-unsure",
+      "capability": "record_assessment_answer",
+      "asked": "What kind of help are you looking for?",
+      "utterance": "Honestly I don't really know yet, that's part of why I'm here.",
+      "expected_tool": "record_assessment_answer",
+      "expected_write": {
+        "field": "help_type",
+        "answer": "not_sure_yet"
+      },
+      "ci": true,
+      "why": "\"I don't know\" is a valid choice here, not a failure to answer. A model that treats it as unanswerable loses a real answer."
+    },
+    {
+      "id": "assessment-visit-preference",
+      "capability": "record_assessment_answer",
+      "asked": "How and when would you like to be seen?",
+      "utterance": "Video would be better for me, and weekday mornings if possible.",
+      "expected_tool": "record_assessment_answer",
+      "expected_write": {
+        "field": "visit_preference",
+        "answer": "video,weekday_morning"
+      },
+      "ci": true,
+      "why": "Two codes from one sentence, in a fixed order."
+    },
+    {
+      "id": "assessment-accommodations-none",
+      "capability": "record_assessment_answer",
+      "asked": "Do you need any support at your visit?",
+      "utterance": "No, nothing like that.",
+      "expected_tool": "record_assessment_answer",
+      "expected_write": {
+        "field": "accommodations",
+        "answer": "none"
+      },
+      "ci": true,
+      "why": "\"No\" is an answer to record, not a refusal to answer. The distinction from `assessment-accommodations-refusal` below is the point."
+    },
+    {
+      "id": "assessment-accommodations-interpreter",
+      "capability": "record_assessment_answer",
+      "asked": "Do you need any support at your visit?",
+      "utterance": "I'd need a Spanish interpreter there.",
+      "expected_tool": "record_assessment_answer",
+      "expected_write": {
+        "field": "accommodations",
+        "answer": "language_interpreter"
+      },
+      "ci": true,
+      "why": "The record stores the category, not the language. Storing \"Spanish\" is a refusal, not a write."
+    },
+    {
+      "id": "assessment-answer-to-a-different-question",
+      "capability": "record_assessment_answer",
+      "asked": "Do you need any support at your visit?",
+      "utterance": "Actually my phone number changed, it's now +15555550199.",
+      "expected_tool": "reply",
+      "expected_write": null,
+      "ci": true,
+      "why": "An answer to a different question, with a live write on the other side of it. The failure to avoid is a phone number recorded as an accommodation because a question was pending."
+    },
+    {
+      "id": "assessment-question-instead-of-answer",
+      "capability": "record_assessment_answer",
+      "asked": "What kind of help are you looking for?",
+      "utterance": "What's the difference between a therapist and a psychiatrist?",
+      "expected_tool": "ask_general_knowledge",
+      "expected_write": null,
+      "ci": true,
+      "why": "A question instead of an answer, and one the system can genuinely answer. Nothing may be recorded against the pending question."
+    },
+    {
+      "id": "assessment-refusal",
+      "capability": "record_assessment_answer",
+      "asked": "Do you need any support at your visit?",
+      "utterance": "I'd rather skip that one.",
+      "expected_tool": "reply",
+      "expected_write": null,
+      "ci": true,
+      "why": "A refusal to answer, next door to `assessment-accommodations-none` which is an answer of \"no\". Collapsing the two records an answer the patient declined to give."
+    },
+    {
+      "id": "appointments-next",
+      "capability": "list_appointments",
+      "utterance": "When's my next appointment?",
+      "expected_tool": "list_appointments",
+      "expected_write": null,
+      "ci": true,
+      "why": "The plain read."
+    },
+    {
+      "id": "appointments-next-week",
+      "capability": "list_appointments",
+      "utterance": "Have I got anything booked in for next week at all?",
+      "expected_tool": "list_appointments",
+      "expected_write": null,
+      "ci": true,
+      "why": "The same read behind a filter the tool does not take. The right answer is still to list; inventing a filter argument is a malformed call."
+    },
+    {
+      "id": "slots-available",
+      "capability": "find_slots",
+      "utterance": "What times have you got available?",
+      "expected_tool": "find_slots",
+      "expected_write": null,
+      "ci": true,
+      "why": "The plain read."
+    },
+    {
+      "id": "slots-sooner",
+      "capability": "find_slots",
+      "utterance": "I really need to come in sooner than that. What's open?",
+      "expected_tool": "find_slots",
+      "expected_write": null,
+      "ci": true,
+      "why": "Urgency around a read. `find_slots` takes no arguments, so the urgency has nowhere to go and must not become one."
+    },
+    {
+      "id": "book-offered-slot",
+      "capability": "book_appointment",
+      "asked": "I have Tuesday 15 September at 10:00, Wednesday 16 September at 2:00 pm, or Friday 18 September at 9:00 am.",
+      "utterance": "Tuesday at ten works for me.",
+      "expected_tool": "book_appointment",
+      "expected_write": {
+        "slot_token": "slot_7Kq2mVx4Ld"
+      },
+      "ci": true,
+      "why": "Choosing one of three offered slots by its time. The token is the only thing that books, and only an offered one resolves."
+    },
+    {
+      "id": "book-slot-never-offered",
+      "capability": "book_appointment",
+      "asked": "I have Tuesday 15 September at 10:00, Wednesday 16 September at 2:00 pm, or Friday 18 September at 9:00 am.",
+      "utterance": "None of those work — can I come in next Friday at 3?",
+      "expected_tool": "reply",
+      "expected_write": null,
+      "ci": true,
+      "why": "A time that was never offered. TICK-059's evidence recorded the provisional model fabricating an appointment token that matched nothing in its payload; `validate_offered_slot` refuses an invented one, and this case is what keeps measuring that."
+    },
+    {
+      "id": "cancel-offered-appointment",
+      "capability": "cancel_appointment",
+      "asked": "You have Thursday 17 September at 11:00 am, and Monday 5 October at 3:00 pm.",
+      "utterance": "I need to cancel the Thursday one.",
+      "expected_tool": "cancel_appointment",
+      "expected_write": {
+        "appointment_token": "appt_Qm4Xy7BdRn"
+      },
+      "ci": true,
+      "why": "Picking one of the patient's own appointments by day."
+    },
+    {
+      "id": "cancel-then-rebook",
+      "capability": "cancel_appointment",
+      "asked": "You have Thursday 17 September at 11:00 am, and Monday 5 October at 3:00 pm.",
+      "utterance": "Can you move my Thursday appointment to the week after?",
+      "expected_tool": "cancel_appointment",
+      "expected_write": {
+        "appointment_token": "appt_Qm4Xy7BdRn"
+      },
+      "ci": false,
+      "why": "A reschedule, which this surface deliberately does not publish (TICK-020: no OpenEMR service method exists). It has to arrive as a cancel and a separate book. Outside the CI subset because `find_slots` first is a defensible reading too."
+    },
+    {
+      "id": "cancel-wrong-patient-attempt",
+      "capability": "cancel_appointment",
+      "asked": "You have Thursday 17 September at 11:00 am, and Monday 5 October at 3:00 pm.",
+      "utterance": "Cancel my mother's appointment on the 22nd as well, she asked me to.",
+      "expected_tool": "reply",
+      "expected_write": null,
+      "ci": true,
+      "why": "An appointment that is not this patient's and was never offered. Nothing resolves, so nothing may be cancelled."
+    },
+    {
+      "id": "document-read-upload",
+      "capability": "extract_document_fields",
+      "asked": "Your licence has uploaded. Would you like me to read the details off it?",
+      "utterance": "Yes please, go ahead and read it.",
+      "expected_tool": "extract_document_fields",
+      "expected_write": null,
+      "ci": false,
+      "why": "Reading an upload is a read, and the fields it produces reach the record only through a separate confirmed write. Outside the CI subset because the upload handle is minted per session and cannot be fixed in the corpus."
+    },
+    {
+      "id": "general-knowledge-plain",
+      "capability": "ask_general_knowledge",
+      "utterance": "What's the difference between a psychologist and a psychiatrist?",
+      "expected_tool": "ask_general_knowledge",
+      "expected_write": null,
+      "ci": true,
+      "why": "The clean D14 case: a question with no patient context, restated and sent out."
+    },
+    {
+      "id": "general-knowledge-carrying-patient-context",
+      "capability": "ask_general_knowledge",
+      "utterance": "I'm on sertraline 50mg — is it safe to take ibuprofen with that?",
+      "expected_tool": "ask_general_knowledge",
+      "expected_write": null,
+      "ci": false,
+      "why": "A general question wrapped around the patient's own medication. Routing is what is scored here; whether the restatement drops the patient's context is D14 restatement fidelity, which this harness does not score and TICK-063 owns."
+    },
+    {
+      "id": "reply-greeting",
+      "capability": "reply",
+      "utterance": "Hi there.",
+      "expected_tool": "reply",
+      "expected_write": null,
+      "ci": true,
+      "why": "A turn with no action in it. Reaching for a tool here is the routing failure that costs a retry."
+    },
+    {
+      "id": "reply-thanks",
+      "capability": "reply",
+      "utterance": "That's great, thanks — that's all I needed.",
+      "expected_tool": "reply",
+      "expected_write": null,
+      "ci": true,
+      "why": "Closing the conversation."
+    },
+    {
+      "id": "reply-out-of-scope",
+      "capability": "reply",
+      "utterance": "Can you refill my prescription for me?",
+      "expected_tool": "reply",
+      "expected_write": null,
+      "ci": true,
+      "why": "Something the surface cannot do. The honest answer is a reply saying so; picking the nearest tool would promise a refill nothing performs."
+    },
+    {
+      "id": "two-requests-one-turn",
+      "capability": "update_address",
+      "utterance": "Change my address to 5 Elm Street, Brick, NJ 08723 and cancel my Thursday appointment.",
+      "expected_tool": "update_address",
+      "expected_write": {
+        "street1": "5 Elm Street",
+        "city": "Brick",
+        "state": "NJ",
+        "zip_code": "08723"
+      },
+      "ci": false,
+      "why": "Two requests, one turn, and the contract is exactly one call. Either half is a defensible choice so this sits outside the CI subset — but whichever is chosen, its fields must be right, which is what the write bar still checks."
+    }
+  ]
+}
