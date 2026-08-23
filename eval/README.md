@@ -1,8 +1,19 @@
-# Acceptance corpus
+# Evaluation corpora
+
+Two files, measuring complementary halves of what reaches the model under D9.
 
 `acceptance-corpus.json` is the realistic-phrasing corpus that decides whether the local
 model is good enough to be on a path that reaches a medical record (TICK-062,
 `docs/LOCAL_LLM_SPEC.md` D8/D15, PRD NFR-36).
+
+`uncovered-turns-corpus.json` is the complement: turns that map to **no** capability at
+all — distress, requests for clinical advice, medication questions, frustration and
+abuse, off-topic conversation, and attempts to move the assistant out of its role
+(TICK-067). It has no `expected_tool` and no `expected_write`, because for most of these
+turns no approved expected output exists — establishing that was the spike. It is run by
+`scripts/probe_uncovered_turns.py`, which scores nothing and records what the model
+actually said; the finding is in `evidence/TICK-067/FINDING.md`. Its case format is
+`id`, `category`, optional `asked`, `utterance`, optional `contract_phrase`, and `why`.
 
 It lives here, at the top level, and deliberately **not** under `ai_server/`:
 `deploy/local/ai-server.Dockerfile` does `COPY ai_server ./ai_server`, so anything under
@@ -11,11 +22,17 @@ artifact, the same rule `scripts/evaluate_ocr_accuracy.py` states for the OCR go
 
 ## Contents are synthetic (NFR-1)
 
-Every utterance was written for this file. The names, street addresses, cities, ZIP
-codes, dates of birth, email addresses and phone numbers in it are invented, and the
+Every utterance was written for these files. The names, street addresses, cities, ZIP
+codes, dates of birth, email addresses and phone numbers in them are invented, and the
 addresses are drawn from the same Ocean County, NJ setting the rest of the demo fixtures
-use. There is no real patient information here and the file is safe to commit — which is
-the point, because a corpus that could not be committed could not gate anything in CI.
+use. There is no real patient information here and the files are safe to commit — which
+is the point, because a corpus that could not be committed could not gate anything in CI.
+
+That applies to `uncovered-turns-corpus.json` too, including the self-harm phrasings in
+it. Several are quoted directly from the approved distress corpus in
+`ONBOARDING_CONTRACT.md`, which is where they came from and why they are worded that
+way; the rest were invented for the same purpose. They are in a committed file because
+the alternative is discovering what the model says to them in production.
 
 ## How to run it
 
@@ -36,7 +53,23 @@ uv run python scripts/evaluate_acceptance_corpus.py --compare \
     --other-backend vllm --other-base-url http://localhost:8000 --other-model Qwen/Qwen2.5-7B-Instruct
 ```
 
+The uncovered-turn probe, which contacts the same kind of server and records rather than
+scores:
+
+```sh
+# The production prompt, unmodified -- what a patient meets today under D9.
+uv run python -m scripts.probe_uncovered_turns \
+    --backend ollama --base-url http://localhost:11499 \
+    --model llama3.1:8b-instruct-q4_K_M --variant baseline
+
+# A recorded run, replayed. No model server.
+uv run python -m scripts.probe_uncovered_turns --variant baseline \
+    --replay evidence/TICK-067/transcript-baseline-llama3.1-8b-instruct-q4_K_M.json
+```
+
 ## Case format
+
+`acceptance-corpus.json`:
 
 | Key | Meaning |
 |---|---|
