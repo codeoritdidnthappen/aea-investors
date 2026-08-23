@@ -12,6 +12,13 @@ Each `validate_*` function raises `FieldValidationError` with one or more human-
 readable messages; nothing here is fabricated or defaulted -- a missing or invalid
 value always raises rather than silently substituting a value (mirrors
 `openemr/demographics.py`'s `confirm_identity`).
+
+TICK-061 made the free-text identity rules (street, unit, city, name) describe what the
+field *is* rather than merely that something was supplied, and `ai_server/llm/
+validation.py` routes every model-proposed write through these same functions. They are
+the single authority: there is no second copy of an address rule anywhere. Only the
+identity fields (2-5) are affected, so the deliberate lockstep with
+`AssessmentDraftService.php` on the draft fields (6-9) is untouched.
 """
 
 from __future__ import annotations
@@ -130,11 +137,129 @@ US_STATE_AND_TERRITORY_CODES: frozenset[str] = frozenset(
 )
 
 _MIN_ADULT_AGE_YEARS = 18
+# A date of birth older than this is not a person's date of birth, it is a bad parse or
+# a bad guess (TICK-061: "a date like a plausible date").
+_MAX_PLAUSIBLE_AGE_YEARS = 120
 _MAX_TEXT_FIELD_LENGTH = 100
 _MAX_ACCOMMODATION_DETAIL_LENGTH = 200
 _PHONE_PATTERN = re.compile(r"^\+1\d{10}$")
 _EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _ZIP_PATTERN = re.compile(r"^\d{5}(-?\d{4})?$")
+
+# --- Shape rules for the free-text fields (TICK-061) --------------------------------
+#
+# TICK-050 shipped a street rule that accepted any non-empty string, so
+# `"Update it to: 2002 Bridge Avenue"` -- a lead-in phrase the freeform parser had
+# handed over unexamined -- was written into a patient's chart. A validator that
+# accepts whatever it is given is a mirror, not a safety net. These rules describe what
+# each field *is*, so they hold whatever produced the value: a regex parser, a language
+# model, or a future one of either.
+#
+# Refusing a value a patient could plausibly hold is the accepted cost (PRD NFR-36: a
+# refusal is an acceptable outcome, a wrong write is not), so the rules stay structural
+# and the refusal always says what to send instead.
+
+_STREET_PUNCTUATION = " .,'#&/-"
+_UNIT_PUNCTUATION = " .,'#&/-"
+_CITY_PUNCTUATION = " .'-"
+_NAME_PUNCTUATION = " .'-"
+
+_MAX_STREET_WORDS = 10
+_MAX_UNIT_WORDS = 6
+_MAX_CITY_WORDS = 5
+_MAX_NAME_WORDS = 5
+
+# A street line begins with the thing that makes it a street line: a house number
+# (`2002`, `42A`, `120-14`) or a post-office box. "Update it to: 2002 Bridge Avenue"
+# fails here even with its punctuation removed, and so does an answer to some other
+# question that happens to contain an address.
+_HOUSE_NUMBER_PATTERN = re.compile(
+    r"^(?:\d{1,6}[A-Za-z]?(?:\s?-\s?\d{1,6}[A-Za-z]?)?|p\.?\s*o\.?\s+box|post\s+office\s+box)\b",
+    re.IGNORECASE,
+)
+
+# Words that belong to a conversation, not to an address or a name. This catches the
+# rest of the observed class -- a trailing question ("2002 Bridge Avenue is that
+# right"), or an answer to a different question -- once punctuation alone no longer
+# gives it away. Deliberately excludes prepositions and articles, which do appear in
+# real place names ("Avenue of the Americas"), and is applied only to multi-word values,
+# so a one-word legitimate name ("My", "Me") is never refused for looking like a pronoun.
+_CONVERSATIONAL_WORDS: frozenset[str] = frozenset(
+    {
+        "actually",
+        "address",
+        "am",
+        "appointment",
+        "are",
+        "ask",
+        "asked",
+        "be",
+        "been",
+        "being",
+        "birthday",
+        "can",
+        "cannot",
+        "change",
+        "changed",
+        "changing",
+        "correct",
+        "corrected",
+        "could",
+        "did",
+        "do",
+        "does",
+        "email",
+        "fix",
+        "fixed",
+        "had",
+        "has",
+        "have",
+        "how",
+        "instead",
+        "is",
+        "it",
+        "its",
+        "maybe",
+        "me",
+        "mine",
+        "move",
+        "moved",
+        "moving",
+        "my",
+        "name",
+        "need",
+        "okay",
+        "phone",
+        "please",
+        "said",
+        "says",
+        "should",
+        "sorry",
+        "tell",
+        "thank",
+        "thanks",
+        "think",
+        "update",
+        "updated",
+        "updating",
+        "want",
+        "was",
+        "were",
+        "what",
+        "when",
+        "where",
+        "which",
+        "who",
+        "whom",
+        "whose",
+        "why",
+        "would",
+        "yes",
+        "you",
+        "your",
+        "yours",
+    }
+)
 
 
 class FieldValidationError(Exception):
@@ -162,18 +287,107 @@ class Address:
     street2: str | None = None
 
 
-def validate_text_name(value: object, *, label: str) -> str:
-    """Validate a legal given/family name: 1-100 non-whitespace characters."""
+def _collapsed_text(value: object, *, label: str, max_length: int) -> str:
+    """Return `value` as a single-spaced string, or raise if it is not usable text."""
     if not isinstance(value, str):
         raise FieldValidationError([f"{label} must be text"])
-    stripped = value.strip()
-    if not stripped or len(stripped) > _MAX_TEXT_FIELD_LENGTH:
-        raise FieldValidationError([f"{label} must be 1-100 non-whitespace characters"])
-    return stripped
+    collapsed = " ".join(value.split())
+    if not collapsed or len(collapsed) > max_length:
+        raise FieldValidationError([f"{label} must be 1-{max_length} non-whitespace characters"])
+    return collapsed
+
+
+def _only(text: str, punctuation: str, *, digits: bool) -> bool:
+    """Report whether `text` is built solely from letters, `punctuation`, and digits."""
+    return all(
+        character.isalpha() or (digits and character.isdigit()) or character in punctuation
+        for character in text
+    )
+
+
+def _reads_as_conversation(words: list[str]) -> bool:
+    """Report whether a multi-word value contains a word that belongs to a sentence.
+
+    Single-word values are exempt: they cannot be a lead-in phrase or a question, and a
+    real given name or town can legitimately be spelled like an English pronoun.
+    """
+    if len(words) < 2:
+        return False
+    return any(word.strip(_STREET_PUNCTUATION).lower() in _CONVERSATIONAL_WORDS for word in words)
+
+
+def validate_street(value: object, *, label: str = "street1") -> str:
+    """Validate that `value` is a street line and not a sentence containing one.
+
+    Requires a house number or PO box, at least one following word, only the characters
+    a street line is written with, and no conversational word. This is the rule that
+    would have refused `"Update it to: 2002 Bridge Avenue"` (TICK-050); it is applied
+    the same way whether a parser, a model, or a form produced the value.
+    """
+    example = f"{label} must be a street line such as '100 Maple Ave'"
+    collapsed = _collapsed_text(value, label=label, max_length=_MAX_TEXT_FIELD_LENGTH)
+    words = collapsed.split(" ")
+    if (
+        not _only(collapsed, _STREET_PUNCTUATION, digits=True)
+        or len(words) < 2
+        or len(words) > _MAX_STREET_WORDS
+        or not _HOUSE_NUMBER_PATTERN.match(collapsed)
+        or _reads_as_conversation(words)
+    ):
+        raise FieldValidationError([example])
+    return collapsed
+
+
+def validate_street_unit(value: object, *, label: str = "street2") -> str:
+    """Validate an apartment, suite, or unit line -- no house number required."""
+    example = f"{label} must be a unit line such as 'Apt 4B'"
+    collapsed = _collapsed_text(value, label=label, max_length=_MAX_TEXT_FIELD_LENGTH)
+    words = collapsed.split(" ")
+    if (
+        not _only(collapsed, _UNIT_PUNCTUATION, digits=True)
+        or len(words) > _MAX_UNIT_WORDS
+        or _reads_as_conversation(words)
+    ):
+        raise FieldValidationError([example])
+    return collapsed
+
+
+def validate_city(value: object, *, label: str = "city") -> str:
+    """Validate a town or city name: letters and place-name punctuation only."""
+    example = f"{label} must be a town or city name such as 'Springfield'"
+    collapsed = _collapsed_text(value, label=label, max_length=_MAX_TEXT_FIELD_LENGTH)
+    words = collapsed.split(" ")
+    if (
+        not _only(collapsed, _CITY_PUNCTUATION, digits=False)
+        or len(words) > _MAX_CITY_WORDS
+        or not collapsed[0].isalpha()
+        or _reads_as_conversation(words)
+    ):
+        raise FieldValidationError([example])
+    return collapsed
+
+
+def validate_text_name(value: object, *, label: str) -> str:
+    """Validate a legal given/family name: 1-100 non-whitespace characters, and a name.
+
+    TICK-061 added the second half: a name is letters and name punctuation, at most a
+    few words, and never a sentence -- so `"My name is Avery"` is refused rather than
+    written into the record as a given name.
+    """
+    collapsed = _collapsed_text(value, label=label, max_length=_MAX_TEXT_FIELD_LENGTH)
+    words = collapsed.split(" ")
+    if (
+        not _only(collapsed, _NAME_PUNCTUATION, digits=False)
+        or len(words) > _MAX_NAME_WORDS
+        or not collapsed[0].isalpha()
+        or _reads_as_conversation(words)
+    ):
+        raise FieldValidationError([f"{label} must be a person's name such as 'Avery'"])
+    return collapsed
 
 
 def validate_date_of_birth(value: object, *, now: datetime) -> str:
-    """Validate a calendar date that is not in the future and is 18+ as of `now`."""
+    """Validate a calendar date that is not in the future and is a plausible adult's."""
     if not isinstance(value, str):
         raise FieldValidationError(["date_of_birth must be a date string"])
     try:
@@ -188,6 +402,10 @@ def validate_date_of_birth(value: object, *, now: datetime) -> str:
         raise FieldValidationError(
             ["date_of_birth shows the patient is under 18; this demo flow requires an adult"]
         )
+    if age > _MAX_PLAUSIBLE_AGE_YEARS:
+        raise FieldValidationError(
+            [f"date_of_birth is more than {_MAX_PLAUSIBLE_AGE_YEARS} years ago"]
+        )
     return parsed.isoformat()
 
 
@@ -197,19 +415,26 @@ def validate_address(value: object) -> Address:
         raise FieldValidationError(["address must be an object"])
     errors: list[str] = []
 
-    street1 = value.get("street1")
-    if not isinstance(street1, str) or not street1.strip():
-        errors.append("street1 is required")
+    try:
+        street1 = validate_street(value.get("street1"))
+    except FieldValidationError as exc:
+        errors.extend(exc.details)
         street1 = ""
 
-    street2 = value.get("street2")
-    if street2 is not None and not isinstance(street2, str):
-        errors.append("street2 must be text if provided")
-        street2 = None
+    # A second line is optional, and a whitespace-only one means the patient gave none;
+    # anything else present must still read as a unit line.
+    raw_street2 = value.get("street2")
+    street2: str | None = None
+    if raw_street2 is not None and (not isinstance(raw_street2, str) or raw_street2.strip()):
+        try:
+            street2 = validate_street_unit(raw_street2)
+        except FieldValidationError as exc:
+            errors.extend(exc.details)
 
-    city = value.get("city")
-    if not isinstance(city, str) or not city.strip():
-        errors.append("city is required")
+    try:
+        city = validate_city(value.get("city"))
+    except FieldValidationError as exc:
+        errors.extend(exc.details)
         city = ""
 
     state = value.get("state")
@@ -225,11 +450,11 @@ def validate_address(value: object) -> Address:
     if errors:
         raise FieldValidationError(errors)
     return Address(
-        street1=street1.strip(),
-        city=city.strip(),
+        street1=street1,
+        city=city,
         state=state.upper(),
         zip_code=zip_code,
-        street2=street2.strip() if street2 else None,
+        street2=street2,
     )
 
 
