@@ -33,6 +33,11 @@ _COMPOSE_REQUIRED = re.compile(r"\$\{(?P<key>[A-Z][A-Z0-9_]*):\?")
 _COMPOSE_DEFAULTED = re.compile(r"\$\{(?P<key>[A-Z][A-Z0-9_]*):-")
 _COMPOSE_BARE = re.compile(r"\$\{(?P<key>[A-Z][A-Z0-9_]*)\}")
 _WORKTREE_MARKER = "/.builder/worktrees/"
+# TICK-059. The local model's pin, as docker-compose.yml wires it. `LLM_MODEL:` is
+# matched with its colon immediately after, so `LLM_MODEL_DIGEST:` cannot satisfy it.
+_COMPOSE_MODEL = re.compile(r"LLM_MODEL:\s*\$\{LLM_MODEL:-(?P<value>[^}]*)\}")
+_COMPOSE_MODEL_DIGEST = re.compile(r"LLM_MODEL_DIGEST:\s*\$\{LLM_MODEL_DIGEST:-(?P<value>[^}]*)\}")
+_SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 class PreflightError(Exception):
@@ -75,6 +80,72 @@ def find_broken_mounts(compose_path: Path) -> list[str]:
             # nothing over the destination and the feature silently disappears.
             problems.append(
                 f"mount source is an empty directory: {source}\n  (mounted at {target})"
+            )
+    return problems
+
+
+def find_unpinned_model(compose_path: Path) -> list[str]:
+    """Reject a local model that is not pinned to specific bytes.
+
+    TICK-059. NFR-15 pins the OpenEMR and MariaDB images because an image that
+    changes under a running deployment changes its behaviour with nothing reporting
+    it. A model tag is the same mutable pointer with higher stakes: LOCAL_LLM_SPEC
+    D6 puts this model's output on the path to a medical record, so a tag upstream
+    silently repoints at a requantised build would change what gets proposed for a
+    patient's chart, on a pull, with no diff anywhere.
+
+    Three faults, all silent at runtime, which is why they belong here rather than
+    only in a unit test -- this also runs against the operator's own edited compose
+    file, before the stack starts:
+
+      * a floating tag (`latest`, or no tag at all), which resolves to different
+        weights on different days;
+      * a missing or malformed digest, which leaves the name as the only pin;
+      * the model server and the AI server naming *different* models, which is a
+        404 on every chat turn while `docker ps` shows a perfectly healthy pair.
+
+    Nothing is reported when the compose file has no local model wired at all: a
+    topology that does not run one is not a topology with a broken pin.
+    """
+    compose = compose_path.read_text(encoding="utf-8")
+    models = [match.group("value").strip() for match in _COMPOSE_MODEL.finditer(compose)]
+    if not models:
+        return []
+
+    problems: list[str] = []
+    for value in sorted(set(models)):
+        # Split on the *last* colon: a registry-qualified name may carry its own.
+        name, _, tag = value.rpartition(":")
+        if not name or not tag or tag == "latest":
+            problems.append(
+                f"the local model is not pinned to a specific tag: LLM_MODEL={value!r}\n"
+                "  A floating tag resolves to different weights on different days, and this\n"
+                "  model proposes values that reach a medical record (LOCAL_LLM_SPEC D6)."
+            )
+
+    distinct = sorted(set(models))
+    if len(distinct) > 1:
+        problems.append(
+            "docker-compose.yml wires two different models: "
+            + ", ".join(repr(m) for m in distinct)
+            + "\n"
+            "  The model server pins one and the AI server asks for the other, so every chat\n"
+            "  turn 404s while both containers report healthy. They must name the same model."
+        )
+
+    digests = [match.group("value").strip() for match in _COMPOSE_MODEL_DIGEST.finditer(compose)]
+    if not digests:
+        problems.append(
+            "the local model has no pinned digest: docker-compose.yml wires LLM_MODEL but no\n"
+            "  LLM_MODEL_DIGEST default. The name alone is a mutable pointer -- upstream can\n"
+            "  repoint the tag and a pull on a fresh volume serves different weights under it."
+        )
+    for value in sorted(set(digests)):
+        if _SHA256.match(value) is None:
+            problems.append(
+                f"the local model digest is not a full sha256: LLM_MODEL_DIGEST={value!r}\n"
+                "  Expected `sha256:` followed by 64 lowercase hex characters, which is what\n"
+                "  the model server compares the pulled manifest against."
             )
     return problems
 
@@ -136,6 +207,7 @@ def main() -> int:
     if worktree is not None:
         failures.append(worktree)
     failures.extend(find_broken_mounts(compose_path))
+    failures.extend(find_unpinned_model(compose_path))
     if not args.skip_env:
         try:
             missing = find_missing_env_keys(

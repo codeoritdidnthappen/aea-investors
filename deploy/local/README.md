@@ -71,6 +71,38 @@ docker compose ps
 docker compose logs -f openemr
 ```
 
+### The local model server (TICK-059)
+
+`docker compose up` also starts `ollama`, the local model server
+(LOCAL_LLM_SPEC D5/D7 — Ollama in development, vLLM when this is deployed). There
+is **no manual pull step**: on a cold volume it downloads its pinned model once, on
+first start, into the `ollama-models` named volume. That download is several GB, so
+the first start takes a while and the service reports `unhealthy` until it finishes
+— which is the honest answer, because it cannot answer anything yet. Watch it with:
+
+```sh
+docker compose logs -f ollama
+```
+
+A later `docker compose up -d --build`, `restart`, or `down` + `up` reuses the
+volume and re-downloads nothing. Only `docker compose down -v` drops it.
+
+The model is pinned by **name and digest**, both defaulted in `docker-compose.yml`
+rather than in the gitignored `.env`, because a pin only one machine can see is not
+a pin (NFR-15). The server re-verifies the digest on every start and **refuses to
+serve** if it does not match — a moved upstream tag is a loud failure rather than
+silently different weights answering questions about a chart (LOCAL_LLM_SPEC D6).
+If that happens, either `docker compose down -v` and re-pull, or update
+`LLM_MODEL`/`LLM_MODEL_DIGEST` together once the new build has been reviewed.
+
+No GPU is required. Without an accelerator Ollama runs on CPU — slower, but it
+starts, and the compose file deliberately declares no GPU reservation (one would
+hard-fail `docker compose up` on any machine that lacks one).
+
+The model server runs whatever `LLM_PROVIDER` is set to; it is simply not asked
+anything until you set `LLM_PROVIDER=ollama` in `.env`. Routing turns through it is
+TICK-061/TICK-066's work, not this step's.
+
 ## 3. Register the AI server as an OpenEMR OAuth client
 
 Log in to OpenEMR at `https://emr.localhost` (routed through Caddy; your browser
@@ -105,9 +137,11 @@ Then confirm it actually took:
 ```
 
 This is a separate step from the preflight on purpose. The preflight checks what is
-knowable before the stack starts; `verify-stack.sh` checks the two states only
-visible once it is running — the module directory mounting empty, and the module
-being present on disk but `mod_active = 0`. The second is what a patient sees as
+knowable before the stack starts — including that the local model is pinned to a
+specific tag and a full digest; `verify-stack.sh` checks the states only visible
+once it is running — the module directory mounting empty, the module being present
+on disk but `mod_active = 0`, and (TICK-059) the model server missing its pinned
+model or being unreachable from the AI server under its service name. The second is what a patient sees as
 "the AI Chat tile is gone", and **every file-level check still passes** while it is
 happening. It is deliberately not part of the container healthcheck, because an
 administrator may disable the module on purpose and that is not a broken container. A logged-in patient's portal home page

@@ -108,6 +108,60 @@ services:
           - emr.localhost
           - chat.localhost
 
+  ollama:
+    # TICK-059, LOCAL_LLM_SPEC D5/D7: the development half of the local-model
+    # topology. Ollama here, vLLM when this is deployed (TICK-067); the AI server
+    # talks the same OpenAI-compatible protocol to both, so which one is running is
+    # a config question, not a code one.
+    #
+    # Built rather than run directly for the same reason openemr is: the entrypoint
+    # and healthcheck that enforce the digest pin are copied into the image instead
+    # of bind-mounted (see ollama.Dockerfile).
+    build:
+      context: ../..
+      dockerfile: deploy/local/ollama.Dockerfile
+    restart: unless-stopped
+    environment:
+      # The pin lives *here*, in the committed file, and not in the gitignored .env
+      # -- a pin only one machine can see is not a pin (NFR-15, and the same
+      # reasoning as the mariadb/openemr/caddy image tags above). `.env` may still
+      # override both to swap the model, which is what TICK-062's benchmark will do
+      # once it picks the final one.
+      #
+      # Name *and* digest, because the name alone is a mutable pointer: upstream can
+      # repoint this tag at a requantised build and a pull on a fresh volume would
+      # serve different weights under the same name. The digest is the sha256 of the
+      # registry manifest -- what `/api/tags` reports and what `ollama list` shows
+      # truncated in its ID column. The entrypoint refuses to serve on a mismatch.
+      #
+      # A ~7B Q4_K_M instruct model per LOCAL_LLM_SPEC D11. Provisional: TICK-062
+      # benchmarks the D11 class and picks the final one. Change both lines together.
+      LLM_MODEL: ${LLM_MODEL:-qwen2.5:7b-instruct-q4_K_M}
+      LLM_MODEL_DIGEST: ${LLM_MODEL_DIGEST:-sha256:845dbda0ea48ed749caafd9e6037047aa19acfcfd82e704d7ca97d631a0b697e}
+    # No host port, and no `deploy.resources.reservations.devices` GPU reservation:
+    # the first keeps the model server reachable only as `ollama` on the `app`
+    # network (never from the host), and the second would make `docker compose up`
+    # hard-fail on any machine without a GPU. Ollama runs on CPU when there is no
+    # accelerator -- slower, but it starts, which is the requirement.
+    volumes:
+      # Model weights are several GB. A named volume means a recreate reuses them
+      # instead of re-downloading; `docker compose down` keeps it, and only an
+      # explicit `down -v` drops it.
+      - ollama-models:/root/.ollama
+    healthcheck:
+      # Asserts the pinned model is present *and* still hashes to the pinned digest,
+      # not merely that the process is listening -- TICK-057's lesson applied here.
+      # See ollama-healthcheck.sh. The long start_period covers the one-time cold
+      # pull of several GB, during which unhealthy is the honest answer.
+      test: ["CMD", "/usr/local/bin/aeai-ollama-healthcheck"]
+      start_period: 30m
+      start_interval: 15s
+      interval: 1m
+      timeout: 30s
+      retries: 3
+    networks:
+      - app
+
   ai-server:
     build:
       context: ../..
@@ -115,6 +169,12 @@ services:
     restart: unless-stopped
     depends_on:
       - openemr
+      # Start order only, deliberately *not* `condition: service_healthy`: a cold
+      # volume makes the model server unhealthy for as long as a multi-GB pull
+      # takes, and gating on it would hold the whole portal down behind a download.
+      # LOCAL_LLM_SPEC D12 already makes an unreachable model an honest "unavailable"
+      # in the chat rather than a broken-looking one, and the portal keeps working.
+      - ollama
     environment:
       # Session volume: SQLite WAL state on a persistent named volume (NFR-31).
       AI_SESSION_DATABASE_PATH: /data/ai_session.sqlite3
@@ -152,6 +212,24 @@ services:
       LLM_PROVIDER: ${LLM_PROVIDER:-groq}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
       GROQ_ZDR_VERIFIED_ON: ${GROQ_ZDR_VERIFIED_ON:-}
+      # TICK-059: how the AI server finds the local model server when LLM_PROVIDER is
+      # `ollama` (ai_server/llm/local.py, LocalModelSettings.from_environment).
+      #
+      # A *service name*, not a host address. The client's own fallback is
+      # `http://localhost:11434`, which inside this container means the AI server
+      # itself -- it works on a developer's laptop running Ollama natively and
+      # nowhere else, which is exactly the kind of address that passes locally and
+      # fails everywhere it is deployed. Docker's embedded DNS resolves `ollama` on
+      # the shared `app` network.
+      OLLAMA_HOST: ${OLLAMA_HOST:-http://ollama:11434}
+      # Must stay identical to the ollama service's LLM_MODEL above -- that is the
+      # pinned model, this is the name the AI server asks for, and a mismatch is a
+      # 404 on every turn. Enforced by a test (test_local_deployment.py) rather than
+      # left to whoever edits one of the two.
+      LLM_MODEL: ${LLM_MODEL:-qwen2.5:7b-instruct-q4_K_M}
+      # Optional: Ollama needs no key, other OpenAI-compatible servers (vLLM behind
+      # an auth proxy, TICK-067) do.
+      LLM_API_KEY: ${LLM_API_KEY:-}
       # Real appointment booking (TICK-034) and cancellation (TICK-036): optional,
       # same tolerance as GROQ_API_KEY above -- absent, the chat tool falls back to
       # its fixed no-action summary instead of failing startup. AI_BOOKING_* are this
@@ -184,5 +262,7 @@ volumes:
   openemr-sites:
   openemr-logs:
   ai-session-data:
+  # Several GB of model weights (TICK-059). Named, so a recreate reuses them.
+  ollama-models:
   caddy-data:
   caddy-config:

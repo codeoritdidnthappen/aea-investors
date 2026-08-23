@@ -229,6 +229,184 @@ def test_the_two_settings_are_documented_as_not_interchangeable() -> None:
         assert "interchangeable" in text
 
 
+# --- TICK-059: the local model server runs in the topology, pinned ----------------
+
+
+def test_the_model_server_runs_as_a_service_in_the_local_topology() -> None:
+    """AC1. LOCAL_LLM_SPEC D7 puts Ollama in development and vLLM in deployment."""
+    compose = _compose_text()
+
+    assert "\n  ollama:\n" in compose
+    assert "dockerfile: deploy/local/ollama.Dockerfile" in compose
+
+
+def test_the_ai_server_reaches_the_model_server_by_service_name() -> None:
+    """AC1. A host address only works on the one machine running Ollama natively.
+
+    `ai_server/llm/local.py` falls back to `http://localhost:11434`, which inside the
+    ai-server container is the AI server itself. Wiring the Docker service name is
+    what makes the two containers actually find each other.
+    """
+    compose = _compose_text()
+
+    assert "OLLAMA_HOST: ${OLLAMA_HOST:-http://ollama:11434}" in compose
+    assert "OLLAMA_HOST: ${OLLAMA_HOST:-http://localhost" not in compose
+
+
+def test_the_model_is_pinned_by_name_and_by_digest() -> None:
+    """AC2. The name is a mutable pointer; only the digest fixes the bytes.
+
+    Both defaults live in this committed file rather than in the gitignored `.env`,
+    because a pin only the machine that happens to be running can see is not a pin
+    (NFR-15, same reasoning as the mariadb/openemr/caddy tags).
+    """
+    compose = _compose_text()
+
+    assert "LLM_MODEL: ${LLM_MODEL:-qwen2.5:7b-instruct-q4_K_M}" in compose
+    assert (
+        "LLM_MODEL_DIGEST: ${LLM_MODEL_DIGEST:-sha256:"
+        "845dbda0ea48ed749caafd9e6037047aa19acfcfd82e704d7ca97d631a0b697e}"
+    ) in compose
+    assert "LLM_MODEL: ${LLM_MODEL:-qwen2.5:latest}" not in compose
+
+
+def test_the_model_server_and_the_ai_server_name_the_same_model() -> None:
+    """AC2. The name is wired twice; drift is a 404 on every turn, not a startup error.
+
+    The model server pins one model and the AI server asks for another, both report
+    healthy, and only a chat turn reveals it.
+    """
+    compose = _compose_text()
+    wired = {
+        line.strip() for line in compose.splitlines() if line.strip().startswith("LLM_MODEL: ")
+    }
+
+    assert len(wired) == 1, f"the model is wired inconsistently: {sorted(wired)}"
+
+
+def test_the_model_image_is_pinned_and_never_latest_or_a_release_candidate() -> None:
+    """NFR-15, applied to the server as well as the model it serves.
+
+    Comment lines are dropped before matching: they name the tags being avoided in
+    order to explain why, and matching against prose would fail on the explanation.
+    """
+    dockerfile = (_DEPLOY_LOCAL / "ollama.Dockerfile").read_text(encoding="utf-8")
+    directives = "\n".join(
+        line for line in dockerfile.splitlines() if not line.strip().startswith("#")
+    )
+
+    assert "FROM ollama/ollama:0.32.15" in directives
+    for unpinned in ("ollama/ollama:latest", "ollama/ollama:rocm"):
+        assert unpinned not in directives
+    # A release candidate is not a release; it can be replaced or withdrawn.
+    assert "-rc" not in directives
+
+
+def test_the_pinned_model_is_pulled_without_a_manual_step() -> None:
+    """AC3. A stack that starts and then cannot answer is the failure mode twice had.
+
+    The entrypoint pulls on a cold volume, so a clean checkout needs no README step
+    to forget, and verifies the digest on *every* start, so a pull that never
+    happened -- or happened against a moved tag -- is loud rather than silent.
+    """
+    entrypoint = (_DEPLOY_LOCAL / "ollama-entrypoint.sh").read_text(encoding="utf-8")
+
+    assert 'ollama pull "$LLM_MODEL"' in entrypoint
+    assert 'sha256sum "$MANIFEST"' in entrypoint
+    # Refuses to serve on a mismatch: wrong-but-answering is worse than unavailable.
+    assert 'if [ "$ACTUAL" != "$EXPECTED" ]; then' in entrypoint
+    assert "exit 1" in entrypoint
+
+
+def test_the_model_healthcheck_asserts_the_model_and_not_just_the_process() -> None:
+    """AC6, TICK-057's lesson: a listening process with no model still fails every turn."""
+    compose = _compose_text()
+    healthcheck = (_DEPLOY_LOCAL / "ollama-healthcheck.sh").read_text(encoding="utf-8")
+
+    assert 'test: ["CMD", "/usr/local/bin/aeai-ollama-healthcheck"]' in compose
+    assert 'sha256sum "$MANIFEST"' in healthcheck
+    assert "ollama list" in healthcheck
+
+
+def test_the_model_volume_is_named_so_a_recreate_does_not_re_download_it() -> None:
+    """AC4. Several GB; a recreate must reuse them."""
+    compose = _compose_text()
+
+    assert "ollama-models:/root/.ollama" in compose
+    assert "  ollama-models:\n" in compose
+
+
+def _ollama_directives() -> str:
+    """The ollama service's actual YAML, with comment lines dropped.
+
+    The comments deliberately discuss GPUs and ports -- they explain why neither is
+    configured -- so matching against them would turn every explanation into a test
+    failure.
+    """
+    compose = _compose_text()
+    section = compose.split("\n  ollama:\n", 1)[1].split("\n  ai-server:\n", 1)[0]
+    return "\n".join(line for line in section.splitlines() if not line.strip().startswith("#"))
+
+
+def test_the_model_server_starts_on_a_machine_with_no_gpu() -> None:
+    """AC5. Slow is acceptable; failing to start is not.
+
+    A `deploy.resources.reservations.devices` GPU reservation hard-fails Compose on
+    any host without an accelerator, so its absence is the requirement. Ollama falls
+    back to CPU on its own.
+    """
+    directives = _ollama_directives()
+
+    assert "devices:" not in directives
+    assert "capabilities:" not in directives
+    assert "gpu" not in directives.lower()
+
+
+def test_the_model_server_publishes_no_host_port() -> None:
+    """Reachable as `ollama` on the `app` network only, like the AI server itself."""
+    directives = _ollama_directives()
+
+    assert "ports:" not in directives
+    assert "- app" in directives
+    assert "- emr" not in directives
+
+
+def test_verify_stack_covers_the_model_server_the_way_it_covers_the_others() -> None:
+    """AC6: a missing model or an unreachable server is reported before a patient finds it."""
+    verify = (_DEPLOY_LOCAL / "verify-stack.sh").read_text(encoding="utf-8")
+
+    assert "aeai-ollama-healthcheck" in verify
+    # The reachability leg has to run *inside* the ai-server container: it is the
+    # only place the configured service name is actually resolved.
+    assert "docker compose exec -T ai-server" in verify
+    assert "OLLAMA_HOST" in verify
+
+
+def test_verify_stack_tests_for_a_running_container_not_for_an_exit_status() -> None:
+    """`docker compose ps --status running <svc>` exits 0 even when nothing matched.
+
+    Confirmed live (evidence/TICK-059): with the model server stopped, the command
+    still succeeded, so a check written as `if ! docker compose ps ...` never fires
+    -- a guard that cannot fail, in the file whose whole purpose is catching silent
+    failure. `--quiet` plus a test for empty *output* is what actually discriminates.
+    """
+    verify = (_DEPLOY_LOCAL / "verify-stack.sh").read_text(encoding="utf-8")
+
+    for service in ("ollama", "ai-server"):
+        assert f"docker compose ps --status running --quiet {service}" in verify
+        assert f"! docker compose ps --status running {service}" not in verify
+
+
+def test_ai_usage_records_the_pinned_local_model_and_its_quantisation() -> None:
+    """AC7, NFR-21: alongside the existing external-model and OCR entries."""
+    ai_usage = (Path(__file__).resolve().parents[2] / "AI_USAGE.md").read_text(encoding="utf-8")
+
+    assert "Local language model" in ai_usage
+    assert "qwen2.5:7b-instruct-q4_K_M" in ai_usage
+    assert "Q4_K_M" in ai_usage
+    assert "845dbda0ea48ed749caafd9e6037047aa19acfcfd82e704d7ca97d631a0b697e" in ai_usage
+
+
 def test_the_dashboard_destination_and_the_chat_origin_are_different_hosts() -> None:
     """TICK-051 AC2: the shipped values must actually differ, or the split is inert.
 
