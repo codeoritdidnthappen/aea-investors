@@ -43,7 +43,19 @@ from ai_server.app.onboarding_chat import (
     onboarding_mode,
     unavailable_onboarding_service,
 )
-from ai_server.llm.groq import GroqConfigurationError, GroqSettings, GroqWorkflow, HttpGroqClient
+from ai_server.llm.groq import (
+    GroqClient,
+    GroqConfigurationError,
+    GroqSettings,
+    GroqWorkflow,
+    HttpGroqClient,
+)
+from ai_server.llm.local import (
+    HttpLocalModelClient,
+    LocalModelConfigurationError,
+    LocalModelSettings,
+)
+from ai_server.llm.provider import GROQ, selected_llm_provider
 from ai_server.ocr.service import OcrService, SubprocessTesseractEngine
 from ai_server.onboarding.draft_client import AssessmentDraftAdapter, OpenEmrPortalSettings
 from ai_server.onboarding.flow import OnboardingFlow
@@ -556,17 +568,22 @@ def create_app(
 def _build_chat_service(
     client: httpx.AsyncClient, openemr_client: httpx.AsyncClient, clock: Callable[[], datetime]
 ) -> ChatService:
-    """Build the real Groq-backed chat service, or a fixed-unavailable fallback.
+    """Build the chat service on the `LLM_PROVIDER`-selected client, or a
+    fixed-unavailable fallback.
 
     Mirrors `default_health_service`'s tolerance of absent Groq configuration: the
     demo's default path requires no paid LLM service (NFR-20), so a missing
     `GROQ_API_KEY`/ZDR date degrades the chat service instead of failing startup.
+
+    An *unrecognised* `LLM_PROVIDER` is the one case that is not tolerated (TICK-058):
+    `selected_llm_provider()` raises out of `lifespan` and startup stops, because
+    degrading there would silently run the chat on a provider the operator did not ask
+    for. A recognised provider whose own settings are missing still degrades.
     """
-    try:
-        groq_settings = GroqSettings.from_environment()
-    except GroqConfigurationError:
+    llm_client = _build_llm_client(selected_llm_provider(), client)
+    if llm_client is None:
         return unavailable_chat_service()
-    workflow = GroqWorkflow(PrivacyGate.create(), HttpGroqClient(groq_settings, client))
+    workflow = GroqWorkflow(PrivacyGate.create(), llm_client)
     tool_factory, slot_discovery, appointment_discovery = _build_scheduling_tool(openemr_client)
     return ChatService(
         workflow=workflow,
@@ -575,6 +592,26 @@ def _build_chat_service(
         appointment_discovery=appointment_discovery,
         clock=clock,
     )
+
+
+def _build_llm_client(provider: str, client: httpx.AsyncClient) -> GroqClient | None:
+    """Build the selected provider's client, or `None` when its settings are absent.
+
+    Both branches share `client`: an OpenAI-compatible local server speaks the same
+    protocol over the same transport, and the shared 30s timeout is what keeps an
+    unreachable provider a bounded failure rather than a hung request.
+    """
+    if provider == GROQ:
+        try:
+            return HttpGroqClient(GroqSettings.from_environment(), client)
+        except GroqConfigurationError:
+            return None
+    # The only other accepted value: `selected_llm_provider()` has already rejected
+    # everything outside `LLM_PROVIDERS`.
+    try:
+        return HttpLocalModelClient(LocalModelSettings.from_environment(), client)
+    except LocalModelConfigurationError:
+        return None
 
 
 def _build_scheduling_tool(
