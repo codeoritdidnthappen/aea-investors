@@ -80,3 +80,39 @@ synthetic patient, which this pass did not have. Everything up to the OAuth
 handoff is verified above, and the deferred-launch code is confirmed byte-identical
 inside the container, but the final user-visible step is unproven and the ticket
 should not be closed on this record alone.
+
+## Follow-up — the tile was still missing after the mounts were fixed
+
+Reported by the user once the stack was repaired. The files were correct; the
+module was not loaded:
+
+```
+mod_id  mod_name                    mod_directory      mod_active
+7       AEA Investors Portal Chat   aeai-portal-chat   0
+```
+
+`aeai_assessment_draft` existed, so the module had been registered *and*
+installed previously — only activation was lost, consistent with OpenEMR
+finding an empty module directory during the dead-worktree period.
+
+**This is a gap in the first version of this ticket's own guard.** The
+healthcheck asserts the controller file is present and non-empty, which passed
+throughout: the file was perfect. `mod_active = 0` produces exactly the reported
+symptom — no hook, no tile — while every file-level check reports healthy.
+
+`deploy/local/verify-stack.sh` now covers it, and is proven to discriminate:
+
+```
+--- with mod_active=0 ---
+  the module is registered but mod_active = 0, so OpenEMR never loads it
+VERIFY_STACK_FAILED   exit=1
+--- restored to mod_active=1 ---
+VERIFY_STACK_OK       exit=0
+```
+
+Kept out of the container healthcheck deliberately: an administrator may disable
+the module on purpose, which is not a broken container.
+
+The module was re-enabled by setting `mod_active = 1`, equivalent to the UI's
+Enable for an already-installed module. The patient-facing confirmation — tile
+visible, chat opens — still requires a portal login this pass did not have.
