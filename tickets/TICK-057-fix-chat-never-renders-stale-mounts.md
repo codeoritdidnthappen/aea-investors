@@ -10,7 +10,7 @@ labels: [deploy, portal, chat, bug]
 source: [FR-2, NFR-15]
 status: in_progress
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/118
-builder_commit: null
+builder_commit: 9e3efe3
 ---
 ## Context
 
