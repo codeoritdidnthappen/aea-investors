@@ -152,6 +152,21 @@ this document without CI failing.
 | TICK-026 | task | P2 | task(performance): measure chat and scheduling targets |
 | TICK-027 | task | P1 | task(local): verify privacy and local-demo readiness |
 | TICK-057 | task | P1 | bug(deploy): the chat never renders -- the stack mounts a deleted build worktree and cannot be restarted |
+
+#### EPIC-09 — Replace hand-coded intent with a local model (10 tickets)
+
+| Ticket | Type | Priority | Title |
+|---|---|---|---|
+| TICK-058 | feature | P1 | feat(llm): dispatch on LLM_PROVIDER and add an OpenAI-compatible local client |
+| TICK-059 | task | P1 | chore(deploy): run Ollama in the local topology and pin the model |
+| TICK-060 | feature | P1 | feat(chat): define the schema-constrained tool surface the model may call |
+| TICK-061 | feature | P1 | feat(chat): validate every model-proposed field before it can reach the record |
+| TICK-062 | feature | P1 | feat(eval): build the acceptance corpus and harness, and pick the model with it |
+| TICK-063 | feature | P1 | feat(chat): route every turn through the local model and execute its tool call |
+| TICK-064 | feature | P1 | feat(privacy): narrow Groq to restated general knowledge and stop forwarding patient text |
+| TICK-065 | task | P1 | refactor(chat): delete the deterministic intent handlers and report honestly when the model is down |
+| TICK-066 | feature | P2 | feat(deploy): add the vLLM backend and prove it agrees with the development one |
+| TICK-067 | spike | P2 | spike(llm): establish how the model handles the turns no capability covers |
 <!-- generated:roster:end -->
 
 ## Requirement traceability
@@ -196,6 +211,9 @@ being silently dropped.
 | FR-30 | TICK-001, TICK-017, TICK-030, TICK-035 |
 | FR-31 | TICK-051 |
 | FR-32 | TICK-054 |
+| FR-33 | TICK-058, TICK-059, TICK-060, TICK-062, TICK-063, TICK-065, TICK-066, TICK-067 |
+| FR-34 | TICK-064 |
+| FR-35 | TICK-060, TICK-061, TICK-063 |
 | NFR-1 | TICK-006, TICK-027 |
 | NFR-2 | TICK-009, TICK-010, TICK-017, TICK-050 |
 | NFR-3 | TICK-009, TICK-017, TICK-029 |
@@ -231,6 +249,7 @@ being silently dropped.
 | NFR-33 | TICK-008, TICK-017 |
 | NFR-34 | TICK-023, TICK-027 |
 | NFR-35 | TICK-004, TICK-024, TICK-025, TICK-027 |
+| NFR-36 | TICK-061, TICK-062, TICK-066 |
 
 Tickets with an empty `source:` (backlog hygiene, governed by no requirement): TICK-053.
 <!-- generated:traceability:end -->
@@ -255,8 +274,8 @@ It is now a mechanical check: `scripts/verify_backlog_traceability.py` runs in C
 rather than reviewed once. Current state:
 
 <!-- generated:audit:begin -->
-- Tickets in `tickets/`: 57 across 8 epics; tickets tracing to no requirement: 1.
-- Requirements declared in `PRD.md`: 67; covered by at least one ticket: 67.
+- Tickets in `tickets/`: 67 across 9 epics; tickets tracing to no requirement: 1.
+- Requirements declared in `PRD.md`: 71; covered by at least one ticket: 71.
 - Requirements with no covering ticket: none.
 - Every ticket ID above is present because `scripts/verify_backlog_traceability.py` fails CI otherwise; the audit is continuous, not a one-off review.
 <!-- generated:audit:end -->

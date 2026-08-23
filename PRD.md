@@ -70,6 +70,15 @@ that boundary.
 - **FR-32 [must]** The chat begins no authorization until the patient opens it. Rendering
   the portal dashboard must not start an OAuth flow, navigate the patient anywhere, or
   prompt for credentials on behalf of a panel the patient has not opened.
+- **FR-33 [must]** The chat's natural-language understanding runs on a model hosted
+  inside the deployment, which may process patient information. Understanding what a
+  patient asked is never implemented by enumerating the phrasings they might use.
+- **FR-34 [must]** No text a patient typed leaves the deployment. Any outbound request
+  carries only content this system constructed from structured data or from a model's
+  canonical restatement, and that content is screened before it is sent.
+- **FR-35 [must]** Every value written to the patient record originates from a
+  schema-constrained tool call, is validated field by field by application code that does
+  not trust the model, and is confirmed by the patient before the write.
 
 ### Guided onboarding
 
@@ -246,6 +255,10 @@ that boundary.
 - **NFR-35 [must]** V1 browser acceptance covers current stable desktop and Android
   Chrome releases, with desktop Chrome prioritized; no compatibility pass is required
   for another browser family.
+- **NFR-36 [must]** No field written to the patient record from a model-produced value is
+  wrong. The acceptance corpus measures this at zero across the whole corpus; a value that
+  cannot be produced correctly is refused instead. Failing to understand a request is a
+  bad turn, not a bad record, and is held to a separate and lower bar.
 
 ---
 
