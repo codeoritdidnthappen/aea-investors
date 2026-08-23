@@ -43,9 +43,25 @@ starts and serves `/health` without it.
 
 ## 2. Start the stack
 
+Run the preflight first. It refuses a stack that would come up degraded — a bind
+mount whose source is missing or empty, a `.env` missing a variable Compose
+references without a default, or a compose file inside a build worktree:
+
 ```sh
+uv run --locked python ../../scripts/preflight_local_stack.py
 docker compose up -d --build
 ```
+
+`--build` is not optional. The AI server is not bind-mounted, so without it you
+verify against stale code; OpenEMR is now built too, so the OAuth template
+overrides are copied in rather than mounted (TICK-057).
+
+Do **not** start the stack from a build worktree. Compose resolves relative bind
+mounts against the compose file's own directory, so a stack started from
+`.builder/worktrees/<ticket>/` pins every mount to a path that is deleted when
+the build finishes — the containers keep running and keep serving from it. That
+is what removed the entire AI Chat panel from the portal in TICK-057, with
+`docker ps` still reporting healthy. The preflight now refuses it.
 
 MariaDB and OpenEMR report healthy once OpenEMR finishes its first-run install
 (a few minutes on a clean checkout). Follow progress with:

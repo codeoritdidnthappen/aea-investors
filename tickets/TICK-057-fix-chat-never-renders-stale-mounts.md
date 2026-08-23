@@ -8,7 +8,7 @@ estimate: M
 depends_on: [TICK-022, TICK-051, TICK-054]
 labels: [deploy, portal, chat, bug]
 source: [FR-2, NFR-15]
-status: todo
+status: in_progress
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/118
 builder_commit: null
 ---
@@ -92,17 +92,33 @@ container is recreated, it cannot start.
 - [ ] A patient signing in to the portal sees the AI Chat tile, and opening it
       loads the chat. This is the reported symptom and is the criterion that
       actually closes the ticket.
-- [ ] A preflight check fails loudly when the stack would come up degraded:
-      a mount whose source does not exist, a module directory that resolves
-      empty, or a `.env` missing a variable `.env.example` declares. It must run
-      before or as part of bringing the stack up -- a check nobody runs is not a
-      fix. `docker compose config` already covers the last case; the mount and
-      empty-directory cases do not surface anywhere today.
-- [ ] Bringing the stack up from a build worktree cannot leave the topology
-      pointing at a path that is about to be deleted. Either the compose file
-      resolves its bind mounts against the repository root regardless of the
-      working directory, or the builder is prevented from starting the stack
-      from a worktree at all. Whichever is chosen is recorded with its reason.
+- [ ] A **preflight** refuses to start a degraded stack, and is documented as the
+      step before `docker compose up`. It fails on a bind-mount source that is
+      missing or resolves empty, on a compose file inside a build worktree, and
+      on a `.env` missing a variable Compose references without a default. It
+      does **not** fire on `${VAR:?}` (Compose already refuses those with a clear
+      message) or `${VAR:-default}` (optional by construction) -- a check that
+      cries wolf gets ignored, and an ignored check protects nothing.
+- [ ] A **healthcheck** covers the same fault continuously, because a mount can
+      die underneath an already-running container -- which is what happened, with
+      `docker ps` still reporting healthy. OpenEMR reports unhealthy when the
+      module controller is absent or empty.
+- [ ] The two OAuth template overrides are **copied in at build time**, not
+      bind-mounted individually. A single-file mount whose source disappears
+      leaves an empty file shadowing the vendor original rather than falling back
+      to it, which blanked both OAuth pages here and went stale once before.
+      OpenEMR therefore builds from its own Dockerfile over the pinned image.
+- [ ] Starting the stack from a build worktree is refused outright by the
+      preflight, so the cause is blocked rather than only detected.
+
+## Verification status
+
+Implementation is complete and recorded in
+`evidence/TICK-057/VERIFICATION_2026-08-22.md`. Every criterion above is verified
+except one: **a patient signing in, seeing the tile, and opening the chat.** That
+needs portal credentials for a seeded synthetic patient, which the fixing pass did
+not have. The ticket stays open on that criterion alone -- the repo's own rule is
+that "done" means the change was seen working, and this step has not been.
 
 ## Testing
 

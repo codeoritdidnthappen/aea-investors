@@ -19,11 +19,48 @@ def _compose_text() -> str:
 
 
 def test_compose_pins_the_stable_openemr_release_from_tick_001() -> None:
+    """NFR-15 still holds now that OpenEMR is built rather than run directly.
+
+    TICK-057 moved the pin from `image:` in the compose file to `FROM` in
+    `openemr.Dockerfile`, so the override templates could be copied in instead of
+    bind-mounted one file at a time. The release must still be pinned exactly, and
+    an unversioned tag must not appear in either file.
+    """
+    compose = _compose_text()
+    dockerfile = (
+        Path(__file__).resolve().parents[2] / "deploy/local/openemr.Dockerfile"
+    ).read_text(encoding="utf-8")
+
+    assert "dockerfile: deploy/local/openemr.Dockerfile" in compose
+    assert "FROM openemr/openemr:8.3.0" in dockerfile
+    for unversioned in ("openemr/openemr:latest", "openemr/openemr:flex"):
+        assert unversioned not in compose
+        assert unversioned not in dockerfile
+
+
+def test_ticket_057_openemr_overrides_are_copied_in_not_bind_mounted() -> None:
+    """A single-file bind mount whose source vanishes shadows the vendor original.
+
+    It leaves an empty file at the destination rather than falling back, which
+    blanked both OAuth pages in TICK-057 with nothing logged.
+    """
+    compose = _compose_text()
+    dockerfile = (
+        Path(__file__).resolve().parents[2] / "deploy/local/openemr.Dockerfile"
+    ).read_text(encoding="utf-8")
+
+    for template in ("oauth2-login.html.twig", "scope-authorize.html.twig"):
+        assert f"COPY openemr_overrides/templates/oauth2/{template}" in dockerfile
+        assert f"{template}:/var/www" not in compose
+
+
+def test_ticket_057_openemr_healthcheck_asserts_the_module_is_present() -> None:
+    """A mount can go empty underneath a running container; readiness alone misses it."""
     compose = _compose_text()
 
-    assert "image: openemr/openemr:8.3.0" in compose
-    assert "openemr/openemr:latest" not in compose
-    assert "openemr/openemr:flex" not in compose
+    assert "CMD-SHELL" in compose
+    assert "test -s /var/www/localhost/htdocs/openemr/interface/modules" in compose
+    assert "PortalChatController.php" in compose
 
 
 def test_compose_pins_mariadb_rather_than_an_unversioned_tag() -> None:
