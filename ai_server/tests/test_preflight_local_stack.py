@@ -13,8 +13,30 @@ from pathlib import Path
 from scripts.preflight_local_stack import (
     find_broken_mounts,
     find_missing_env_keys,
+    find_unpinned_model,
     find_worktree_start,
 )
+
+_PINNED_DIGEST = "sha256:845dbda0ea48ed749caafd9e6037047aa19acfcfd82e704d7ca97d631a0b697e"
+
+
+def _model_compose(model: str, digest: str | None, ai_server_model: str | None = None) -> str:
+    """A minimal two-service topology wiring a local model the way compose does."""
+    digest_line = (
+        f"      LLM_MODEL_DIGEST: ${{LLM_MODEL_DIGEST:-{digest}}}\n" if digest is not None else ""
+    )
+    ai_server_line = f"      LLM_MODEL: ${{LLM_MODEL:-{ai_server_model or model}}}\n"
+    return (
+        "services:\n"
+        "  ollama:\n"
+        "    environment:\n"
+        f"      LLM_MODEL: ${{LLM_MODEL:-{model}}}\n"
+        f"{digest_line}"
+        "  ai-server:\n"
+        "    environment:\n"
+        f"{ai_server_line}"
+    )
+
 
 _COMPOSE = """services:
   openemr:
@@ -94,3 +116,72 @@ def test_ticket_057_a_complete_env_reports_nothing(tmp_path: Path) -> None:
     (deploy / ".env.example").write_text("GUARDED=a\nDEFAULTED=b\nBARE=c\n", encoding="utf-8")
     (deploy / ".env").write_text("GUARDED=a\nDEFAULTED=b\nBARE=c\n", encoding="utf-8")
     assert find_missing_env_keys(deploy / ".env", deploy / ".env.example", compose) == []
+
+
+# --- TICK-059: the local model must be pinned to specific bytes ---------------
+
+
+def test_ticket_059_a_correctly_pinned_model_reports_nothing(tmp_path: Path) -> None:
+    """The healthy case first: a check that fires on good config protects nothing."""
+    compose = _stack(tmp_path, _model_compose("qwen2.5:7b-instruct-q4_K_M", _PINNED_DIGEST))
+    assert find_unpinned_model(compose) == []
+
+
+def test_ticket_059_a_latest_tag_is_refused(tmp_path: Path) -> None:
+    """`latest` resolves to different weights on different days (NFR-15)."""
+    compose = _stack(tmp_path, _model_compose("qwen2.5:latest", _PINNED_DIGEST))
+    problems = find_unpinned_model(compose)
+    assert len(problems) == 1
+    assert "not pinned to a specific tag" in problems[0]
+
+
+def test_ticket_059_a_model_with_no_tag_at_all_is_refused(tmp_path: Path) -> None:
+    """Ollama resolves a bare name to `:latest`, so this is the same fault unwritten."""
+    compose = _stack(tmp_path, _model_compose("qwen2.5", _PINNED_DIGEST))
+    problems = find_unpinned_model(compose)
+    assert len(problems) == 1
+    assert "not pinned to a specific tag" in problems[0]
+
+
+def test_ticket_059_a_pinned_tag_without_a_digest_is_refused(tmp_path: Path) -> None:
+    """AC2: name *and* digest. A tag alone is a mutable pointer upstream controls."""
+    compose = _stack(tmp_path, _model_compose("qwen2.5:7b-instruct-q4_K_M", None))
+    problems = find_unpinned_model(compose)
+    assert len(problems) == 1
+    assert "no pinned digest" in problems[0]
+
+
+def test_ticket_059_a_truncated_digest_is_refused(tmp_path: Path) -> None:
+    """`ollama list` shows 12 characters; pasting that in would pin almost nothing."""
+    compose = _stack(tmp_path, _model_compose("qwen2.5:7b-instruct-q4_K_M", "sha256:845dbda0ea48"))
+    problems = find_unpinned_model(compose)
+    assert len(problems) == 1
+    assert "not a full sha256" in problems[0]
+
+
+def test_ticket_059_the_model_server_and_ai_server_naming_different_models_is_refused(
+    tmp_path: Path,
+) -> None:
+    """Every chat turn 404s while both containers report healthy -- silent at runtime."""
+    compose = _stack(
+        tmp_path,
+        _model_compose(
+            "qwen2.5:7b-instruct-q4_K_M",
+            _PINNED_DIGEST,
+            ai_server_model="llama3.1:8b-instruct-q4_K_M",
+        ),
+    )
+    problems = find_unpinned_model(compose)
+    assert len(problems) == 1
+    assert "two different models" in problems[0]
+
+
+def test_ticket_059_a_topology_with_no_local_model_reports_nothing(tmp_path: Path) -> None:
+    """TICK-067 swaps Ollama for vLLM; a stack running neither is not a broken pin."""
+    assert find_unpinned_model(_stack(tmp_path)) == []
+
+
+def test_ticket_059_the_shipped_compose_file_pins_its_model(tmp_path: Path) -> None:
+    """The check applied to the real file, not only to synthetic ones."""
+    real = Path(__file__).resolve().parents[2] / "deploy" / "local" / "docker-compose.yml"
+    assert find_unpinned_model(real) == []
