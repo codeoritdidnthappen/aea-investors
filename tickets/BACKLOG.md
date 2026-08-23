@@ -141,7 +141,7 @@ this document without CI failing.
 | TICK-042 | task | P0 | bug(onboarding): demographics write route is structurally unreachable for a genuine patient token |
 | TICK-043 | task | P2 | bug(onboarding): a confirmed mononym (empty family name) can never even be entered |
 
-#### EPIC-08 — Deploy and verify (6 tickets)
+#### EPIC-08 — Deploy and verify (7 tickets)
 
 | Ticket | Type | Priority | Title |
 |---|---|---|---|
@@ -151,6 +151,7 @@ this document without CI failing.
 | TICK-025 | task | P1 | task(verification): validate approved Android Chrome behavior |
 | TICK-026 | task | P2 | task(performance): measure chat and scheduling targets |
 | TICK-027 | task | P1 | task(local): verify privacy and local-demo readiness |
+| TICK-057 | task | P1 | bug(deploy): the chat never renders -- the stack mounts a deleted build worktree and cannot be restarted |
 <!-- generated:roster:end -->
 
 ## Requirement traceability
@@ -164,7 +165,7 @@ being silently dropped.
 | Requirement | Tickets |
 |---|---|
 | FR-1 | TICK-002, TICK-008, TICK-012, TICK-024, TICK-032, TICK-045, TICK-055 |
-| FR-2 | TICK-002, TICK-012, TICK-024, TICK-032, TICK-045, TICK-046, TICK-047, TICK-051, TICK-054, TICK-056 |
+| FR-2 | TICK-002, TICK-012, TICK-024, TICK-032, TICK-045, TICK-046, TICK-047, TICK-051, TICK-054, TICK-056, TICK-057 |
 | FR-3 | TICK-001, TICK-002, TICK-008, TICK-012, TICK-028, TICK-033, TICK-056 |
 | FR-4 | TICK-002, TICK-012, TICK-013 |
 | FR-5 | TICK-003, TICK-017, TICK-035, TICK-037 |
@@ -209,7 +210,7 @@ being silently dropped.
 | NFR-12 | TICK-018, TICK-019, TICK-021 |
 | NFR-13 | TICK-026 |
 | NFR-14 | TICK-026 |
-| NFR-15 | TICK-001, TICK-022 |
+| NFR-15 | TICK-001, TICK-022, TICK-057 |
 | NFR-16 | TICK-022, TICK-023 |
 | NFR-17 | TICK-023 |
 | NFR-18 | TICK-005, TICK-024, TICK-027, TICK-052 |
@@ -254,7 +255,7 @@ It is now a mechanical check: `scripts/verify_backlog_traceability.py` runs in C
 rather than reviewed once. Current state:
 
 <!-- generated:audit:begin -->
-- Tickets in `tickets/`: 56 across 8 epics; tickets tracing to no requirement: 1.
+- Tickets in `tickets/`: 57 across 8 epics; tickets tracing to no requirement: 1.
 - Requirements declared in `PRD.md`: 67; covered by at least one ticket: 67.
 - Requirements with no covering ticket: none.
 - Every ticket ID above is present because `scripts/verify_backlog_traceability.py` fails CI otherwise; the audit is continuous, not a one-off review.

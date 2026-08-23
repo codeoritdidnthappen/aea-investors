@@ -27,9 +27,13 @@ services:
       - emr
 
   openemr:
-    # Pinned stable release per TICK-001's endpoint matrix (evidence/TICK-001);
-    # never tracks an unversioned/"latest" tag (NFR-15).
-    image: openemr/openemr:8.3.0
+    # TICK-057: built from the pinned image rather than run directly, so the two
+    # OAuth template overrides are copied in at build time instead of bind-mounted
+    # one file at a time. See openemr.Dockerfile for why. The context is the
+    # repository root because that is where the overrides live.
+    build:
+      context: ../..
+      dockerfile: deploy/local/openemr.Dockerfile
     restart: unless-stopped
     depends_on:
       mariadb:
@@ -56,28 +60,20 @@ services:
       # The patient-portal AI chat entry (TICK-012), bind-mounted read-only into the
       # pinned image's custom-module directory rather than baking a forked image.
       - ../../openemr_modules/aeai-portal-chat:/var/www/localhost/htdocs/openemr/interface/modules/custom_modules/aeai-portal-chat:ro
-      # TICK-037: a targeted patch to a bug in this pinned release's own OAuth
-      # consent-screen template (see openemr_overrides/templates/oauth2/scope-authorize.html.twig
-      # for the full explanation), not a custom feature -- same bind-mount-over-vendor-path
-      # approach as the module mount above, applied to a single core file instead.
-      - ../../openemr_overrides/templates/oauth2/scope-authorize.html.twig:/var/www/localhost/htdocs/openemr/templates/oauth2/scope-authorize.html.twig:ro
-      # TICK-045: same bind-mount-over-vendor-path approach, adding an iframe
-      # breakout to the OAuth login/MFA template (see
-      # openemr_overrides/templates/oauth2/oauth2-login.html.twig for the full
-      # explanation) so an expired ai-server session's re-auth always renders as
-      # a full top-level page instead of trapped in the AI Chat portal panel.
-      - ../../openemr_overrides/templates/oauth2/oauth2-login.html.twig:/var/www/localhost/htdocs/openemr/templates/oauth2/oauth2-login.html.twig:ro
+      # TICK-037's consent-screen fix and TICK-045's iframe breakout are no longer
+      # mounted here -- openemr.Dockerfile copies both in at build time. They
+      # truncated to zero bytes in TICK-057 when their source was deleted under a
+      # running container, silently blanking both OAuth pages.
     healthcheck:
+      # TICK-057: readiness is not enough. The module directory is a bind mount, so
+      # it can go empty underneath a running container when its source is deleted
+      # -- which is exactly what happened, invisibly, until a patient found the chat
+      # missing. Assert the controller is actually present before reporting healthy,
+      # so `docker ps` shows the fault instead of the portal quietly losing the chat.
       test:
         [
-          "CMD",
-          "/usr/bin/curl",
-          "--fail",
-          "--insecure",
-          "--location",
-          "--show-error",
-          "--silent",
-          "https://localhost/meta/health/readyz",
+          "CMD-SHELL",
+          "test -s /var/www/localhost/htdocs/openemr/interface/modules/custom_modules/aeai-portal-chat/src/Controller/PortalChatController.php && /usr/bin/curl --fail --insecure --location --show-error --silent https://localhost/meta/health/readyz",
         ]
       start_period: 3m
       start_interval: 10s

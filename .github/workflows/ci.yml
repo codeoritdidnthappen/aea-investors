@@ -12,6 +12,9 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       - run: uv run --locked python scripts/verify_release_governance.py --artifact-root .
       - run: uv run --locked python scripts/verify_backlog_traceability.py
+      # TICK-057: --skip-env because CI has no deploy/local/.env; the mount and
+      # worktree checks still run and are the ones that catch a silent degradation.
+      - run: uv run --locked python scripts/preflight_local_stack.py --skip-env
       - run: uv run --locked --group dev ruff format --check .
       - run: uv run --locked --group dev ruff check .
       - run: uv run --locked --group dev pytest
