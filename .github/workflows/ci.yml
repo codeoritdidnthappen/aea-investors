@@ -15,6 +15,16 @@ jobs:
       # TICK-057: --skip-env because CI has no deploy/local/.env; the mount and
       # worktree checks still run and are the ones that catch a silent degradation.
       - run: uv run --locked python scripts/preflight_local_stack.py --skip-env
+      # TICK-062: the deterministic half of the acceptance corpus, replayed from a
+      # recorded run so it needs no model server. It cannot re-measure the model, but
+      # it fails if the corpus, the scoring, or TICK-061's validators move -- and it
+      # refuses a replay recorded under an older prompt, so a prompt edit cannot reach
+      # a green build without someone re-running the corpus for real (NFR-36, AC7).
+      # The full run against a live backend stays manual; docs/RELEASE_GOVERNANCE.md
+      # says which is which.
+      - run: >
+          uv run --locked python -m scripts.evaluate_acceptance_corpus --ci-subset
+          --replay eval/replays/ollama-llama3.1-8b-instruct-q4_K_M.json
       - run: uv run --locked --group dev ruff format --check .
       - run: uv run --locked --group dev ruff check .
       - run: uv run --locked --group dev pytest

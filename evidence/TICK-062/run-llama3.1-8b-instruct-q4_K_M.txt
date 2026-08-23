@@ -1,0 +1,20 @@
+backend: ollama  model: llama3.1:8b-instruct-q4_K_M  cases: 44
+prompt: acceptance-tool-call-v1
+
+-- write bar (NFR-36: zero wrong, across the whole corpus) --
+wrong writes:     0
+correct writes:   20
+refused writes:   4  (proposed, and the validator held)
+WRITE_BAR_MET: no model-produced value reached the record wrongly.
+
+-- understanding bar (D15: imperfect is acceptable, target 80%) --
+understood:       38/44 (86.4%)
+UNDERSTANDING_BAR_MET: the model reads the corpus well enough to be useful.
+
+misread turns (softer bar -- a retry, not a record):
+  [address-partial-no-city-state-zip] expected reply, got no admissible call (update_address.arguments.city: Field required)
+  [demographics-dob-in-the-future] expected reply, got update_demographics
+  [assessment-accommodations-none] expected record_assessment_answer, got reply
+  [assessment-answer-to-a-different-question] expected reply, got update_demographics
+  [cancel-then-rebook] expected cancel_appointment, got update_demographics
+  [document-read-upload] expected extract_document_fields, got no admissible call (extract_document_fields.arguments.upload_id: String should match pattern '^[A-Za-z0-9_-]{16,64}$')

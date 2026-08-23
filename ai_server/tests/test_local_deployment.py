@@ -262,12 +262,14 @@ def test_the_model_is_pinned_by_name_and_by_digest() -> None:
     """
     compose = _compose_text()
 
-    assert "LLM_MODEL: ${LLM_MODEL:-qwen2.5:7b-instruct-q4_K_M}" in compose
+    # TICK-062 replaced the provisional qwen2.5 pin with the model its acceptance
+    # corpus selected; the digest moved with it, which is the point of pinning both.
+    assert "LLM_MODEL: ${LLM_MODEL:-llama3.1:8b-instruct-q4_K_M}" in compose
     assert (
         "LLM_MODEL_DIGEST: ${LLM_MODEL_DIGEST:-sha256:"
-        "845dbda0ea48ed749caafd9e6037047aa19acfcfd82e704d7ca97d631a0b697e}"
+        "46e0c10c039e019119339687c3c1757cc81b9da49709a3b3924863ba87ca666e}"
     ) in compose
-    assert "LLM_MODEL: ${LLM_MODEL:-qwen2.5:latest}" not in compose
+    assert "LLM_MODEL: ${LLM_MODEL:-llama3.1:latest}" not in compose
 
 
 def test_the_model_server_and_the_ai_server_name_the_same_model() -> None:
@@ -402,9 +404,9 @@ def test_ai_usage_records_the_pinned_local_model_and_its_quantisation() -> None:
     ai_usage = (Path(__file__).resolve().parents[2] / "AI_USAGE.md").read_text(encoding="utf-8")
 
     assert "Local language model" in ai_usage
-    assert "qwen2.5:7b-instruct-q4_K_M" in ai_usage
+    assert "llama3.1:8b-instruct-q4_K_M" in ai_usage
     assert "Q4_K_M" in ai_usage
-    assert "845dbda0ea48ed749caafd9e6037047aa19acfcfd82e704d7ca97d631a0b697e" in ai_usage
+    assert "46e0c10c039e019119339687c3c1757cc81b9da49709a3b3924863ba87ca666e" in ai_usage
 
 
 def test_the_dashboard_destination_and_the_chat_origin_are_different_hosts() -> None:

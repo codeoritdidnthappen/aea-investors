@@ -12,4 +12,9 @@ dist
 coverage
 .coverage
 generated-fixtures
+# TICK-062: the acceptance corpus and its recorded runs are evaluation-only data.
+# ai-server.Dockerfile copies `ai_server` and nothing else, so they were never going
+# to ship; this keeps them out of the build context too, and states the rule where
+# someone widening that COPY would read it.
+eval
 deploy/local/.env

@@ -89,7 +89,26 @@ method exists for it.
   D10: a wrong routing decision selects the wrong action, it cannot place patient data
   into an outbound payload.
 
+| D17 | **`llama3.1:8b-instruct-q4_K_M`**, pinned by digest. Settles the model and quantisation left open under D11 | Chosen on the corpus, not on reputation. Over all 44 acceptance cases it produced **zero wrong writes** and understood 86.4%; `qwen2.5:7b-instruct-q4_K_M`, the provisional pin from TICK-059, produced **four wrong writes** at 81.8% understanding — including a date of birth off by a month and a phone number filed against a question about accommodations. D15 makes that decisive rather than a trade: the understanding scores are close enough to be noise, and one of the two corrupts records. Quantisation held at Q4_K_M for both so the model is the only variable. Numbers in `AI_USAGE.md` and `evidence/TICK-062` |
+
 ## Open
 
-Exact model and quantisation within D11's class. The tool surface above needs review. Exact model and
-quantisation within D11's class. Prompt design and the eval corpus itself.
+The tool surface above needs review. Prompt design beyond the tool-call prompt the
+corpus measures (`acceptance-tool-call-v1`).
+
+**Confirmed by measurement, not left as an assumption:**
+
+- Ollama 0.32.15 **cannot** constrain generation with `tool_call_json_schema()` — the
+  discriminated union over ten argument models fails its grammar compiler with a 400.
+  TICK-060 AC1's first half is therefore unavailable on the development runtime, and
+  `parse_tool_call()` carries the guarantee alone there. Generation is constrained to
+  the envelope (one object, two keys, a published tool name) instead, which is what that
+  runtime will compile. Whether vLLM's outlines backend accepts the full schema is
+  untested — see the risk below.
+- Runtime divergence (D7) is still **unmeasured against vLLM**. vLLM does not run on the
+  Apple Silicon development host (arm64, no CUDA) and no vLLM adapter exists yet
+  (`LLM_PROVIDERS` is `("groq", "ollama")`; TICK-066 owns it and depends on this
+  ticket). The harness takes an arbitrary OpenAI-compatible endpoint, so it is ready to
+  measure this the day a vLLM server exists; what has been measured instead is
+  quantisation divergence within Ollama, which is the same mechanism on the runtime
+  that is available. See `evidence/TICK-062`.
