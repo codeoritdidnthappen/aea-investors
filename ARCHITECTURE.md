@@ -100,6 +100,30 @@ The authorization code is delivered to the AI server callback, not relayed throu
 iframe JavaScript. Replays, expired state, and mismatched state or nonce values fail
 closed. The iframe receives no delegated OpenEMR credential.
 
+**Constraint — the portal session cannot authorize the chat; the second sign-in stays.**
+OpenEMR 8.3.0 will not accept an authenticated patient-portal session at
+`/oauth2/default/authorize`. A patient who has just signed in to the portal signs in a
+second time when they first open the chat, and consents again on every authorization.
+This is a property of the release, not of this deployment, and no configuration removes
+it. Established by [TICK-056](evidence/TICK-056/FINDING.md), which exercised it live.
+
+The cause is not cookie scoping — the `PortalOpenEMR` cookie is issued with `path=/` and
+*is* delivered to the authorization endpoint; nothing there reads it. The only path in
+the release that skips the login is the SMART EHR launch, and it resolves its user from
+the *core* session's `authUserID` against the `users` table. A portal session has no
+`authUserID`, and a patient has no `users` row. The release states the limitation itself:
+`// for now we only handle in-ehr launch for providers not patients`
+(`src/RestControllers/AuthorizationController.php:1921`). Consent is separately
+unconditional: `oauth_trusted_user` is never consulted before the consent screen, so
+prior approval does not suppress it.
+
+Do not reach for the EHR-launch skip path to close this. TICK-056 exercised it: it mints
+a token whose `sub` is a `users` row while the patient context comes only from the launch
+token, so the identity that authenticates is not the identity the token grants access to.
+That would dissolve the boundary TICK-028 established between the patient's portal
+session and delegated API authorization. Re-check this constraint on any OpenEMR upgrade;
+the upstream comment reads like an acknowledged gap.
+
 **Invariant — the chat is a panel, never a landing page.** An authorization that
 completes at top level lands the patient on the portal dashboard. One that completes
 inside the chat panel loads the chat in that panel. The patient is never left on the
@@ -107,10 +131,14 @@ standalone chat page and is never returned to whatever page they were on when th
 ended. Fixed by [ADR-8](#adr-8--the-chat-is-a-panel-never-a-landing-page).
 
 The rule is stated over the flow's *position*, not the patient's intent. "Did they type a
-password?" is not something the callback can know: a live OAuth2 provider session
+password?" is not something the callback can know: the SMART EHR-launch skip path
 completes the whole exchange with no prompt at all, whether the flow is running at top
-level or in the panel. Position is knowable, and it is what actually determines whether
-landing on a full-page chat would strand the patient.
+level or in the panel, and a future release that reuses a session would do the same.
+Position is knowable, and it is what actually determines whether landing on a full-page
+chat would strand the patient. (Note that a live OAuth2 *provider* session does not skip
+the prompt in 8.3.0 — `oauthAuthorizationFlow()` redirects to `/provider/login`
+unconditionally, verified in [TICK-056](evidence/TICK-056/FINDING.md). The rule does not
+depend on that either way.)
 
 Three mechanics make it work, and each is load-bearing:
 

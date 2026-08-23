@@ -1,0 +1,75 @@
+
+=== 0. Environment under test ===
+  openemr image:  local-openemr
+  openemr base:   FROM openemr/openemr:8.3.0
+  relevant globals:
+    oauth_app_manual_approval = 0
+    oauth_ehr_launch_authorization_flow_skip = 1
+    oauth_password_grant = 0
+    portal_onsite_two_enable = 1
+    rest_api = 1
+    rest_fhir_api = 1
+    site_addr_oath = https://emr.localhost
+    smart_context_test_launches = 
+
+=== E1. A real patient-portal session, and what is in it ===
+  [PASS] portal login succeeded (landed on home.php)
+  PortalOpenEMR session id length: 32
+  cookie attributes as issued: path=/, domain=#HttpOnly_emr.localhost
+  session keys held by that portal session (keys only; values are patient data):
+    authUser
+    csrf_private_key
+    enable_database_connection_pooling
+    landOn
+    language_choice
+    language_direction
+    patient_portal_onsite_two
+    pid
+    portal_login_username
+    portal_username
+    providerId
+    providerName
+    providerUName
+    ptName
+    sessionUser
+    site_id
+  [PASS] portal session contains NO authUserID (the key the skip path reads)
+
+=== E2. GET /oauth2/default/authorize while holding the portal session ===
+  client under test: xi5CDW1y7OWLMBOdq8wjky2GISXG35ONAf5wgwk12jk
+  request > Cookie: PortalOpenEMR=<REDACTED_SESSION_ID>; App=PortalOpenEMR
+  [PASS] the portal cookie IS delivered to /oauth2/ (path=/ puts it in scope)
+  redirect: https://emr.localhost/oauth2/default/provider/login
+  [PASS] a password prompt is presented despite the live portal session
+
+=== E3. SMART EHR launch (launch + aud), skip path fully enabled, patient session ===
+  probe client: iyo3s-14Bp2IDrT6zwuhLhQ1txnE3Ozy3GrnU5cxWEA (confidential, client_role=user)
+  global oauth_ehr_launch_authorization_flow_skip = 1 ; client skip flag = 1
+  minted a real SMART launch token for pid=1 (208 bytes)
+  with the patient portal session -> https://emr.localhost/oauth2/default/provider/login
+  [PASS] EHR launch with a patient portal session still lands on the login form
+
+=== E4. Control: identical request, but a core session naming a users row ===
+  synthetic core session names users.id=3 (portal-user) -- no credential is used
+  step 1 -> HTTP 200, autosubmit page: 2
+  step 2 -> callback reached with an authorization code (1100 bytes), no login, no consent
+  [PASS] the skip machinery is live and correctly configured -- it just needs a users row
+
+=== E5. What the skip path's token actually binds to ===
+  id_token sub resolves to: users.username = portal-user
+  patient claim == sub ?  no
+  [PASS] authenticated identity is a staff users row; patient context comes only from the launch token
+
+=== E6. Does consent persist for this client across authorizations? ===
+  prior oauth_trusted_user rows for the product client: 1
+  round 1: login form shown -> after login redirected to scope-authorize-confirm -> consent page 36592 bytes
+  round 2: login form shown -> after login redirected to scope-authorize-confirm -> consent page 36592 bytes
+  [PASS] consent is presented on every authorization; prior consent does not suppress it
+
+=== E7. Does OpenEMR's own OAuth2 provider session skip the prompt on a second authorize? ===
+  a live authserverOpenEMR provider session is now held
+  second authorize -> https://emr.localhost/oauth2/default/provider/login
+  [PASS] even the provider's OWN session re-prompts; there is no already-authenticated check
+
+=== Result ===
+  all checks behaved as FINDING.md records
