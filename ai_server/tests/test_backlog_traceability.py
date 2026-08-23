@@ -63,13 +63,36 @@ def test_committed_backlog_covers_every_ticket_file() -> None:
     assert check_backlog(document, tickets, requirement_ids) == []
 
 
-def test_prd_requirement_ids_are_parsed_without_prefix_collisions() -> None:
+def test_prd_requirement_ids_are_parsed_without_prefix_collisions(tmp_path: Path) -> None:
+    """`NFR-33` must not be read as a declaration of `FR-33`.
+
+    Driven by a fixture rather than the real PRD. An earlier version asserted
+    "FR-33" not in requirement_ids against PRD.md, which only held while FR-33
+    happened not to exist -- it broke the moment one was added, without anything
+    being wrong. The collision this guards against is a property of the parser, so
+    the parser is what the test drives.
+    """
+    prd = tmp_path / "PRD.md"
+    prd.write_text(
+        "- **FR-2 [must]** two\n"
+        "- **FR-10 [must]** ten\n"
+        "- **NFR-33 [must]** an NFR whose number collides with an FR that also exists\n"
+        "- **FR-33 [must]** the colliding FR\n",
+        encoding="utf-8",
+    )
+
+    requirement_ids = parse_requirement_ids(prd)
+
+    assert requirement_ids == ["FR-2", "FR-10", "FR-33", "NFR-33"]
+    assert requirement_ids.index("FR-2") < requirement_ids.index("FR-10")
+
+
+def test_prd_requirement_ids_include_the_real_documents_latest_additions() -> None:
+    """A cheap guard that the real PRD still parses and orders FRs before NFRs."""
     requirement_ids = parse_requirement_ids(REPOSITORY_ROOT / "PRD.md")
 
     assert "FR-31" in requirement_ids
-    assert "FR-32" in requirement_ids
     assert "NFR-33" in requirement_ids
-    assert "FR-33" not in requirement_ids
     assert requirement_ids.index("FR-2") < requirement_ids.index("FR-10") < len(requirement_ids)
 
 

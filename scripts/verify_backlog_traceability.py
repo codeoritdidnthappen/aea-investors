@@ -22,6 +22,7 @@ EPIC_TITLES = {
     "EPIC-06": "Deliver guided onboarding",
     "EPIC-07": "Deliver authoritative scheduling",
     "EPIC-08": "Deploy and verify",
+    "EPIC-09": "Replace hand-coded intent with a local model",
 }
 
 _REQUIREMENT_PATTERN = re.compile(r"^- \*\*((?:FR|NFR)-\d+)\b", re.MULTILINE)
