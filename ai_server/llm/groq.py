@@ -13,6 +13,7 @@ from typing import AsyncIterator, Literal, Protocol
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from ai_server.llm.provider import LlmUnavailableError
 from ai_server.privacy.gate import (
     LOCAL_CORRECTION,
     OutboundPayload,
@@ -37,8 +38,13 @@ class GroqConfigurationError(Exception):
     """Raised when a required local Groq deployment control is absent."""
 
 
-class GroqUnavailableError(Exception):
-    """Raised when Groq cannot provide a safe response."""
+class GroqUnavailableError(LlmUnavailableError):
+    """Raised when Groq cannot provide a safe response.
+
+    A subclass of the provider-agnostic error since TICK-058, so `GroqWorkflow` can
+    degrade on any configured provider's unavailability. Every existing
+    `except GroqUnavailableError` still catches exactly what it caught before.
+    """
 
 
 @dataclass(frozen=True)
@@ -289,7 +295,11 @@ class GroqWorkflow:
             return
         try:
             plan = PlanningOutput.model_validate_json(await self._client.complete(payload))
-        except (GroqUnavailableError, ValidationError, httpx.HTTPError):
+        # `LlmUnavailableError` rather than `GroqUnavailableError` since TICK-058: the
+        # client behind this workflow is whichever one `LLM_PROVIDER` selected, and an
+        # unreachable local model must degrade this turn exactly as an unreachable Groq
+        # does -- not escape as a 500.
+        except (LlmUnavailableError, ValidationError, httpx.HTTPError):
             yield PLANNING_FAILED_RESPONSE
             return
 
