@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+from pathlib import Path
 
 import httpx
 import pytest
@@ -209,3 +210,79 @@ def test_build_chat_service_wires_the_real_tool_when_groq_and_openemr_settings_p
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# --- TICK-063: the model-first turn service is wired the same way ------------------
+
+
+def test_tick063_the_turn_service_degrades_when_the_local_model_is_unconfigured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D12: with no deterministic fallback, an absent `LLM_MODEL` degrades the whole
+    chat to the honest unavailable message rather than failing startup."""
+    from ai_server.app.main import _build_model_turn_service
+
+    _clear_env(monkeypatch)
+    monkeypatch.setenv("LLM_PROVIDER", "ollama")
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+
+    service = _build_model_turn_service(
+        httpx.AsyncClient(), httpx.AsyncClient(), _store(), lambda: NOW
+    )
+
+    assert service.client is None
+    assert service.services.slot_discovery is None
+
+
+def test_tick063_missing_openemr_settings_keep_the_model_and_drop_the_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same tolerance `_build_scheduling_tool` has: a demo missing the OpenEMR base URLs
+    loses the tools that need them and keeps the rest of the turn."""
+    from ai_server.app.main import _build_model_turn_service
+
+    _clear_env(monkeypatch)
+    monkeypatch.setenv("LLM_PROVIDER", "ollama")
+    monkeypatch.setenv("LLM_MODEL", "llama3.1:8b-instruct-q4_K_M")
+
+    service = _build_model_turn_service(
+        httpx.AsyncClient(), httpx.AsyncClient(), _store(), lambda: NOW
+    )
+
+    assert service.client is not None
+    assert service.services.booking is None
+    assert service.services.demographics is None
+    assert service.services.ocr is not None  # OCR is local and needs no OpenEMR settings
+
+
+def test_tick063_a_configured_environment_wires_every_tool_to_a_real_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ai_server.app.main import _build_model_turn_service
+
+    _clear_env(monkeypatch)
+    for name, value in _REQUIRED_ENV.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("LLM_PROVIDER", "ollama")
+    monkeypatch.setenv("LLM_MODEL", "llama3.1:8b-instruct-q4_K_M")
+
+    service = _build_model_turn_service(
+        httpx.AsyncClient(), httpx.AsyncClient(), _store(), lambda: NOW
+    )
+
+    services = service.services
+    assert isinstance(services.slot_discovery, SlotDiscoveryService)
+    assert isinstance(services.appointment_discovery, AppointmentDiscoveryService)
+    assert services.booking is not None
+    assert services.cancellation is not None
+    assert services.appointment_request is not None
+    assert services.demographics is not None
+    assert services.onboarding is not None
+    assert service.cursors is not None
+
+
+def _store():
+    """A `SessionStore` that is never opened: the builder only stores the reference."""
+    from ai_server.app.auth import SessionStore
+
+    return SessionStore(Path("/tmp/tick063-wiring-unused.sqlite3"), b"k" * 32)

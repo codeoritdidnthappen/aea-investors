@@ -8,7 +8,7 @@
 | Local language model | Ollama `llama3.1:8b-instruct-q4_K_M` (8B, GGUF Q4_K_M), pinned `sha256:46e0c10c039e019119339687c3c1757cc81b9da49709a3b3924863ba87ca666e` | Runs in the local topology (`deploy/local`, TICK-059) and may see PHI, unlike the external model above. A ~7-8B quantised instruct model per LOCAL_LLM_SPEC D11, selected by TICK-062's acceptance corpus on the numbers below. Pinned by name and digest, verified on every start, because this model proposes values that reach a medical record (D6). |
 | OCR | Local Tesseract (`tesseract` binary), pinned `eng` trained data | Consented, transient synthetic identity-document extraction only (name, date of birth, address); never cloud OCR. |
 | Prompt contract | `ONBOARDING_CONTRACT.md` v1 | Defines deterministic onboarding fields and supportive-content text. |
-| Local model prompt | `acceptance-tool-call-v1` (`scripts/evaluate_acceptance_corpus.py`) | The tool-call prompt the corpus below measured. Changing it invalidates every recorded run and forces a re-measurement before CI is green. |
+| Local model prompt | `acceptance-tool-call-v1` (`ai_server/llm/prompt.py`) | The tool-call prompt the corpus below measured, and — since TICK-063 made the local model the front door for every turn — the prompt production sends. One module owns both, so the numbers below describe the running system rather than a harness that happens to agree with it. Changing it invalidates every recorded run and forces a re-measurement before CI is green. |
 
 ## How the local model was selected (TICK-062, NFR-36)
 

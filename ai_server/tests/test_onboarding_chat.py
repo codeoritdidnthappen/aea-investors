@@ -491,6 +491,14 @@ def test_completion_without_a_bound_patient_uuid_still_completes_tick_042(
 
 
 # --- Route-level dispatch (main.py) ------------------------------------------------
+#
+# TICK-063 inverted this. `/api/chat` used to decide between onboarding, the address
+# flow and Groq by matching the patient's message against phrasings (`onboarding_mode`,
+# `address_update_mode`); it now hands every turn to the local model, which decides.
+# What is asserted here is therefore the opposite of what it used to be: this service is
+# reached by no turn, whatever the message and whatever the cursor. The service itself is
+# unchanged and its own behaviour is still covered above -- TICK-065 removes it once the
+# model path is proven.
 
 
 @dataclass
@@ -506,15 +514,23 @@ class _ScriptedOnboardingService:
 
 
 @dataclass
-class _ScriptedSchedulingService:
-    calls: list[str] = field(default_factory=list)
+class _ScriptedTurnService:
+    calls: list[tuple[str, str]] = field(default_factory=list)
 
     async def stream_reply(
-        self, message: str, access_token: str | None = None, patient_id: str | None = None
+        self,
+        handle: str,
+        message: str,
+        image_base64: str | None = None,
+        access_token: str | None = None,
+        patient_id: str | None = None,
     ) -> AsyncIterator[str]:
-        del access_token, patient_id
-        self.calls.append(message)
-        yield "scheduling-reply"
+        del image_base64, access_token, patient_id
+        self.calls.append((handle, message))
+        yield "model-reply"
+
+    def discard(self, handle: str) -> None:
+        del handle
 
 
 async def _post_chat(app, cookie: str, message: str) -> httpx.Response:
@@ -529,79 +545,65 @@ async def _post_chat(app, cookie: str, message: str) -> httpx.Response:
             )
 
 
-def test_route_dispatches_to_onboarding_once_a_cursor_is_active(tmp_path: Path) -> None:
+def _app_with_both(tmp_path: Path, *, cursor: str | None = None):
     configured = settings(tmp_path)
     store = SessionStore(configured.database_path, configured.encryption_key)
     store.initialize()
     handle = store.create_session(OAuthTokens("a", "r", "n"), NOW, configured.session_ttl)
-    store.save_cursor(handle, "draft-1", NOW)
-
+    if cursor is not None:
+        store.save_cursor(handle, cursor, NOW)
     onboarding = _ScriptedOnboardingService()
-    scheduling = _ScriptedSchedulingService()
+    model = _ScriptedTurnService()
     app = create_app(
         configured,
         clock=lambda: NOW,
-        chat_service=scheduling,
         onboarding_service=onboarding,
+        model_turn_service=model,
     )
+    return app, handle, onboarding, model
+
+
+def test_tick063_an_active_cursor_no_longer_diverts_the_turn_to_onboarding(
+    tmp_path: Path,
+) -> None:
+    """An active cursor used to send every message to onboarding regardless of content.
+    It no longer routes anything: the model owns the turn (LOCAL_LLM_SPEC D9)."""
+    app, handle, onboarding, model = _app_with_both(tmp_path, cursor="draft-1")
 
     response = asyncio.run(_post_chat(app, handle, "what's the weather"))
 
     assert response.status_code == 200
-    assert response.text == "onboarding-reply"
-    assert onboarding.calls == [(handle, "what's the weather")]
-    assert scheduling.calls == []
-
-
-def test_route_keeps_using_scheduling_with_no_cursor_and_no_start_request(
-    tmp_path: Path,
-) -> None:
-    """AC2: no regression to TICK-034's scheduling behavior."""
-    configured = settings(tmp_path)
-    store = SessionStore(configured.database_path, configured.encryption_key)
-    store.initialize()
-    handle = store.create_session(OAuthTokens("a", "r", "n"), NOW, configured.session_ttl)
-
-    onboarding = _ScriptedOnboardingService()
-    scheduling = _ScriptedSchedulingService()
-    app = create_app(
-        configured,
-        clock=lambda: NOW,
-        chat_service=scheduling,
-        onboarding_service=onboarding,
-    )
-
-    response = asyncio.run(_post_chat(app, handle, "Can I book an appointment?"))
-
-    assert response.status_code == 200
-    assert response.text == "scheduling-reply"
-    assert scheduling.calls == ["Can I book an appointment?"]
+    assert response.text == "model-reply"
+    assert model.calls == [(handle, "what's the weather")]
     assert onboarding.calls == []
 
 
-def test_route_dispatches_to_onboarding_on_an_explicit_start_request_with_no_cursor(
+def test_tick063_an_explicit_start_request_is_no_longer_matched_as_a_phrase(
     tmp_path: Path,
 ) -> None:
-    configured = settings(tmp_path)
-    store = SessionStore(configured.database_path, configured.encryption_key)
-    store.initialize()
-    handle = store.create_session(OAuthTokens("a", "r", "n"), NOW, configured.session_ttl)
-
-    onboarding = _ScriptedOnboardingService()
-    scheduling = _ScriptedSchedulingService()
-    app = create_app(
-        configured,
-        clock=lambda: NOW,
-        chat_service=scheduling,
-        onboarding_service=onboarding,
-    )
+    """`is_onboarding_start_request` matched a list of phrasings. That mechanism is what
+    TICK-063 exists to remove, so the phrase reaches the model like any other."""
+    app, handle, onboarding, model = _app_with_both(tmp_path)
 
     response = asyncio.run(_post_chat(app, handle, "start onboarding"))
 
-    assert response.status_code == 200
-    assert response.text == "onboarding-reply"
-    assert onboarding.calls == [(handle, "start onboarding")]
-    assert scheduling.calls == []
+    assert response.text == "model-reply"
+    assert model.calls == [(handle, "start onboarding")]
+    assert onboarding.calls == []
+
+
+def test_tick063_an_ordinary_turn_also_reaches_the_model_rather_than_groq(
+    tmp_path: Path,
+) -> None:
+    """The other side of the old fork: what used to fall through to the Groq-backed
+    `ChatService` now goes to the local model too (FR-34)."""
+    app, handle, onboarding, model = _app_with_both(tmp_path)
+
+    response = asyncio.run(_post_chat(app, handle, "Can I book an appointment?"))
+
+    assert response.text == "model-reply"
+    assert model.calls == [(handle, "Can I book an appointment?")]
+    assert onboarding.calls == []
 
 
 # --- TICK-044: consented OCR identity upload wired into the given_name prompt -----

@@ -1,0 +1,121 @@
+model server : http://localhost:11499
+model        : llama3.1:8b-instruct-q4_K_M
+prompt       : acceptance-tool-call-v1
+
+=== address update, plainly stated, then confirmed ===
+
+patient  : I've moved. My new address is 88 Larch Street, Toms River, NJ 08753.
+routing  : 1.78s  tool=update_address  outcome=awaiting_confirmation
+assistant: Here is the mailing address I am about to save. Nothing has been saved yet -- please check it:
+           Street: 88 Larch Street
+           City: Toms River
+           State: NJ
+           ZIP code: 08753
+           
+           Reply CONFIRM to save this, or tell me what to change. Nothing is saved until you confirm.
+
+patient  : Yes, that's right.
+routing  : 2.83s  tool=update_address  outcome=written
+assistant: Saved. Your mailing address is updated.
+openemr  : PUT /apis/default/portal/patient/demographics {"street":"88 Larch Street","street_line_2":"","city":"Toms River","state":"NJ","postal_code":"08753"}
+
+=== AC5: the patient changes their mind mid-confirmation, with no cancel keyword ===
+
+patient  : My date of birth is wrong on your records. It should be 1 April 2003.
+routing  : 1.11s  tool=update_demographics  outcome=awaiting_confirmation
+assistant: Here is the detail I am about to change. Nothing has been saved yet -- please check it:
+           Date of birth: 2003-04-01
+           
+           Reply CONFIRM to save this, or tell me what to change. Nothing is saved until you confirm.
+
+patient  : actually, make it 2004
+routing  : 2.31s  tool=update_demographics  outcome=awaiting_confirmation
+assistant: Here is the detail I am about to change. Nothing has been saved yet -- please check it:
+           Date of birth: 2004-04-01
+           
+           Reply CONFIRM to save this, or tell me what to change. Nothing is saved until you confirm.
+
+patient  : yes please save that
+routing  : 2.30s  tool=update_demographics  outcome=written
+assistant: Saved. Your details are updated.
+openemr  : PUT /apis/default/portal/patient/demographics {"DOB":"2004-04-01"}
+
+=== AC5: the patient abandons a pending change by asking for something else ===
+
+patient  : Please change my last name to Okonkwo.
+routing  : 0.98s  tool=update_demographics  outcome=awaiting_confirmation
+assistant: Here is the detail I am about to change. Nothing has been saved yet -- please check it:
+           Family name: Okonkwo
+           
+           Reply CONFIRM to save this, or tell me what to change. Nothing is saved until you confirm.
+
+patient  : actually never mind, what appointments do I have?
+routing  : 1.68s  tool=list_appointments  outcome=listed
+assistant: Here are your upcoming appointments:
+           - Thursday 17 September 2026, 11:00 AM to 11:50 AM
+
+=== scheduling: offer, choose, confirm, book ===
+
+patient  : What appointment times do you have?
+routing  : 0.61s  tool=find_slots  outcome=listed
+assistant: Here are the appointment times I can offer:
+           - Tuesday 15 September 2026, 10:00 AM to 10:50 AM
+           - Wednesday 16 September 2026, 2:00 PM to 2:50 PM
+           
+           Tell me which one you would like and I'll read it back before booking anything.
+
+patient  : The Tuesday one at ten works for me.
+routing  : 3.08s  tool=book_appointment  outcome=awaiting_confirmation
+assistant: Here is the appointment I am about to book. Nothing has been booked yet -- please check it:
+           Tuesday 15 September 2026, 10:00 AM to 10:50 AM
+           
+           Reply CONFIRM to save this, or tell me what to change. Nothing is saved until you confirm.
+
+patient  : Yes, book it.
+routing  : 3.14s  tool=book_appointment  outcome=written
+assistant: Booked and confirmed: Tuesday 15 September 2026, 10:00 AM to 10:50 AM.
+openemr  : POST /apis/default/portal/patient/appointment {"pc_catid":"5","pc_title":"Office Visit","pc_duration":3000,"pc_eventDate":"2026-09-15","pc_startTime":"10:00","pc_facility":"9","pc_billing_location":"10"}
+
+=== onboarding: an intake answer, recorded against a draft this turn creates ===
+
+patient  : Both, please -- counselling and medication support.
+routing  : 1.64s  tool=record_assessment_answer  outcome=refused
+assistant: I could not record what kind of help you are looking for, so nothing was saved. Please tell me whether it is counselling or therapy, psychiatric evaluation or medication support, both, or that you are not sure yet.
+
+patient  : Yes that's right.
+routing  : 1.67s  tool=record_assessment_answer  outcome=awaiting_confirmation
+assistant: Here is the answer I am about to record. Nothing has been saved yet -- please check it:
+           What kind of help you are looking for: both
+           
+           Reply CONFIRM to save this, or tell me what to change. Nothing is saved until you confirm.
+
+patient  : Yes, record that.
+routing  : 2.53s  tool=record_assessment_answer  outcome=written
+assistant: Saved. I've recorded that answer.
+openemr  : POST /apis/default/portal/patient/assessment {}
+openemr  : PUT /apis/default/portal/patient/assessment/draft-live {"help_type":"both"}
+
+=== D15: a value the validator will not vouch for is refused, never written ===
+
+patient  : I'd like counselling, and psychiatric help too.
+routing  : 2.03s  tool=record_assessment_answer  outcome=refused
+assistant: I could not record what kind of help you are looking for, so nothing was saved. Please tell me whether it is counselling or therapy, psychiatric evaluation or medication support, both, or that you are not sure yet.
+
+=== a general question, which must not reach Groq (FR-34, TICK-064 owns the path) ===
+
+patient  : What is CBT anyway?
+routing  : 1.07s  tool=ask_general_knowledge  outcome=general_knowledge_unavailable
+assistant: I can only help with your own appointments, your details, and your intake questions here -- I can't answer general questions yet. Please contact the clinic directly if you need something else.
+
+=== an address given only in part, which must be asked about rather than written ===
+
+patient  : I live on Larch Street now.
+routing  : 1.01s  tool=-  outcome=refused
+assistant: Sorry -- I could not work out how to handle that request, so nothing was done. Please try rewording it, or contact the clinic directly if it is something this chat cannot do.
+
+=== egress ===
+every host this process contacted: ['localhost', 'openemr.local']
+requests to Groq: []
+
+=== the pre-stream pause (D16) ===
+turns=16 min=0.61s median=1.78s max=3.14s

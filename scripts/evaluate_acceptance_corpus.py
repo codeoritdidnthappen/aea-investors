@@ -45,12 +45,13 @@ from typing import Any, Iterable, Mapping, Sequence
 
 import httpx
 
+from ai_server.llm.prompt import PROMPT_VERSION, render_turn_messages
 from ai_server.llm.provider import LlmProviderError, selected_llm_provider
 from ai_server.llm.tools import (
     TOOL_CALL_SCHEMA_NAME,
-    TOOL_NAMES,
     TOOL_SURFACE,
     ToolSurfaceError,
+    envelope_json_schema,
     parse_tool_call,
     tool_call_json_schema,
 )
@@ -66,83 +67,12 @@ DEFAULT_CORPUS = Path("eval/acceptance-corpus.json")
 # asks the patient to reword often enough to be the wrong tool for the job.
 UNDERSTANDING_THRESHOLD_PERCENT = 80.0
 
-# Bumping this invalidates every recorded replay (see `load_replay`), which is what
-# stops a prompt edit from quietly riding on a run that predates it. Recorded in
-# AI_USAGE.md per NFR-21.
-ACCEPTANCE_PROMPT_VERSION = "acceptance-tool-call-v1"
-
-SYSTEM_PROMPT = """\
-You are the assistant inside a mental-health clinic's patient portal. Each turn you \
-emit exactly one tool call as a single JSON object and nothing else -- no prose, no \
-explanation, no markdown fence.
-
-The object has exactly two keys: "tool", naming one of the tools below, and \
-"arguments", an object holding only that tool's own arguments.
-
-Tools that change the patient's record:
-- update_address {street1, street2 (optional), city, state, zip_code} -- a mailing \
-address. "state" is the two-letter US code. "street1" is the house number and street \
-and nothing else. An apartment, suite, floor or unit goes in "street2" on its own -- \
-never appended to "street1".
-- update_demographics {given_name, family_name, date_of_birth} -- include only the \
-fields the patient is actually changing; omit the rest. "date_of_birth" is YYYY-MM-DD.
-- record_assessment_answer {field, answer} -- one intake answer. "field" is one of \
-preferred_contact, help_type, visit_preference, accommodations. "answer" must be a \
-value from that field's list below, exactly as written there.
-- book_appointment {slot_token} -- a slot token from the times offered in this \
-conversation.
-- cancel_appointment {appointment_token} -- an appointment token from the patient's \
-own appointments listed in this conversation.
-
-Tools that change nothing:
-- list_appointments {} -- the patient's upcoming appointments.
-- find_slots {} -- the times currently open.
-- extract_document_fields {upload_id} -- read a document the patient uploaded.
-- ask_general_knowledge {restatement} -- a general question that carries no detail \
-about this patient. Rewrite it as a standalone question in your own words.
-- reply {message} -- answer the patient directly. Use this whenever no other tool fits.
-
-Values for record_assessment_answer:
-- preferred_contact: "portal_message", or "email <address>", or "phone <number in \
-+1XXXXXXXXXX form>".
-- help_type: counseling_or_therapy, psychiatric_evaluation_or_medication_support, \
-both, not_sure_yet.
-- visit_preference: a format and a time window joined by a comma, e.g. \
-"video,weekday_morning". Formats: in_person, video, either, not_sure. Time windows: \
-weekday_morning, weekday_afternoon, weekday_evening, weekend, no_preference.
-- accommodations: "none", or one or more of language_interpreter, \
-hearing_accommodation, vision_accommodation, mobility_accommodation, \
-other_accommodation, joined by commas.
-
-Rules that matter more than being helpful:
-
-1. Never invent a value. Write down only what the patient actually said. If a field is \
-needed and the patient did not give it, do not guess it and do not fill it from \
-context -- use "reply" and ask them for it.
-2. A partial answer is not an answer. If the patient gives a street but no city, state \
-or ZIP, use "reply" and ask for the rest. Do not send update_address.
-3. If the patient corrects themselves mid-sentence, use the corrected value, not the \
-one they replaced.
-4. Ignore lead-in words. "Update it to: 12 Oak Street" means the street is "12 Oak \
-Street" -- the lead-in is not part of the value.
-5. If the patient asks a question, declines to answer, or answers a different question \
-than the one you asked, do not record anything. Use "reply", or \
-"ask_general_knowledge" if it is a general question you could answer -- prefer that \
-over answering from your own knowledge in "reply".
-6. record_assessment_answer records an answer to the question you actually asked. If \
-the patient tells you something else instead -- however useful it sounds -- do not file \
-it against the pending question and do not file it against another one. Use "reply". If \
-they do answer the question you asked, including answering "no" or "I don't know", \
-record it rather than replying.
-7. Only ever use a slot_token or appointment_token listed above. Never make one up and \
-never substitute a nearby one. If the patient asks about a time that was not offered, \
-an appointment not in that list, or anyone other than themselves -- a relative, a \
-friend, a child -- use "reply". Cancelling the wrong appointment is not recoverable by \
-the patient.
-
-A refusal to act costs the patient one more message. A wrong value written into their \
-record may never be noticed. When those two trade off, choose the refusal.\
-"""
+# The prompt now lives in `ai_server/llm/prompt.py`, because TICK-063 made it the
+# runtime's prompt too and `deploy/local/ai-server.Dockerfile` copies `ai_server/` and
+# nothing else. Re-exported under its harness names so a replay recorded before that
+# move still names the same version, and so the prompt this harness scores is the same
+# object production sends rather than a second string that agrees today.
+ACCEPTANCE_PROMPT_VERSION = PROMPT_VERSION
 
 
 class CorpusError(Exception):
@@ -649,64 +579,19 @@ def render_comparison(comparison: ComparisonReport) -> str:
 def render_messages(corpus: Corpus, case: Case) -> list[dict[str, str]]:
     """Build the system and user messages for one case.
 
-    The offered slots and appointments are rendered into the system message with their
-    tokens, because a model asked to book something can only use a token it was given --
-    and a model that invents one instead is exactly what rule 6 of the prompt and
-    `validate_offered_slot` are both there to catch.
+    Delegates to the runtime's own renderer (`ai_server.llm.prompt`), which TICK-063
+    made the single owner of both the prompt and its per-turn context. A corpus case has
+    no transcript, no pending confirmation and no upload, so what comes back is exactly
+    the system+user pair this harness has always sent -- and now it is provably the same
+    request production makes, which is the whole point of measuring it (D8).
     """
-    offered = [
-        "Times offered to this patient in this conversation:",
-        *(
-            f"- {_window(slot.starts_at, slot.ends_at)} -> slot_token {slot.slot_token}"
-            for slot in corpus.offered_slots
-        ),
-        "",
-        "This patient's own upcoming appointments:",
-        *(
-            f"- {_window(appointment.starts_at, appointment.ends_at)} -> "
-            f"appointment_token {appointment.appointment_token}"
-            for appointment in corpus.offered_appointments
-        ),
-        "",
-        f"Today is {corpus.now:%A %d %B %Y}.",
-    ]
-    system = "\n".join([SYSTEM_PROMPT, "", *offered])
-    if case.asked:
-        system = "\n".join([system, "", f'You have just asked the patient: "{case.asked}"'])
-    return [
-        {"role": "system", "content": system},
-        {"role": "user", "content": case.utterance},
-    ]
-
-
-def _window(starts_at: datetime, ends_at: datetime) -> str:
-    return f"{starts_at:%A %d %B %Y}, {starts_at:%H:%M} to {ends_at:%H:%M}"
-
-
-def envelope_json_schema() -> dict[str, Any]:
-    """The turn contract as a grammar a runtime will actually compile.
-
-    TICK-060 offers `tool_call_json_schema()` as the thing to constrain generation with,
-    and on Ollama 0.32.15 that is not available: the full surface is a discriminated
-    union over ten argument models, and the server answers
-    `failed to parse grammar` (400). Confirmed live, see `evidence/TICK-062`.
-
-    So generation is constrained to as much of the contract as the runtime can hold --
-    one object, exactly the two keys, and a tool name from the published set -- and the
-    arguments are left unconstrained. That removes the two failure modes a grammar
-    exists to remove (a bare `{}`, and `{"record_assessment_answer": {...}}` with the
-    tool name used as the key), and it removes nothing from the guarantee itself:
-    `parse_tool_call()` still validates every call in full, which is precisely the
-    second half TICK-060 wrote for runtimes that did not constrain generation.
-    """
-    return {
-        "type": "object",
-        "properties": {
-            "tool": {"type": "string", "enum": list(TOOL_NAMES)},
-            "arguments": {"type": "object"},
-        },
-        "required": ["tool", "arguments"],
-    }
+    return render_turn_messages(
+        message=case.utterance,
+        now=corpus.now,
+        offered_slots=corpus.offered_slots,
+        offered_appointments=corpus.offered_appointments,
+        asked=case.asked,
+    )
 
 
 # How much of the turn contract to hand the runtime as a grammar. `envelope` is the
