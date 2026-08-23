@@ -110,6 +110,11 @@ container is recreated, it cannot start.
       OpenEMR therefore builds from its own Dockerfile over the pinned image.
 - [ ] Starting the stack from a build worktree is refused outright by the
       preflight, so the cause is blocked rather than only detected.
+- [ ] The module being present but **inactive** is caught too. Files landing
+      correctly is not the same as OpenEMR loading them: with `mod_active = 0`
+      no hook fires and no tile renders, while every file-level check still
+      passes. This is what the patient hit after the mounts were repaired, and
+      the first version of this ticket's guard missed it entirely.
 
 ## Verification status
 

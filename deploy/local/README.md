@@ -96,7 +96,21 @@ read-only into OpenEMR's custom-module directory, but OpenEMR only loads a custo
 once it has a `modules` row with `mod_active = 1`. Register and enable it the same way as
 any other custom module: log in to OpenEMR at `https://emr.localhost` with `OE_USER`/
 `OE_PASS`, then **Modules > Manage Modules > Custom Modules**, find "AEA Investors Portal
-Chat", **Register**, then **Install**/**Enable**. A logged-in patient's portal home page
+Chat", **Register**, then **Install**/**Enable**.
+
+Then confirm it actually took:
+
+```sh
+./verify-stack.sh
+```
+
+This is a separate step from the preflight on purpose. The preflight checks what is
+knowable before the stack starts; `verify-stack.sh` checks the two states only
+visible once it is running — the module directory mounting empty, and the module
+being present on disk but `mod_active = 0`. The second is what a patient sees as
+"the AI Chat tile is gone", and **every file-level check still passes** while it is
+happening. It is deliberately not part of the container healthcheck, because an
+administrator may disable the module on purpose and that is not a broken container. A logged-in patient's portal home page
 (`/portal/home.php`) then embeds the chat iframe; a logged-out visitor never sees it,
 because the underlying `RenderEvent::EVENT_SECTION_RENDER_POST` hook only fires from that
 authenticated page (see
