@@ -86,6 +86,54 @@ class ConfirmedIdentity:
     address: ConfirmedAddress
 
 
+@dataclass(frozen=True)
+class ConfirmedDemographicFields:
+    """One or more explicitly confirmed identity fields, without the others.
+
+    The third confirmed unit, alongside `ConfirmedIdentity` (all of them) and
+    `ConfirmedAddress` (just the address). TICK-063 needs it because the tool surface
+    publishes `update_demographics` with each of name and date of birth optional
+    (`ai_server/llm/tools.py`) -- a patient correcting a misspelled surname must not be
+    made to re-confirm a date of birth that is not changing, which is the same reasoning
+    that produced `ConfirmedAddress` in TICK-049.
+
+    Built only by `confirm_demographic_fields`, so a partial write has exactly one
+    door and it is the same shape as the other two: an unconfirmed or unvalidated value
+    has no constructor to reach.
+    """
+
+    given_name: str | None = None
+    family_name: str | None = None
+    date_of_birth: str | None = None
+
+
+def confirm_demographic_fields(
+    given_name: str | None = None,
+    family_name: str | None = None,
+    date_of_birth: str | None = None,
+) -> ConfirmedDemographicFields:
+    """Build a write-eligible partial identity, or refuse an empty one.
+
+    Each argument is a value the patient explicitly confirmed. Absent means "not
+    changing" and is never written; blank is refused rather than treated as a clearance,
+    because OpenEMR's own `PatientValidator` rejects an empty name and this system never
+    writes a value the patient did not give (FR-23).
+    """
+    fields = {
+        "given_name": given_name,
+        "family_name": family_name,
+        "date_of_birth": date_of_birth,
+    }
+    blank = [name for name, value in fields.items() if value is not None and not str(value).strip()]
+    if blank:
+        raise IdentityNotConfirmedError(f"identity fields not confirmed: {', '.join(blank)}")
+    if not any(value is not None for value in fields.values()):
+        raise IdentityNotConfirmedError("identity fields not confirmed: nothing to change")
+    return ConfirmedDemographicFields(
+        given_name=given_name, family_name=family_name, date_of_birth=date_of_birth
+    )
+
+
 def confirm_address(address: Address | None) -> ConfirmedAddress:
     """Build a write-eligible address only once it is confirmed and fully valid (AC5).
 
@@ -195,6 +243,29 @@ class OpenEmrDemographicsAdapter:
         partially validated address still has no route to a write (AC5).
         """
         await self._put(access_token, _address_body(address))
+
+    async def write_confirmed_fields(
+        self, access_token: str, fields: ConfirmedDemographicFields
+    ) -> None:
+        """Write only the confirmed name/date-of-birth fields, leaving the rest untouched.
+
+        Same mechanism as `write_confirmed_address` and for the same reason: the body
+        names only the columns being changed, so `PatientService::update()` builds an
+        `UPDATE` over those columns alone and an omitted field is never blanked. Unlike
+        an address, these fields are genuinely independent of one another -- a corrected
+        surname says nothing about a date of birth -- so each is sent only when it was
+        confirmed, rather than the whole unit being sent together.
+        """
+        body = {
+            column: value
+            for column, value in (
+                ("fname", fields.given_name),
+                ("lname", fields.family_name),
+                ("DOB", fields.date_of_birth),
+            )
+            if value is not None
+        }
+        await self._put(access_token, body)
 
     async def _put(self, access_token: str, body: dict[str, str]) -> None:
         try:

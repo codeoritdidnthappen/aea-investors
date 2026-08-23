@@ -632,111 +632,88 @@ async def _post_all(app, cookie: str, messages: list[str]) -> list[str]:
     return replies
 
 
-def test_route_dispatches_an_address_request_away_from_scheduling(tmp_path: Path) -> None:
+# TICK-063 inverted the route. `/api/chat` used to pick this service by matching the
+# patient's message against `address_update_mode`'s phrasings; it now hands every turn to
+# the local model. So what these assert is the opposite of what they used to: no message
+# reaches this service, and the address the patient types still never reaches Groq -- now
+# because it is never put in an outbound payload at all (D3), rather than because a
+# phrase match steered it away. The service itself is unchanged and its own behaviour is
+# still covered above; TICK-065 removes it once the model path is proven.
+
+
+@dataclass
+class _ScriptedTurnService:
+    calls: list[tuple[str, str]] = field(default_factory=list)
+
+    async def stream_reply(
+        self,
+        handle: str,
+        message: str,
+        image_base64: str | None = None,
+        access_token: str | None = None,
+        patient_id: str | None = None,
+    ) -> AsyncIterator[str]:
+        del image_base64, access_token, patient_id
+        self.calls.append((handle, message))
+        yield "model-reply"
+
+    def discard(self, handle: str) -> None:
+        del handle
+
+
+def test_tick063_an_address_phrase_no_longer_selects_this_service(tmp_path: Path) -> None:
     configured = settings(tmp_path)
     store = SessionStore(configured.database_path, configured.encryption_key)
     store.initialize()
     handle = _bound_session(store)
-    service, _ = _service(store)
-    scheduling = _ScriptedSchedulingService()
+    service, server = _service(store)
+    model = _ScriptedTurnService()
     app = create_app(
-        configured, clock=lambda: NOW, chat_service=scheduling, address_service=service
+        configured, clock=lambda: NOW, address_service=service, model_turn_service=model
     )
 
     response = asyncio.run(_post_chat(app, handle, "update my address"))
 
     assert response.status_code == 200
-    assert response.text == ADDRESS_PROMPT
-    assert scheduling.calls == []
+    assert response.text == "model-reply"
+    assert model.calls == [(handle, "update my address")]
+    assert service.has_pending_update(handle) is False
+    assert server.demographics_writes == []
 
 
-def test_route_keeps_scheduling_for_everything_else(tmp_path: Path) -> None:
-    """No regression: an ordinary scheduling turn still reaches the Groq-backed path."""
+def test_tick063_an_ordinary_turn_reaches_the_model_too(tmp_path: Path) -> None:
+    """The other side of the old fork: nothing falls through to Groq anymore."""
     configured = settings(tmp_path)
     store = SessionStore(configured.database_path, configured.encryption_key)
     store.initialize()
     handle = _bound_session(store)
     service, _ = _service(store)
-    scheduling = _ScriptedSchedulingService()
+    model = _ScriptedTurnService()
     app = create_app(
-        configured, clock=lambda: NOW, chat_service=scheduling, address_service=service
+        configured, clock=lambda: NOW, address_service=service, model_turn_service=model
     )
 
     response = asyncio.run(_post_chat(app, handle, "Can I book an appointment?"))
 
-    assert response.text == "scheduling-reply"
-    assert scheduling.calls == ["Can I book an appointment?"]
-    assert service.has_pending_update(handle) is False
+    assert response.text == "model-reply"
+    assert model.calls == [(handle, "Can I book an appointment?")]
 
 
-def test_route_leaves_an_onboarding_session_alone(tmp_path: Path) -> None:
-    """AC8: a patient mid-onboarding saying "update my address" stays in onboarding."""
-    configured = settings(tmp_path)
-    store = SessionStore(configured.database_path, configured.encryption_key)
-    store.initialize()
-    handle = _bound_session(store)
-    store.save_cursor(handle, "draft-1", NOW)
-    service, server = _service(store)
-    onboarding = _ScriptedOnboardingService()
-    scheduling = _ScriptedSchedulingService()
-    app = create_app(
-        configured,
-        clock=lambda: NOW,
-        chat_service=scheduling,
-        onboarding_service=onboarding,
-        address_service=service,
-    )
+def test_tick063_a_whole_address_conversation_builds_no_groq_payload(tmp_path: Path) -> None:
+    """AC6/FR-34, still proven by inspecting outbound payloads -- and now stronger.
 
-    response = asyncio.run(_post_chat(app, handle, "update my address"))
-
-    assert response.text == "onboarding-reply"
-    assert onboarding.calls == [(handle, "update my address")]
-    assert scheduling.calls == []
-    assert service.has_pending_update(handle) is False
-    assert server.demographics_writes == []
-
-
-def test_route_drops_an_in_progress_update_when_onboarding_takes_the_turn(
-    tmp_path: Path,
-) -> None:
-    """AC8's other direction, at the route: starting onboarding mid-update abandons the
-    update outright rather than leaving it to resume later, and writes nothing."""
-    configured = settings(tmp_path)
-    store = SessionStore(configured.database_path, configured.encryption_key)
-    store.initialize()
-    handle = _bound_session(store)
-    service, server = _service(store)
-    onboarding = _ScriptedOnboardingService()
-    app = create_app(
-        configured,
-        clock=lambda: NOW,
-        chat_service=_ScriptedSchedulingService(),
-        onboarding_service=onboarding,
-        address_service=service,
-    )
-
-    replies = asyncio.run(
-        _post_all(app, handle, ["update my address", FULL_ADDRESS, "start onboarding"])
-    )
-
-    assert replies[2] == "onboarding-reply"
-    assert service.has_pending_update(handle) is False
-    assert server.demographics_writes == []
-
-
-def test_the_address_never_reaches_groq(tmp_path: Path) -> None:
-    """AC6, proven by inspecting outbound payloads.
-
-    The route is driven with the *real* `ChatService`/`GroqWorkflow`, whose client
-    records every payload that would leave this process. The whole address conversation
-    must produce none; the control turn afterwards proves the recorder works and would
-    have caught one.
+    The route is driven with the *real* Groq-backed `ChatService` still injected, whose
+    client records every payload that would leave this process. It is no longer on any
+    request path, so the whole conversation -- including the control turn that used to
+    reach Groq -- must produce not one payload. There is no message this app can be sent
+    that puts the patient's words into a Groq request, which is what "structural, not
+    classificatory" (D3) means.
     """
     configured = settings(tmp_path)
     store = SessionStore(configured.database_path, configured.encryption_key)
     store.initialize()
     handle = _bound_session(store)
-    service, server = _service(store)
+    service, _ = _service(store)
 
     groq_client = _CapturingGroqClient()
     chat_service = ChatService(
@@ -745,33 +722,24 @@ def test_the_address_never_reaches_groq(tmp_path: Path) -> None:
         clock=lambda: NOW,
     )
     app = create_app(
-        configured, clock=lambda: NOW, chat_service=chat_service, address_service=service
+        configured,
+        clock=lambda: NOW,
+        chat_service=chat_service,
+        address_service=service,
+        model_turn_service=_ScriptedTurnService(),
     )
 
     conversation = [
         "I moved",
-        f"{STREET}, {CITY}, ZZ 1234",  # a rejected attempt still must not leak
+        f"{STREET}, {CITY}, ZZ 1234",
         FULL_ADDRESS,
         "ok",
         "confirm",
+        "Can I book an appointment?",
     ]
-    replies = asyncio.run(_post_all(app, handle, conversation))
+    asyncio.run(_post_all(app, handle, conversation))
 
-    assert "Saved" in replies[-1]
-    assert len(server.demographics_writes) == 1
-    # Not one outbound Groq payload was built at all during the address flow.
     assert groq_client.calls == []
-
-    # Control: an ordinary scheduling turn does reach Groq, so the assertion above is
-    # a real observation rather than a broken harness. (The message is kept free of
-    # anything Presidio flags -- "next week" alone is a DATE_TIME and would be stopped
-    # by the gate before the client, which would make this control prove nothing.)
-    asyncio.run(_post_all(app, handle, ["Can I book an appointment?"]))
-    assert groq_client.calls != []
-    for payload in groq_client.calls:
-        serialized = payload.model_dump_json()
-        for secret in (STREET, UNIT, CITY, ZIP_CODE):
-            assert secret not in serialized
 
 
 # --- Review findings 1-4: the flow must never trap the patient ----------------------

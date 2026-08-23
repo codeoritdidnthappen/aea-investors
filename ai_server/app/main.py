@@ -8,11 +8,7 @@ import httpx
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 
-from ai_server.app.address_chat import (
-    AddressChatService,
-    address_update_mode,
-    unavailable_address_service,
-)
+from ai_server.app.address_chat import AddressChatService, unavailable_address_service
 from ai_server.app.auth import (
     AuthError,
     AuthorizationService,
@@ -38,9 +34,13 @@ from ai_server.app.health import (
     default_health_service,
     unavailable_health_service,
 )
+from ai_server.app.model_turn import (
+    ModelTurnService,
+    TurnServices,
+    unavailable_model_turn_service,
+)
 from ai_server.app.onboarding_chat import (
     OnboardingChatService,
-    onboarding_mode,
     unavailable_onboarding_service,
 )
 from ai_server.llm.groq import (
@@ -259,6 +259,7 @@ def create_app(
     chat_service: ChatService | None = None,
     onboarding_service: OnboardingChatService | None = None,
     address_service: AddressChatService | None = None,
+    model_turn_service: ModelTurnService | None = None,
 ) -> FastAPI:
     """Create the AI server without exposing delegated credentials to the browser."""
 
@@ -268,6 +269,7 @@ def create_app(
     configured_chat_service = chat_service
     configured_onboarding_service = onboarding_service
     configured_address_service = address_service
+    configured_model_turn_service = model_turn_service
     configured_session_store: SessionStore | None = None
     owned_http_clients: list[httpx.AsyncClient] = []
 
@@ -280,6 +282,7 @@ def create_app(
             configured_chat_service, \
             configured_onboarding_service, \
             configured_address_service, \
+            configured_model_turn_service, \
             configured_session_store
         if configured_settings is None:
             configured_settings = AuthSettings.from_environment()
@@ -356,6 +359,18 @@ def create_app(
             address_http_client = httpx.AsyncClient(timeout=30.0, verify=False)
             owned_http_clients.append(address_http_client)
             configured_address_service = _build_address_service(address_http_client, store, clock)
+        if configured_model_turn_service is None:
+            # Two clients, split the same way the services above are: the model server
+            # is reached over an ordinary verified connection, while every OpenEMR call
+            # hits configured_settings.issuer's host directly and so meets the same
+            # untrusted self-signed cert as auth_http_client/chat_openemr_client.
+            model_http_client = httpx.AsyncClient(timeout=30.0)
+            model_openemr_client = httpx.AsyncClient(timeout=30.0, verify=False)
+            owned_http_clients.append(model_http_client)
+            owned_http_clients.append(model_openemr_client)
+            configured_model_turn_service = _build_model_turn_service(
+                model_http_client, model_openemr_client, store, clock
+            )
         try:
             yield
         finally:
@@ -415,39 +430,26 @@ def create_app(
             now,
             configured_settings.expiry_warning_window,
         )
-        cursor = await asyncio.to_thread(configured_session_store.load_cursor, handle, now)
-        address = configured_address_service or unavailable_address_service(
-            configured_session_store, clock
-        )
-        if onboarding_mode(cursor, turn.message):
-            # Guided onboarding wins the turn and collects the address itself, so any
-            # half-finished address update is dropped rather than left to resume later
-            # (TICK-050 AC8). It has written nothing, so there is nothing to undo.
-            address.discard(handle)
-            onboarding = configured_onboarding_service or unavailable_onboarding_service(
-                configured_session_store, clock
-            )
-            return StreamingResponse(
-                _with_notice(
-                    notice, onboarding.stream_reply(handle, turn.message, turn.image_base64)
-                ),
-                media_type="text/plain",
-            )
-        # Ahead of the Groq-backed service below and entirely local, exactly as
-        # onboarding is: an address is patient information and must never be sent to an
-        # external LLM (NFR-2, TICK-050).
-        if address_update_mode(cursor, address.has_pending_update(handle), turn.message):
-            return StreamingResponse(
-                _with_notice(notice, address.stream_reply(handle, turn.message, turn.image_base64)),
-                media_type="text/plain",
-            )
-        service = configured_chat_service or unavailable_chat_service()
+        # Every turn goes to the local model, which decides what happens (TICK-063,
+        # LOCAL_LLM_SPEC D9). Nothing is inspected here first: the two `if`s that used
+        # to stand at this point -- `onboarding_mode(cursor, turn.message)` and
+        # `address_update_mode(...)` -- matched the patient's words against phrasings and
+        # steered PHI-bearing turns away from the model. That mechanism is what this
+        # ticket removes, so the message reaches no pattern before the model sees it. The
+        # services behind those two functions are still in the tree and still built
+        # above; TICK-065 deletes them once this is proven.
+        service = configured_model_turn_service or unavailable_model_turn_service()
         # Retrieved for this call only (TICK-034 AC1): never persisted, logged, or
         # cached beyond the stream_reply() call they are passed into.
         access_token = await asyncio.to_thread(configured_session_store.access_token, handle, now)
         patient_id = await asyncio.to_thread(configured_session_store.patient_uuid, handle, now)
         return StreamingResponse(
-            _with_notice(notice, service.stream_reply(turn.message, access_token, patient_id)),
+            _with_notice(
+                notice,
+                service.stream_reply(
+                    handle, turn.message, turn.image_base64, access_token, patient_id
+                ),
+            ),
             media_type="text/plain",
         )
 
@@ -482,6 +484,11 @@ def create_app(
                 configured_onboarding_service.discard(handle)
             if configured_address_service is not None:
                 configured_address_service.discard(handle)
+            # And the model path's own conversation state, for the same reason: it holds
+            # the patient's words and any change that was read back but not yet saved
+            # (`ai_server/app/conversation.py`).
+            if configured_model_turn_service is not None:
+                configured_model_turn_service.discard(handle)
         response = Response(status_code=204)
         # Every attribute /oauth/callback set has to be repeated or the browser treats
         # this as a different cookie and leaves the original in place. Starlette's
@@ -590,6 +597,87 @@ def _build_chat_service(
         tool_factory=tool_factory,
         slot_discovery=slot_discovery,
         appointment_discovery=appointment_discovery,
+        clock=clock,
+    )
+
+
+def _build_model_turn_service(
+    client: httpx.AsyncClient,
+    openemr_client: httpx.AsyncClient,
+    session_store: SessionStore,
+    clock: Callable[[], datetime],
+) -> ModelTurnService:
+    """Build the model-first turn service, or a fixed-unavailable one (TICK-063).
+
+    The local model is the front door for every turn now, and D12 accepts the
+    consequence: with no deterministic fallback, model-server availability is chat
+    availability. So an absent `LLM_MODEL` degrades the whole chat to the honest
+    unavailable message rather than failing startup, exactly as an absent `GROQ_API_KEY`
+    degraded `_build_chat_service` before it.
+
+    `LLM_PROVIDER=groq` degrades the same way, deliberately. Groq may not be the front
+    door: it would be an external model receiving what the patient typed, which is the
+    boundary violation this whole epic exists to close (D3, FR-34). The turn service's
+    `ToolCallClient` Protocol is narrow enough that `HttpGroqClient` cannot satisfy it
+    even by accident.
+
+    Each service below is optional and independently degradable, matching
+    `_build_scheduling_tool`'s and `_build_onboarding_service`'s existing tolerance of
+    absent OpenEMR configuration: a demo missing the Portal API base URL loses the tools
+    that need it and keeps the rest of the turn.
+    """
+    local_client: HttpLocalModelClient | None = None
+    if selected_llm_provider() != GROQ:
+        try:
+            local_client = HttpLocalModelClient(LocalModelSettings.from_environment(), client)
+        except LocalModelConfigurationError:
+            local_client = None
+    if local_client is None:
+        return unavailable_model_turn_service()
+    services = TurnServices(
+        # The pinned local Tesseract engine (TICK-014), never a network call; one
+        # shared, in-process service is safe across concurrent sessions since every
+        # upload is keyed by its own random upload id.
+        ocr=OcrService(SubprocessTesseractEngine()),
+    )
+    try:
+        schedule_settings = OpenEmrScheduleSettings.from_environment()
+        booking_tool_settings = BookingToolSettings.from_environment()
+        portal_settings = OpenEmrPortalSettings.from_environment()
+    except OpenEmrConfigurationError:
+        return ModelTurnService(
+            client=local_client, services=services, cursors=session_store, clock=clock
+        )
+    # One slot store shared by discovery (issues tokens) and booking (resolves them),
+    # and one appointment store shared by appointment discovery and cancellation, so a
+    # token issued in an earlier turn can still be booked/cancelled in a later one --
+    # the same pairing `_build_scheduling_tool` makes, and its own pair rather than a
+    # shared one, because these tokens belong to this path's turns alone.
+    slot_store = AnonymousSlotStore()
+    appointment_store = AnonymousAppointmentStore()
+    schedule_adapter = OpenEmrScheduleAdapter(schedule_settings, openemr_client)
+    demographics = OpenEmrDemographicsAdapter(portal_settings, openemr_client)
+    return ModelTurnService(
+        client=local_client,
+        services=TurnServices(
+            slot_discovery=SlotDiscoveryService(
+                NoMappedCandidateSource(), schedule_adapter, slot_store
+            ),
+            appointment_discovery=AppointmentDiscoveryService(schedule_adapter, appointment_store),
+            booking=BookingService(
+                slot_store, OpenEmrBookingAdapter(portal_settings, openemr_client)
+            ),
+            cancellation=CancellationService(
+                appointment_store, AppointmentCancelAdapter(portal_settings, openemr_client)
+            ),
+            appointment_request=booking_tool_settings.appointment_request(),
+            demographics=demographics,
+            onboarding=OnboardingFlow(
+                AssessmentDraftAdapter(portal_settings, openemr_client), demographics
+            ),
+            ocr=services.ocr,
+        ),
+        cursors=session_store,
         clock=clock,
     )
 

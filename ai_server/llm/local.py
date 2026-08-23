@@ -18,12 +18,13 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
-from typing import AsyncIterator
+from typing import Any, AsyncIterator, Mapping, Sequence
 
 import httpx
 
 from ai_server.llm.groq import PlanningOutput
 from ai_server.llm.provider import LlmUnavailableError
+from ai_server.llm.tools import TOOL_CALL_SCHEMA_NAME
 from ai_server.privacy.gate import OutboundPayload
 
 # Ollama's default listen address, and the value `.env.example` already documents for
@@ -102,6 +103,53 @@ class HttpLocalModelClient:
         except ValueError as exc:
             raise LocalModelUnavailableError(
                 "the local model returned an invalid planning response"
+            ) from exc
+
+    async def tool_call(
+        self, messages: Sequence[Mapping[str, str]], *, schema: Mapping[str, Any]
+    ) -> str:
+        """Run one routing inference and return the model's raw text, unparsed.
+
+        A separate method rather than a second use of `complete()` because the two send
+        genuinely different requests. `OutboundPayload` is the *privacy gate's* type
+        (`ai_server/privacy/gate.py`): its model id is a `Literal`, it holds exactly a
+        system and a user message, and `complete()` pins the structured mode to
+        `PlanningOutput` -- all correct for the Groq scheduling payload it was built for,
+        and none of it able to carry a tool-call turn with a transcript.
+
+        Nothing here decides what leaves the deployment. `messages` is built by
+        `ai_server.llm.prompt.render_turn_messages` and is addressed to the *local*
+        model, which is allowed to see patient data (D2); the outbound boundary this
+        client is on the safe side of is Groq's, and this method never calls it.
+
+        `temperature` and `seed` match `scripts/evaluate_acceptance_corpus.run_case`, so
+        a turn in production is the same request the corpus scored (D8).
+        """
+        try:
+            response = await self._client.post(
+                self._settings.endpoint,
+                headers=self._headers(),
+                json={
+                    "model": self._settings.model,
+                    "messages": [dict(message) for message in messages],
+                    "stream": False,
+                    "temperature": 0,
+                    "seed": 0,
+                    "response_format": {
+                        "type": "json_schema",
+                        "json_schema": {"name": TOOL_CALL_SCHEMA_NAME, "schema": dict(schema)},
+                    },
+                },
+            )
+        except httpx.HTTPError as exc:
+            raise LocalModelUnavailableError("the local model is unavailable") from exc
+        if response.status_code != 200:
+            raise LocalModelUnavailableError("the local model is unavailable")
+        try:
+            return self._content(response.json())
+        except ValueError as exc:
+            raise LocalModelUnavailableError(
+                "the local model returned an invalid tool-call response"
             ) from exc
 
     async def _stream(self, payload: OutboundPayload) -> AsyncIterator[str]:

@@ -65,18 +65,31 @@ def active_session_cookie(configured: AuthSettings) -> str:
 
 
 @dataclass
-class ScriptedChatService:
-    """A `ChatService`-shaped double that yields fixed chunks with real async gaps."""
+class ScriptedTurnService:
+    """A `ModelTurnService`-shaped double that yields fixed chunks with real async gaps.
+
+    Since TICK-063 the route hands every turn to the model-first turn service, so this
+    is the shape the route calls: `(handle, message, image_base64, access_token,
+    patient_id)`. The Groq-backed `ChatService` is no longer on any request path.
+    """
 
     chunks: list[str]
 
     async def stream_reply(
-        self, message: str, access_token: str | None = None, patient_id: str | None = None
+        self,
+        handle: str,
+        message: str,
+        image_base64: str | None = None,
+        access_token: str | None = None,
+        patient_id: str | None = None,
     ) -> AsyncIterator[str]:
-        del message, access_token, patient_id
+        del handle, message, image_base64, access_token, patient_id
         for chunk in self.chunks:
             await asyncio.sleep(0)
             yield chunk
+
+    def discard(self, handle: str) -> None:
+        del handle
 
 
 async def _post_chat(
@@ -157,7 +170,7 @@ def test_ac1_chat_turn_rejects_a_missing_or_mismatched_origin(tmp_path: Path) ->
     app = create_app(
         configured,
         clock=lambda: NOW,
-        chat_service=ScriptedChatService(chunks=["Hel", "lo!"]),
+        model_turn_service=ScriptedTurnService(chunks=["Hel", "lo!"]),
     )
 
     missing_origin = asyncio.run(_post_chat(app, cookie=handle, origin=None))
@@ -175,7 +188,7 @@ def test_ac1_chat_turn_origin_check_is_case_insensitive(tmp_path: Path) -> None:
     app = create_app(
         configured,
         clock=lambda: NOW,
-        chat_service=ScriptedChatService(chunks=["Hel", "lo!"]),
+        model_turn_service=ScriptedTurnService(chunks=["Hel", "lo!"]),
     )
 
     response = asyncio.run(_post_chat(app, cookie=handle, origin="https://chat.test"))
@@ -188,7 +201,7 @@ def test_ac1_chat_turn_accepts_a_valid_ai_session_cookie(tmp_path: Path) -> None
     app = create_app(
         configured,
         clock=lambda: NOW,
-        chat_service=ScriptedChatService(chunks=["Hel", "lo!"]),
+        model_turn_service=ScriptedTurnService(chunks=["Hel", "lo!"]),
     )
 
     response = asyncio.run(_post_chat(app, cookie=handle))
@@ -203,29 +216,38 @@ def test_ac1_chat_turn_accepts_a_valid_ai_session_cookie(tmp_path: Path) -> None
 def test_ac2_route_streams_the_services_async_generator_without_buffering_it(
     tmp_path: Path,
 ) -> None:
-    """The route must forward `ChatService.stream_reply`'s chunks as they arrive.
+    """The route must forward the turn service's chunks as they arrive.
 
     `httpx.ASGITransport` can coalesce fast in-process responses into one read, so
     this asserts the transport-independent contract instead: the route hands
     `StreamingResponse` the service's own async generator rather than collecting it
     into a string first, which is what makes chunk-by-chunk delivery possible at all.
+    TICK-063 (D16) leans on exactly this: the turn's reply streams once the routing
+    inference has finished.
     """
     configured = settings(tmp_path)
     handle = active_session_cookie(configured)
     seen: list[str] = []
 
-    class RecordingChatService(ScriptedChatService):
+    class RecordingTurnService(ScriptedTurnService):
         async def stream_reply(
-            self, message: str, access_token: str | None = None, patient_id: str | None = None
+            self,
+            handle: str,
+            message: str,
+            image_base64: str | None = None,
+            access_token: str | None = None,
+            patient_id: str | None = None,
         ) -> AsyncIterator[str]:
-            async for chunk in super().stream_reply(message, access_token, patient_id):
+            async for chunk in super().stream_reply(
+                handle, message, image_base64, access_token, patient_id
+            ):
                 seen.append(chunk)
                 yield chunk
 
     app = create_app(
         configured,
         clock=lambda: NOW,
-        chat_service=RecordingChatService(chunks=["First chunk. ", "Second chunk."]),
+        model_turn_service=RecordingTurnService(chunks=["First chunk. ", "Second chunk."]),
     )
 
     response = asyncio.run(_post_chat(app, cookie=handle))
@@ -596,7 +618,7 @@ def test_tick034_api_chat_route_passes_the_sessions_access_token_and_patient_id(
 ) -> None:
     """AC1: `/api/chat` retrieves the session's access token (and the patient id
     booking also needs) via the same `SessionStore` methods TICK-035 already
-    established, and makes them available to `ChatService` for this turn only."""
+    established, and makes them available to the turn service for this turn only."""
     configured = settings(tmp_path)
     store = SessionStore(configured.database_path, configured.encryption_key)
     store.initialize()
@@ -608,14 +630,23 @@ def test_tick034_api_chat_route_passes_the_sessions_access_token_and_patient_id(
     received: list[tuple[str | None, str | None]] = []
 
     @dataclass
-    class RecordingChatService:
+    class RecordingTurnService:
         async def stream_reply(
-            self, message: str, access_token: str | None = None, patient_id: str | None = None
+            self,
+            handle: str,
+            message: str,
+            image_base64: str | None = None,
+            access_token: str | None = None,
+            patient_id: str | None = None,
         ) -> AsyncIterator[str]:
+            del handle, message, image_base64
             received.append((access_token, patient_id))
             yield "ok"
 
-    app = create_app(configured, clock=lambda: NOW, chat_service=RecordingChatService())
+        def discard(self, handle: str) -> None:
+            del handle
+
+    app = create_app(configured, clock=lambda: NOW, model_turn_service=RecordingTurnService())
 
     response = asyncio.run(_post_chat(app, cookie=handle))
 
@@ -738,7 +769,7 @@ def test_ac9_the_settings_split_did_not_disable_the_chat_origin_check(
     app = create_app(
         configured,
         clock=lambda: NOW,
-        chat_service=ScriptedChatService(chunks=["Hel", "lo!"]),
+        model_turn_service=ScriptedTurnService(chunks=["Hel", "lo!"]),
     )
 
     accepted = asyncio.run(_post_chat(app, cookie=handle, origin="https://chat.test"))

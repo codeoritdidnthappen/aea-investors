@@ -429,6 +429,36 @@ def tool_call_json_schema() -> dict[str, Any]:
     return _TOOL_CALL_ADAPTER.json_schema()
 
 
+def envelope_json_schema() -> dict[str, Any]:
+    """The turn contract as a grammar a runtime will actually compile.
+
+    `tool_call_json_schema()` above is what to constrain generation with, and on Ollama
+    0.32.15 that is not available: the full surface is a discriminated union over ten
+    argument models, and the server answers `failed to parse grammar` (400). Confirmed
+    live, see `evidence/TICK-062`.
+
+    So generation is constrained to as much of the contract as the runtime can hold --
+    one object, exactly the two keys, and a tool name from the published set -- and the
+    arguments are left unconstrained. That removes the two failure modes a grammar
+    exists to remove (a bare `{}`, and `{"record_assessment_answer": {...}}` with the
+    tool name used as the key), and it removes nothing from the guarantee itself:
+    `parse_tool_call()` still validates every call in full, which is precisely the
+    second half this module wrote for runtimes that did not constrain generation.
+
+    Moved here from `scripts/evaluate_acceptance_corpus.py` by TICK-063: the runtime now
+    sends this on every turn, and `deploy/local/ai-server.Dockerfile` copies `ai_server/`
+    and nothing else, so the harness could not stay its owner.
+    """
+    return {
+        "type": "object",
+        "properties": {
+            "tool": {"type": "string", "enum": list(TOOL_NAMES)},
+            "arguments": {"type": "object"},
+        },
+        "required": ["tool", "arguments"],
+    }
+
+
 def tool_definition(name: str) -> ToolDefinition:
     """Return the published definition for `name`, or raise `UnknownToolError`."""
     definition = TOOL_SURFACE.get(name)
