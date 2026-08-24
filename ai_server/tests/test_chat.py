@@ -289,7 +289,7 @@ def test_ticket_048_unavailable_message_is_distinct_and_not_misleading() -> None
     """
     assert ASSISTANT_UNAVAILABLE_RESPONSE != GENERAL_KNOWLEDGE_UNAVAILABLE_RESPONSE
     # The narrow one must not claim the assistant is down; the rest of the turn works.
-    assert "not available right now" not in GENERAL_KNOWLEDGE_UNAVAILABLE_RESPONSE
+    assert "temporarily unavailable" not in GENERAL_KNOWLEDGE_UNAVAILABLE_RESPONSE
     assert "Everything else still works" in GENERAL_KNOWLEDGE_UNAVAILABLE_RESPONSE
 
     # The turn may have been about anything, so this reports the *assistant* as
@@ -315,6 +315,22 @@ def test_ticket_048_unconfigured_model_answers_a_non_scheduling_turn_the_same_wa
         ]
 
     assert asyncio.run(run()) == [ASSISTANT_UNAVAILABLE_RESPONSE]
+
+
+def test_the_chat_page_preserves_the_review_line_breaks() -> None:
+    """A confirmation read-back puts each field on its own labelled line, and a reply is
+    inserted into the transcript with `textContent`, so without an explicit
+    `white-space` rule HTML collapses every newline into a space and the whole read-back
+    renders as one run-on line.
+
+    Moved here by TICK-065 from `test_address_chat.py`, which was deleted with the module
+    it covered. The behaviour it asserts did not go with it: `confirmation_prompt()`
+    renders the same multi-line read-back for every writing tool, so this is the only
+    assertion anywhere on the CSS rule that makes it legible.
+    """
+    assert "#chat-transcript li .message-body { white-space: pre-wrap; }" in CHAT_PAGE_HTML
+    # The class the rule targets is the one `appendMessage` actually assigns.
+    assert 'body.className = "message-body";' in CHAT_PAGE_HTML
 
 
 def test_ac3_page_ships_a_client_side_fallback_panel_with_openemr_instructions() -> None:

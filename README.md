@@ -16,9 +16,18 @@ appointments, demographics, structured assessments, and all other persisted pati
 A small OpenEMR patient-portal integration displays the separately hosted chat UI in an
 iframe. The iframe talks only to a FastAPI AI server; it never calls OpenEMR directly.
 
-The AI server uses LangGraph for orchestration, streams response chunks to the iframe,
-and performs scheduling operations through existing OpenEMR REST or FHIR endpoints.
-It never connects directly to the OpenEMR database or maintains a parallel scheduler.
+**How a turn is handled.** Every message the patient sends goes to a local model, and
+nothing inspects it first — there is no mode detection, no keyword routing, and no
+deterministic handler to fall back to. The model reads the turn plus the conversation
+state the AI server recorded, and returns exactly one tool call under a strict schema.
+The AI server then validates every field itself, reads the validated values back for the
+patient to confirm, and only then performs the operation through existing OpenEMR REST or
+FHIR endpoints. The model proposes; this codebase disposes. It never connects directly to
+the OpenEMR database or maintains a parallel scheduler.
+
+The model runs inside the deployment because it is allowed to see patient data. The one
+branch that reaches an external model — a general-knowledge question — sends a canonical
+restatement the local model composed, never the patient's own words.
 
 The selected onboarding requirements remain:
 
@@ -40,9 +49,10 @@ provider, office, and admin users but are hidden from the patient-facing chat.
 |---|---|
 | Host UI, login, and EHR | Current stable OpenEMR release, pinned at implementation |
 | Embedded UI | Chat UI inside an OpenEMR iframe |
-| AI server | Python, FastAPI, LangGraph |
+| AI server | Python, FastAPI |
 | EHR integration | OpenEMR OAuth/SMART launch and existing OpenEMR APIs |
-| Runtime AI | Groq Free with pinned model ID `openai/gpt-oss-120b` and Zero Data Retention enabled |
+| Runtime AI | Local `llama3.1:8b-instruct-q4_K_M`, pinned by digest, served over an OpenAI-compatible API (Ollama in development, vLLM when deployed) |
+| General-knowledge answers only | Groq Free with pinned model ID `openai/gpt-oss-120b` and Zero Data Retention enabled |
 | Outbound privacy gate | Local Presidio Analyzer with built-in and custom healthcare recognizers |
 | OCR | Pinned local Tesseract and English trained data |
 | Session store | SQLite in WAL mode; OAuth tokens encrypted with AES-256-GCM |
@@ -81,9 +91,22 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the trust boundaries and exact payloa
 
 ## Failure behavior
 
-If the AI server or external LLM is unavailable, the iframe displays an unavailable
-message and step-by-step instructions for opening OpenEMR's native scheduling UI. The
-demo does not build a second non-AI scheduling interface.
+**Model availability is chat availability.** The deterministic intent handlers were
+deleted rather than kept as a fallback: a path nobody exercises rots, and the failure it
+eventually produces — a bad parse written into a chart — is the one this design exists to
+end. An honest outage is the better trade.
+
+So when the model server is unreachable, the chat says the assistant is temporarily
+unavailable and that the patient's portal still works. No degraded path runs, and in
+particular **no write is attempted** — not even a change already validated and read back
+and waiting on a confirmation. `GET /health` reports `model_server` alongside its other
+dependencies so the outage is visible in monitoring first.
+
+An unreachable *external* LLM is a much smaller failure: it costs general-knowledge
+answers and nothing else.
+
+The demo does not build a second non-AI scheduling interface. The next step offered to
+the patient is OpenEMR's own patient-portal scheduling screen.
 
 ---
 
@@ -114,7 +137,7 @@ The AI server exposes six routes:
 
 | Route | Purpose |
 |---|---|
-| `GET /health` | Non-sensitive liveness and dependency reachability |
+| `GET /health` | Non-sensitive liveness and dependency reachability, including the model server |
 | `GET /` | The embedded chat page |
 | `POST /api/chat` | Streams a turn's reply, gated on the AI-session cookie and an `Origin` check |
 | `POST /api/logout` | Ends the AI session and clears its cookie; the portal calls this on sign-out |

@@ -1,0 +1,54 @@
+### 0. The model server is not listening on 11498
+confirmed: connection to 127.0.0.1:11498 is refused
+
+### 1. The AI server, built from this worktree, on port 8765
+09ac816
+
+### 2. /health with the model server stopped
+{
+    "status": "degraded",
+    "dependencies": {
+        "ai_server": "ok",
+        "model_server": "unavailable",
+        "openemr_api": "unavailable",
+        "ocr": "unavailable",
+        "external_llm": "unavailable"
+    }
+}
+
+### 3. The patient's address in OpenEMR, before the turn
+1|2002 Bridge Avenue|Sulfur|LA|70663
+2||||
+3||||
+
+### 4. Two turns from a signed-in patient: a plain one, then one that would write
+--- patient: Hi, can you help me?
+--- assistant:
+The AI assistant is temporarily unavailable, so it could not handle your request. Your patient portal is still working normally. Please try again in a little while, or contact the clinic directly. To book or change an appointment in the meantime, use the appointment scheduling option in your OpenEMR portal menu.
+--- patient: Change my address to 88 Larch Street, Toms River NJ 08753
+--- assistant:
+The AI assistant is temporarily unavailable, so it could not handle your request. Your patient portal is still working normally. Please try again in a little while, or contact the clinic directly. To book or change an appointment in the meantime, use the appointment scheduling option in your OpenEMR portal menu.
+
+### 5. The patient's address in OpenEMR, after the turn
+1|2002 Bridge Avenue|Sulfur|LA|70663
+2||||
+3||||
+RESULT: unchanged -- no write was attempted while the model was unavailable
+
+### 6. The OpenEMR patient portal, unaffected
+portal login page: HTTP 200
+portal home:       HTTP 302
+
+### 7. The probe recovers: start a real model server and re-read /health
+{
+    "status": "degraded",
+    "dependencies": {
+        "ai_server": "ok",
+        "model_server": "ok",
+        "openemr_api": "unavailable",
+        "ocr": "unavailable",
+        "external_llm": "unavailable"
+    }
+}
+
+### done

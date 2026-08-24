@@ -16,7 +16,12 @@ def test_ticket_011_health_reports_each_fixed_dependency_without_configuration()
 
     app = create_app(
         health_service=HealthService(
-            {"openemr_api": unavailable, "ocr": unavailable, "external_llm": unavailable}
+            {
+                "model_server": unavailable,
+                "openemr_api": unavailable,
+                "ocr": unavailable,
+                "external_llm": unavailable,
+            }
         )
     )
 
@@ -30,6 +35,7 @@ def test_ticket_011_health_reports_each_fixed_dependency_without_configuration()
             "status": "degraded",
             "dependencies": {
                 "ai_server": "ok",
+                "model_server": "unavailable",
                 "openemr_api": "unavailable",
                 "ocr": "unavailable",
                 "external_llm": "unavailable",
@@ -48,7 +54,12 @@ def test_ticket_011_health_never_logs_or_returns_sensitive_failure_data(
         raise httpx.ConnectError(secret)
 
     service = HealthService(
-        {"openemr_api": unavailable, "ocr": unavailable, "external_llm": unavailable}
+        {
+            "model_server": unavailable,
+            "openemr_api": unavailable,
+            "ocr": unavailable,
+            "external_llm": unavailable,
+        }
     )
     with caplog.at_level(logging.WARNING):
         report = asyncio.run(service.report())
@@ -58,6 +69,7 @@ def test_ticket_011_health_never_logs_or_returns_sensitive_failure_data(
     assert "openemr_api" in caplog.text
     assert report["dependencies"] == {
         "ai_server": "ok",
+        "model_server": "unavailable",
         "openemr_api": "unavailable",
         "ocr": "unavailable",
         "external_llm": "unavailable",
@@ -68,7 +80,9 @@ def test_ticket_011_groq_probe_keeps_api_key_out_of_health_output_and_logs(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     api_key = "gsk_sensitive_delegated_token"
-    settings = HealthSettings(openemr_url="https://openemr.test/private", groq_api_key=api_key)
+    settings = HealthSettings(
+        openemr_url="https://openemr.test/private", groq_api_key=api_key, model_server=None
+    )
 
     async def responder(_: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("patient record value")

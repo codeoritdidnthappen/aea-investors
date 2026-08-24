@@ -152,9 +152,15 @@ def test_ac1_logout_is_idempotent_and_reveals_nothing_about_the_handle(
 
 
 def test_ac1_logout_drops_in_memory_patient_answers_with_the_row(tmp_path: Path) -> None:
-    """Onboarding and the address flow both hold the patient's own half-finished
-    answers in this process's memory, keyed by the handle. Deleting the encrypted
-    tokens while leaving a name and date of birth in a dict would not be a logout."""
+    """The turn path holds the patient's own half-finished answers in this process's
+    memory, keyed by the handle. Deleting the encrypted tokens while leaving a name and
+    date of birth in a dict would not be a logout.
+
+    Retargeted by TICK-065. This used to assert two discards, one for
+    `OnboardingChatService` and one for `AddressChatService`; both were deleted with D12,
+    and `ModelTurnService.conversations` is now the only in-memory patient state a logout
+    has to reach. The coverage is the same claim about a different single store.
+    """
     configured = settings(tmp_path)
     cookie = active_session_cookie(configured)
     discarded: list[str] = []
@@ -163,18 +169,16 @@ def test_ac1_logout_drops_in_memory_patient_answers_with_the_row(tmp_path: Path)
         def discard(self, handle: str) -> None:
             discarded.append(handle)
 
-    recording = RecordingService()
     app = create_app(
         configured,
         clock=lambda: NOW,
-        onboarding_service=recording,  # type: ignore[arg-type]
-        address_service=recording,  # type: ignore[arg-type]
+        model_turn_service=RecordingService(),  # type: ignore[arg-type]
     )
 
     response = asyncio.run(_post(app, "/api/logout", cookie=cookie))
 
     assert response.status_code == 204
-    assert discarded == [cookie, cookie]
+    assert discarded == [cookie]
 
 
 # --- AC3: the previous patient's session cannot be resumed afterwards --------------
