@@ -10,7 +10,7 @@ labels: [llm, privacy, backend]
 source: [FR-34]
 status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/129
-builder_commit: 09ac816
+builder_commit: f2607d4
 ---
 ## Context
 

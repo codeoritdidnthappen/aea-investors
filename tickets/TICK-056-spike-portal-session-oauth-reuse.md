@@ -10,7 +10,7 @@ labels: [openemr, oauth, portal, discovery]
 source: [FR-2, FR-3]
 status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/111
-builder_commit: b3662d6
+builder_commit: cb820ab
 ---
 ## Context
 
