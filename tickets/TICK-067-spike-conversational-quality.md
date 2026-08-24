@@ -8,9 +8,9 @@ estimate: M
 depends_on: [TICK-062]
 labels: [llm, discovery]
 source: [FR-33]
-status: todo
+status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/132
-builder_commit: null
+builder_commit: fc88a2d
 ---
 ## Context
 

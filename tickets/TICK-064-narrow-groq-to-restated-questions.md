@@ -8,9 +8,9 @@ estimate: M
 depends_on: [TICK-063]
 labels: [llm, privacy, backend]
 source: [FR-34]
-status: todo
+status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/129
-builder_commit: null
+builder_commit: 09ac816
 ---
 ## Context
 
