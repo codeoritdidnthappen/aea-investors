@@ -7,7 +7,7 @@ priority: P1
 estimate: S
 depends_on: [TICK-064]
 labels: [privacy, llm, backend, bug]
-source: [FR-34, D3, D4]
+source: [FR-34]
 status: todo
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/136
 builder_commit: null
