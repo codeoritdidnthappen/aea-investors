@@ -19,14 +19,9 @@ from ai_server.app.auth import (
 )
 from ai_server.app.chat import (
     CHAT_PAGE_HTML,
-    BookingTool,
     BookingToolSettings,
-    ChatService,
     ChatTurnRequest,
     NoMappedCandidateSource,
-    ToolFactory,
-    no_action_tool_factory,
-    unavailable_chat_service,
 )
 from ai_server.app.health import (
     HealthService,
@@ -43,11 +38,10 @@ from ai_server.app.onboarding_chat import (
     OnboardingChatService,
     unavailable_onboarding_service,
 )
+from ai_server.llm.general_knowledge import GeneralKnowledgeService
 from ai_server.llm.groq import (
-    GroqClient,
     GroqConfigurationError,
     GroqSettings,
-    GroqWorkflow,
     HttpGroqClient,
 )
 from ai_server.llm.local import (
@@ -69,7 +63,6 @@ from ai_server.privacy.gate import PrivacyGate
 from ai_server.scheduling.appointments import AnonymousAppointmentStore, AppointmentDiscoveryService
 from ai_server.scheduling.booking import BookingService, OpenEmrBookingAdapter
 from ai_server.scheduling.cancel import AppointmentCancelAdapter, CancellationService
-from ai_server.scheduling.reschedule import RescheduleService
 from ai_server.scheduling.slots import AnonymousSlotStore, SlotDiscoveryService
 
 
@@ -256,7 +249,6 @@ def create_app(
     authorization: AuthorizationService | None = None,
     clock: Callable[[], datetime] = utc_now,
     health_service: HealthService | None = None,
-    chat_service: ChatService | None = None,
     onboarding_service: OnboardingChatService | None = None,
     address_service: AddressChatService | None = None,
     model_turn_service: ModelTurnService | None = None,
@@ -266,7 +258,6 @@ def create_app(
     configured_settings = settings
     configured_authorization = authorization
     configured_health_service = health_service
-    configured_chat_service = chat_service
     configured_onboarding_service = onboarding_service
     configured_address_service = address_service
     configured_model_turn_service = model_turn_service
@@ -279,7 +270,6 @@ def create_app(
             configured_settings, \
             configured_authorization, \
             configured_health_service, \
-            configured_chat_service, \
             configured_onboarding_service, \
             configured_address_service, \
             configured_model_turn_service, \
@@ -330,17 +320,6 @@ def create_app(
                 HealthSettings.from_environment(configured_settings.issuer),
                 health_openemr_client,
                 health_groq_client,
-            )
-        if configured_chat_service is None:
-            chat_http_client = httpx.AsyncClient(timeout=30.0)
-            owned_http_clients.append(chat_http_client)
-            # Same untrusted-self-signed-cert reason as auth_http_client/
-            # health_openemr_client above: booking and appointment reads call
-            # configured_settings.issuer's host directly, not through the browser.
-            chat_openemr_client = httpx.AsyncClient(timeout=30.0, verify=False)
-            owned_http_clients.append(chat_openemr_client)
-            configured_chat_service = _build_chat_service(
-                chat_http_client, chat_openemr_client, clock
             )
         if configured_onboarding_service is None:
             # Same untrusted-self-signed-cert reason as chat_openemr_client above:
@@ -572,35 +551,6 @@ def create_app(
     return server
 
 
-def _build_chat_service(
-    client: httpx.AsyncClient, openemr_client: httpx.AsyncClient, clock: Callable[[], datetime]
-) -> ChatService:
-    """Build the chat service on the `LLM_PROVIDER`-selected client, or a
-    fixed-unavailable fallback.
-
-    Mirrors `default_health_service`'s tolerance of absent Groq configuration: the
-    demo's default path requires no paid LLM service (NFR-20), so a missing
-    `GROQ_API_KEY`/ZDR date degrades the chat service instead of failing startup.
-
-    An *unrecognised* `LLM_PROVIDER` is the one case that is not tolerated (TICK-058):
-    `selected_llm_provider()` raises out of `lifespan` and startup stops, because
-    degrading there would silently run the chat on a provider the operator did not ask
-    for. A recognised provider whose own settings are missing still degrades.
-    """
-    llm_client = _build_llm_client(selected_llm_provider(), client)
-    if llm_client is None:
-        return unavailable_chat_service()
-    workflow = GroqWorkflow(PrivacyGate.create(), llm_client)
-    tool_factory, slot_discovery, appointment_discovery = _build_scheduling_tool(openemr_client)
-    return ChatService(
-        workflow=workflow,
-        tool_factory=tool_factory,
-        slot_discovery=slot_discovery,
-        appointment_discovery=appointment_discovery,
-        clock=clock,
-    )
-
-
 def _build_model_turn_service(
     client: httpx.AsyncClient,
     openemr_client: httpx.AsyncClient,
@@ -613,7 +563,7 @@ def _build_model_turn_service(
     consequence: with no deterministic fallback, model-server availability is chat
     availability. So an absent `LLM_MODEL` degrades the whole chat to the honest
     unavailable message rather than failing startup, exactly as an absent `GROQ_API_KEY`
-    degraded `_build_chat_service` before it.
+    degraded the old Groq-backed chat service before it.
 
     `LLM_PROVIDER=groq` degrades the same way, deliberately. Groq may not be the front
     door: it would be an external model receiving what the patient typed, which is the
@@ -621,10 +571,17 @@ def _build_model_turn_service(
     `ToolCallClient` Protocol is narrow enough that `HttpGroqClient` cannot satisfy it
     even by accident.
 
+    Groq is nonetheless built here, from its own settings and *not* from
+    `selected_llm_provider()` (TICK-064). The two now answer different questions:
+    `LLM_PROVIDER` selects the front door, which must be local, while Groq is the
+    backing service for exactly one non-writing tool (D13). Wiring it off the provider
+    would leave `ask_general_knowledge` permanently unavailable on the only provider the
+    chat can actually run on.
+
     Each service below is optional and independently degradable, matching
-    `_build_scheduling_tool`'s and `_build_onboarding_service`'s existing tolerance of
-    absent OpenEMR configuration: a demo missing the Portal API base URL loses the tools
-    that need it and keeps the rest of the turn.
+    `_build_onboarding_service`'s existing tolerance of absent OpenEMR configuration: a
+    demo missing the Portal API base URL loses the tools that need it and keeps the rest
+    of the turn.
     """
     local_client: HttpLocalModelClient | None = None
     if selected_llm_provider() != GROQ:
@@ -634,7 +591,9 @@ def _build_model_turn_service(
             local_client = None
     if local_client is None:
         return unavailable_model_turn_service()
+    general_knowledge = _build_general_knowledge_service(client)
     services = TurnServices(
+        general_knowledge=general_knowledge,
         # The pinned local Tesseract engine (TICK-014), never a network call; one
         # shared, in-process service is safe across concurrent sessions since every
         # upload is keyed by its own random upload id.
@@ -650,9 +609,9 @@ def _build_model_turn_service(
         )
     # One slot store shared by discovery (issues tokens) and booking (resolves them),
     # and one appointment store shared by appointment discovery and cancellation, so a
-    # token issued in an earlier turn can still be booked/cancelled in a later one --
-    # the same pairing `_build_scheduling_tool` makes, and its own pair rather than a
-    # shared one, because these tokens belong to this path's turns alone.
+    # token issued in an earlier turn can still be booked/cancelled in a later one, and
+    # its own pair rather than a shared one, because these tokens belong to this path's
+    # turns alone.
     slot_store = AnonymousSlotStore()
     appointment_store = AnonymousAppointmentStore()
     schedule_adapter = OpenEmrScheduleAdapter(schedule_settings, openemr_client)
@@ -660,6 +619,9 @@ def _build_model_turn_service(
     return ModelTurnService(
         client=local_client,
         services=TurnServices(
+            # Same instance as the degraded branch above builds: an absent Portal API
+            # base URL must not also cost general knowledge, which needs none of it.
+            general_knowledge=general_knowledge,
             slot_discovery=SlotDiscoveryService(
                 NoMappedCandidateSource(), schedule_adapter, slot_store
             ),
@@ -682,77 +644,26 @@ def _build_model_turn_service(
     )
 
 
-def _build_llm_client(provider: str, client: httpx.AsyncClient) -> GroqClient | None:
-    """Build the selected provider's client, or `None` when its settings are absent.
-
-    Both branches share `client`: an OpenAI-compatible local server speaks the same
-    protocol over the same transport, and the shared 30s timeout is what keeps an
-    unreachable provider a bounded failure rather than a hung request.
-    """
-    if provider == GROQ:
-        try:
-            return HttpGroqClient(GroqSettings.from_environment(), client)
-        except GroqConfigurationError:
-            return None
-    # The only other accepted value: `selected_llm_provider()` has already rejected
-    # everything outside `LLM_PROVIDERS`.
-    try:
-        return HttpLocalModelClient(LocalModelSettings.from_environment(), client)
-    except LocalModelConfigurationError:
-        return None
-
-
-def _build_scheduling_tool(
+def _build_general_knowledge_service(
     client: httpx.AsyncClient,
-) -> tuple[ToolFactory, SlotDiscoveryService | None, AppointmentDiscoveryService | None]:
-    """Build the real booking/cancellation tool and slot/appointment discovery, or the
-    no-op fallback.
+) -> GeneralKnowledgeService | None:
+    """Build the one outbound path, or `None` when Groq is not configured.
 
-    Mirrors `_build_chat_service`'s/`_build_onboarding_service`'s tolerance of absent
-    OpenEMR configuration (TICK-034 AC5, TICK-036): every environment missing the
-    FHIR/Portal API base URLs or the admin-configured booking fields keeps today's
-    fixed no-action tool and empty `open_slots`/`current_appointments` instead of
-    failing startup.
+    `None` is a supported state, not a failure: NFR-20 wants the demo's default path to
+    require no paid LLM service, and D13 confines Groq to general-knowledge answers. So
+    a deployment with no `GROQ_API_KEY`/`GROQ_ZDR_VERIFIED_ON` loses exactly one
+    non-writing tool and keeps every patient-specific capability, all of which are local
+    (AC6).
+
+    `PrivacyGate.create()` is built here rather than passed in because this is the only
+    remaining caller: the gate exists to screen what leaves, and after TICK-064 this is
+    the only thing that leaves.
     """
     try:
-        schedule_settings = OpenEmrScheduleSettings.from_environment()
-        booking_tool_settings = BookingToolSettings.from_environment()
-        portal_settings = OpenEmrPortalSettings.from_environment()
-    except OpenEmrConfigurationError:
-        return no_action_tool_factory(), None, None
-    # One slot store shared by discovery (issues tokens) and booking (resolves them),
-    # and one appointment store shared by appointment discovery and cancellation, so a
-    # token issued in an earlier turn can still be booked/cancelled in a later one.
-    slot_store = AnonymousSlotStore()
-    appointment_store = AnonymousAppointmentStore()
-    # Booking and cancellation both go through the module-added Portal routes now
-    # (TICK-040), so they share the one portal_settings instance -- no separate
-    # Standard API booking settings needed anymore.
-    booking_service = BookingService(slot_store, OpenEmrBookingAdapter(portal_settings, client))
-    cancellation_service = CancellationService(
-        appointment_store, AppointmentCancelAdapter(portal_settings, client)
-    )
-    # Composes the same booking_service/cancellation_service instances above, not new
-    # ones, so a reschedule's book/cancel calls still resolve through the one shared
-    # slot_store/appointment_store single-use guarantee (TICK-020).
-    reschedule_service = RescheduleService(booking_service, cancellation_service)
-    schedule_adapter = OpenEmrScheduleAdapter(schedule_settings, client)
-    slot_discovery = SlotDiscoveryService(NoMappedCandidateSource(), schedule_adapter, slot_store)
-    appointment_discovery = AppointmentDiscoveryService(schedule_adapter, appointment_store)
-    appointment_request = booking_tool_settings.appointment_request()
-
-    def factory(access_token: str | None, patient_id: str | None, now: datetime) -> BookingTool:
-        return BookingTool(
-            booking=booking_service,
-            cancellation=cancellation_service,
-            reschedule=reschedule_service,
-            appointment_request=appointment_request,
-            access_token=access_token,
-            patient_id=patient_id,
-            now=now,
-        )
-
-    return factory, slot_discovery, appointment_discovery
+        settings = GroqSettings.from_environment()
+    except GroqConfigurationError:
+        return None
+    return GeneralKnowledgeService(PrivacyGate.create(), HttpGroqClient(settings, client))
 
 
 def _build_onboarding_service(

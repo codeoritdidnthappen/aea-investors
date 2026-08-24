@@ -17,7 +17,7 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Iterable
 
@@ -29,13 +29,17 @@ from ai_server.app.chat import ASSISTANT_UNAVAILABLE_RESPONSE
 from ai_server.app.conversation import MAX_TRANSCRIPT_MESSAGES, ConversationStore
 from ai_server.app.main import create_app
 from ai_server.app.model_turn import (
+    GENERAL_KNOWLEDGE_ANSWER_TEMPLATE,
     GENERAL_KNOWLEDGE_UNAVAILABLE_RESPONSE,
+    GENERAL_KNOWLEDGE_WITHHELD_RESPONSE,
     ModelTurnService,
     TurnMetrics,
     TurnServices,
     log_turn_metrics,
     unavailable_model_turn_service,
 )
+from ai_server.llm.general_knowledge import GeneralKnowledgeService
+from ai_server.llm.groq import GroqSettings, HttpGroqClient
 from ai_server.llm.local import HttpLocalModelClient, LocalModelSettings
 from ai_server.llm.prompt import PROMPT_VERSION, SYSTEM_PROMPT
 from ai_server.llm.tools import (
@@ -54,6 +58,7 @@ from ai_server.onboarding.draft_client import AssessmentDraftAdapter, OpenEmrPor
 from ai_server.onboarding.flow import OnboardingFlow
 from ai_server.openemr.adapter import Appointment
 from ai_server.openemr.demographics import OpenEmrDemographicsAdapter
+from ai_server.privacy.gate import GENERAL_KNOWLEDGE_SYSTEM_PROMPT, PrivacyGate
 from ai_server.scheduling.appointments import AnonymousAppointmentStore, AppointmentDiscoveryService
 from ai_server.scheduling.booking import (
     AppointmentRequest,
@@ -93,7 +98,18 @@ class Runtime:
     replies: list[str]
     model_requests: list[httpx.Request] = field(default_factory=list)
     portal_requests: list[httpx.Request] = field(default_factory=list)
+    groq_requests: list[httpx.Request] = field(default_factory=list)
     booked_id: str = "appointment-77"
+    groq_answer: str = "CBT is a talking therapy."
+    groq_status: int = 200
+
+    def groq_handler(self, request: httpx.Request) -> httpx.Response:
+        """The external model, recorded separately so egress is observable on its own."""
+        self.groq_requests.append(request)
+        return httpx.Response(
+            self.groq_status,
+            json={"choices": [{"message": {"content": self.groq_answer}}]},
+        )
 
     def model_handler(self, request: httpx.Request) -> httpx.Response:
         self.model_requests.append(request)
@@ -187,9 +203,17 @@ def turn_service(
     *replies: str,
     metrics: list[TurnMetrics] | None = None,
     ocr: OcrService | None = None,
+    groq: bool = True,
+    runtime: Runtime | None = None,
 ) -> tuple[ModelTurnService, Runtime, _Cursors]:
-    """Build a real turn service over mocked Ollama and OpenEMR transports."""
-    runtime = Runtime(replies=list(replies))
+    """Build a real turn service over mocked Ollama, OpenEMR and Groq transports.
+
+    `groq=False` builds the service with no general-knowledge backing at all, which is
+    what an unconfigured `GROQ_API_KEY` produces in `_build_model_turn_service` (AC6).
+    The real `PrivacyGate` is used throughout -- Presidio is never mocked in this suite,
+    because a mocked detector would make every privacy assertion vacuous.
+    """
+    runtime = runtime if runtime is not None else Runtime(replies=list(replies))
     model_client = HttpLocalModelClient(
         LocalModelSettings(model="llama3.1:8b-instruct-q4_K_M", base_url=MODEL_BASE_URL),
         httpx.AsyncClient(transport=httpx.MockTransport(runtime.model_handler)),
@@ -205,6 +229,17 @@ def turn_service(
         ModelTurnService(
             client=model_client,
             services=TurnServices(
+                general_knowledge=(
+                    GeneralKnowledgeService(
+                        PrivacyGate.create(),
+                        HttpGroqClient(
+                            GroqSettings(api_key="k", zdr_verified_on=date(2026, 1, 1)),
+                            httpx.AsyncClient(transport=httpx.MockTransport(runtime.groq_handler)),
+                        ),
+                    )
+                    if groq
+                    else None
+                ),
                 slot_discovery=SlotDiscoveryService(_Candidates(), _Appointments(), slot_store),
                 appointment_discovery=AppointmentDiscoveryService(
                     _Appointments(), appointment_store
@@ -754,13 +789,17 @@ def test_ac5_no_confirmation_or_cancel_phrase_list_is_consulted() -> None:
     assert runtime.writes("PUT", "/demographics") == []
 
 
-# --- AC6: nothing the patient typed reaches Groq, on any path ------------------------
+# --- AC6/FR-34: nothing the patient typed reaches Groq, on any path -----------------
 
 
 def test_ac6_no_patient_text_reaches_groq_on_any_path(tmp_path: Path) -> None:
-    """FR-34, asserted rather than inspected. Every outbound request the whole app makes
-    during a full conversation is recorded; none goes to Groq, and the patient's own
-    words appear only in the request to the local model."""
+    """FR-34, asserted rather than inspected, and stronger than before TICK-064.
+
+    Groq is now genuinely wired and genuinely called on the last turn, so this is no
+    longer "nothing goes out at all" -- something does. Every outbound request the whole
+    app makes during a full conversation is recorded, and the patient's own words appear
+    only in requests to the *local* model. What reaches Groq is the restatement.
+    """
     configured = settings(tmp_path)
     store = SessionStore(configured.database_path, configured.encryption_key)
     store.initialize()
@@ -792,10 +831,12 @@ def test_ac6_no_patient_text_reaches_groq_on_any_path(tmp_path: Path) -> None:
     replies = run(_post_all(app, handle, secrets))
 
     assert "Saved" in replies[2]
-    assert replies[4] == GENERAL_KNOWLEDGE_UNAVAILABLE_RESPONSE
+    assert "CBT is a talking therapy." in replies[4]
 
-    outbound = runtime.model_requests + runtime.portal_requests
-    assert [str(request.url) for request in outbound if "groq.com" in str(request.url)] == []
+    # The turn really did egress, so the assertions below are about a live boundary.
+    assert len(runtime.groq_requests) == 1
+
+    outbound = runtime.model_requests + runtime.portal_requests + runtime.groq_requests
     for request in outbound:
         if str(request.url) == MODEL_ENDPOINT:
             continue
@@ -810,17 +851,164 @@ def test_ac6_no_patient_text_reaches_groq_on_any_path(tmp_path: Path) -> None:
     )
 
 
-def test_ac6_the_general_knowledge_tool_is_answered_without_calling_anything() -> None:
-    """`ask_general_knowledge` is on the published surface but its egress path is
-    TICK-064's. Until that exists it is answered honestly rather than wired to Groq with
-    the patient's own words."""
+def test_ac2_only_the_restatement_reaches_the_wire() -> None:
+    """AC2: what leaves is the model's restatement plus content this codebase authored.
+
+    Asserted as an equality over the whole Groq body rather than a substring check, so
+    an extra field, an appended transcript, or a folded-in context blob fails here.
+    """
     service, runtime, _ = turn_service(
         call("ask_general_knowledge", restatement="What is cognitive behavioural therapy?")
     )
 
-    reply = turns(service, "what is CBT?")[0]
+    turns(service, "so what is CBT anyway, my therapist mentioned it")
+
+    body = json.loads(runtime.groq_requests[0].content)
+    assert body == {
+        "model": "openai/gpt-oss-120b",
+        "messages": [
+            {"role": "system", "content": GENERAL_KNOWLEDGE_SYSTEM_PROMPT},
+            {"role": "user", "content": "What is cognitive behavioural therapy?"},
+        ],
+        "stream": False,
+    }
+
+
+def test_ac4_the_patient_is_shown_the_question_asked_on_their_behalf() -> None:
+    """AC4. The restatement is composed by the model and would otherwise be invisible.
+
+    LOCAL_LLM_SPEC records the consequence as D14's standing risk: a restatement that
+    drops or distorts the question yields a correct-looking answer to something the
+    patient did not ask. Showing it is what makes a distortion noticeable.
+    """
+    service, _, _ = turn_service(
+        call("ask_general_knowledge", restatement="How long does a flu shot take?")
+    )
+
+    reply = turns(service, "quick one -- how long will the jab take?")[0]
+
+    assert "How long does a flu shot take?" in reply
+    assert reply == GENERAL_KNOWLEDGE_ANSWER_TEMPLATE.format(
+        asked="How long does a flu shot take?", answer="CBT is a talking therapy."
+    )
+
+
+def test_ac3_presidio_rejects_a_phi_bearing_restatement_and_nothing_is_sent() -> None:
+    """AC3/ADR-5, with a seeded sensitive value: reject, never scrub.
+
+    The local model is the thing that went wrong here -- it restated the question with
+    the patient's phone number still in it, which is exactly the case D14 says a
+    restatement "could in principle" produce and D4 positions Presidio to catch. The
+    payload was constructed correctly and screened anyway, which is the whole point of
+    having two independent controls.
+    """
+    service, runtime, _ = turn_service(
+        call(
+            "ask_general_knowledge",
+            restatement="Is it normal to be called back on 555-555-5555 after a test?",
+        )
+    )
+
+    reply = turns(service, "is it normal for them to call me back?")[0]
+
+    # Nothing was sent -- not a redacted version, not a truncated one, nothing.
+    assert runtime.groq_requests == []
+    # And the patient is told, rather than being handed an answer to a question that
+    # was never asked.
+    assert reply == GENERAL_KNOWLEDGE_WITHHELD_RESPONSE.format(
+        asked="Is it normal to be called back on 555-555-5555 after a test?"
+    )
+    assert "555-555-5555" not in "".join(
+        (request.content or b"").decode() for request in runtime.portal_requests
+    )
+
+
+def test_ac3_a_withheld_question_is_never_answered_from_nothing() -> None:
+    """A rejection must not be dressed up as an answer.
+
+    The failure worth guarding against is a reply that reads like a lookup happened, so
+    this asserts the reply says nothing was sent and carries none of the stub answer the
+    external model would have given.
+    """
+    service, runtime, _ = turn_service(
+        call("ask_general_knowledge", restatement="My MRN is MRN-889900, what does it mean?")
+    )
+
+    reply = turns(service, "what does my record number mean?")[0]
+
+    assert runtime.groq_requests == []
+    assert "I did not send it" in reply
+    assert "CBT is a talking therapy." not in reply
+
+
+def test_ac6_an_unconfigured_groq_costs_general_knowledge_and_nothing_else() -> None:
+    """AC6: Groq being absent degrades one tool. Everything patient-specific is local.
+
+    Driven as one conversation rather than two cases, because the claim is about the
+    turns sitting either side of the unavailable one: the address write and the
+    appointment list run through the same service instance and must be untouched.
+    """
+    service, runtime, _ = turn_service(
+        call("ask_general_knowledge", restatement="What is a routine physical?"),
+        call(
+            "update_address",
+            street1="88 Larch Street",
+            city="Toms River",
+            state="NJ",
+            zip_code="08753",
+        ),
+        call(
+            "update_address",
+            street1="88 Larch Street",
+            city="Toms River",
+            state="NJ",
+            zip_code="08753",
+        ),
+        call("list_appointments"),
+        groq=False,
+    )
+
+    replies = turns(
+        service,
+        "what is a physical?",
+        "my address is 88 Larch Street, Toms River, NJ 08753",
+        "yes",
+        "what have I got booked",
+    )
+
+    assert replies[0] == GENERAL_KNOWLEDGE_UNAVAILABLE_RESPONSE
+    assert "Saved" in replies[2]
+    assert "Here are your upcoming appointments" in replies[3]
+    assert runtime.writes("PUT", "/demographics")
+
+
+def test_ac6_an_unreachable_groq_degrades_only_that_answer() -> None:
+    """Same criterion, but with Groq configured and failing rather than absent.
+
+    A 500 from a third party must not escape as a 500 from this server, and must not
+    become the chat-wide unavailable message either -- the local front door is fine.
+    """
+    runtime = Runtime(
+        replies=[call("ask_general_knowledge", restatement="What is a routine physical?")],
+        groq_status=500,
+    )
+    service, _, _ = turn_service(runtime=runtime)
+
+    reply = turns(service, "what is a physical?")[0]
 
     assert reply == GENERAL_KNOWLEDGE_UNAVAILABLE_RESPONSE
+    assert reply != ASSISTANT_UNAVAILABLE_RESPONSE
+
+
+def test_the_general_knowledge_turn_reaches_no_patient_service() -> None:
+    """The tool writes nothing and reads no record: `TOOL_SURFACE` says `writes=False`
+    and `backed_by="Groq"`, and this is that claim observed."""
+    service, runtime, _ = turn_service(
+        call("ask_general_knowledge", restatement="What is cognitive behavioural therapy?")
+    )
+
+    turns(service, "what is CBT?")
+
     assert runtime.portal_requests == []
 
 

@@ -26,10 +26,17 @@ class HealthSettings:
 
     @classmethod
     def from_environment(cls, openemr_url: str) -> HealthSettings:
-        """Read optional operational settings once during application startup."""
-        provider = os.environ.get("LLM_PROVIDER", "").lower()
-        api_key = os.environ.get("GROQ_API_KEY") if provider == "groq" else None
-        return cls(openemr_url=openemr_url, groq_api_key=api_key)
+        """Read optional operational settings once during application startup.
+
+        The probe used to run only when `LLM_PROVIDER == "groq"`. That gate is wrong
+        since TICK-064: `LLM_PROVIDER` selects the *front door*, which must be local
+        (D3), while Groq now backs `ask_general_knowledge` on every provider (D13). Under
+        the only provider the chat can actually run on, the old gate reported
+        `external_llm` unavailable while Groq was a live dependency. The configured key
+        is what decides now, so a deployment with no Groq at all still reports honestly
+        -- `default_health_service` treats an absent key as unavailable.
+        """
+        return cls(openemr_url=openemr_url, groq_api_key=os.environ.get("GROQ_API_KEY"))
 
 
 class HealthService:

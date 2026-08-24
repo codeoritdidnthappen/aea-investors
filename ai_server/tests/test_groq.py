@@ -1,8 +1,16 @@
+"""Tests for the Groq transport after TICK-064 narrowed it to general knowledge.
+
+This file used to test `GroqWorkflow`: plan validation, the authoritative tool, the
+TICK-041 no-second-call guard, and the privacy rejection. D13 deleted the planner --
+Groq no longer decides anything, and no authoritative tool runs behind it -- so what is
+left to test here is a transport. The privacy rejection it also covered has not been
+dropped: it moved to `test_general_knowledge.py`, alongside the dispatcher that now
+performs it.
+"""
+
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
-from dataclasses import dataclass
 from datetime import date
 
 import httpx
@@ -10,237 +18,175 @@ import pytest
 
 from ai_server.llm.groq import (
     GROQ_MODEL,
-    PLANNING_FAILED_RESPONSE,
-    AuthoritativeToolResult,
     GroqConfigurationError,
     GroqSettings,
     GroqUnavailableError,
-    GroqWorkflow,
-    PlanningOutput,
+    HttpGroqClient,
 )
-from ai_server.privacy.gate import OutboundPayload, PrivacyGate
+from ai_server.llm.tools import AskGeneralKnowledgeCall
+from ai_server.privacy.gate import (
+    GENERAL_KNOWLEDGE_SYSTEM_PROMPT,
+    OutboundPayload,
+    mint_restatement,
+)
+
+ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
+QUESTION = "What is a routine physical examination?"
 
 
-def payload(user_message: str = "Please find an appointment.") -> OutboundPayload:
-    return OutboundPayload.model_validate(
-        {
-            "model": GROQ_MODEL,
-            "messages": [
-                {"role": "system", "content": "Plan an anonymous scheduling action."},
-                {"role": "user", "content": user_message},
-            ],
-            "scheduling_context": {
-                "current_datetime": "2026-08-18T14:30:00-05:00",
-                "timezone": "America/Chicago",
-                "office_hours": [],
-                "closures": [],
-                "open_slots": [],
-            },
-            "scheduling_rules": {
-                "minimum_booking_notice_minutes": 1440,
-                "booking_enabled": True,
-                "rescheduling_enabled": True,
-                "cancellation_enabled": True,
-            },
-            "response_format": {"type": "json_schema", "schema_version": "1"},
-        }
+def run(coroutine):
+    return asyncio.run(coroutine)
+
+
+def settings() -> GroqSettings:
+    return GroqSettings(api_key="test-key", zdr_verified_on=date(2026, 1, 1))
+
+
+def payload(restatement: str = QUESTION) -> OutboundPayload:
+    """Build an outbound payload the only way this codebase can build one."""
+    call = AskGeneralKnowledgeCall.model_validate(
+        {"tool": "ask_general_knowledge", "arguments": {"restatement": restatement}}
     )
+    return OutboundPayload.for_question(mint_restatement(call))
 
 
-class CapturingGroqClient:
-    def __init__(
-        self,
-        plan: str = '{"intent":"information","slot_token":null}',
-        fail_planning: bool = False,
-    ) -> None:
-        self.plan = plan
-        self.fail_planning = fail_planning
-        self.calls: list[OutboundPayload] = []
-        self.final_chunks = ["Confirmed ", "by OpenEMR."]
+def answering(body: object, status: int = 200) -> tuple[HttpGroqClient, list[httpx.Request]]:
+    """Return a client whose peer answers `body`, plus the list it records requests in."""
+    seen: list[httpx.Request] = []
 
-    async def complete(self, request: OutboundPayload) -> str:
-        self.calls.append(request)
-        if self.fail_planning:
-            raise GroqUnavailableError("offline")
-        return self.plan
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(status, json=body)
 
-    async def _stream(self, request: OutboundPayload) -> AsyncIterator[str]:
-        self.calls.append(request)
-        for chunk in self.final_chunks:
-            yield chunk
-
-    def stream(self, request: OutboundPayload) -> AsyncIterator[str]:
-        return self._stream(request)
+    transport = httpx.MockTransport(handler)
+    return HttpGroqClient(settings(), httpx.AsyncClient(transport=transport)), seen
 
 
-@dataclass
-class RaisingGroqClient:
-    """A planning client whose `complete` raises one specific transport error.
-
-    `CapturingGroqClient` covers `GroqUnavailableError` (`fail_planning`) and
-    `ValidationError` (an unparseable plan); this covers the third caught planning
-    failure, a raw `httpx.HTTPError` escaping the client (TICK-048).
-    """
-
-    error: Exception
-
-    async def complete(self, request: OutboundPayload) -> str:
-        del request
-        raise self.error
-
-    def stream(self, request: OutboundPayload) -> AsyncIterator[str]:
-        del request
-        raise AssertionError("stream must never run after planning fails")
+def answer_body(content: str = "A routine check-up.") -> dict[str, object]:
+    return {"choices": [{"message": {"content": content}}]}
 
 
-@dataclass
-class CapturingTool:
-    calls: list[PlanningOutput]
-
-    async def execute(self, plan: PlanningOutput) -> AuthoritativeToolResult:
-        self.calls.append(plan)
-        return AuthoritativeToolResult(public_summary="OpenEMR reports the appointment is booked.")
-
-
-def collect(
-    workflow: GroqWorkflow, client_payload: OutboundPayload, tool: CapturingTool
-) -> list[str]:
-    async def run() -> list[str]:
-        return [chunk async for chunk in workflow.respond(client_payload, tool)]
-
-    return asyncio.run(run())
+# --- Settings ----------------------------------------------------------------------
 
 
 def test_ticket_010_requires_dated_zdr_verification(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    monkeypatch.setenv("GROQ_API_KEY", "key")
     monkeypatch.delenv("GROQ_ZDR_VERIFIED_ON", raising=False)
 
-    with pytest.raises(GroqConfigurationError, match="ZDR"):
+    with pytest.raises(GroqConfigurationError):
         GroqSettings.from_environment()
 
-    monkeypatch.setenv("GROQ_ZDR_VERIFIED_ON", "2026-08-18")
-    assert GroqSettings.from_environment().zdr_verified_on == date(2026, 8, 18)
+
+def test_an_absent_api_key_is_a_configuration_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.setenv("GROQ_ZDR_VERIFIED_ON", "2026-01-01")
+
+    with pytest.raises(GroqConfigurationError):
+        GroqSettings.from_environment()
 
 
-def test_ticket_010_validates_plan_before_authoritative_tool_and_yields_its_result() -> None:
-    client = CapturingGroqClient('{"intent":"book","slot_token":"slot_demo"}')
-    tool = CapturingTool(calls=[])
-
-    chunks = collect(GroqWorkflow(PrivacyGate.create(), client), payload(), tool)
-
-    assert chunks == ["OpenEMR reports the appointment is booked."]
-    assert tool.calls == [PlanningOutput(intent="book", slot_token="slot_demo")]
-    # Only the planning call happens -- no second Groq call describes the result
-    # (TICK-041): the tool's own `public_summary` is yielded verbatim instead.
-    assert [request.model for request in client.calls] == [GROQ_MODEL]
-    assert (
-        client.calls[0].scheduling_context.model_dump() == payload().scheduling_context.model_dump()
-    )
+# --- The request that actually goes on the wire ------------------------------------
 
 
-def test_tick041_a_second_model_call_never_happens_so_it_cannot_fabricate_a_result() -> None:
-    """Regression for the live-found bug: a second Groq call used to "describe" the
-    tool's honest result, and its *unchecked* streamed output -- not the tool's real
-    result -- was what the patient saw. Here `client.stream()` is rigged to fabricate
-    a success claim completely unrelated to the tool's real (failure) outcome; if
-    `GroqWorkflow` ever called it again, this test would see that fabrication instead
-    of the honest text."""
-    client = CapturingGroqClient('{"intent":"cancel","appointment_token":"appt_demo"}')
-    client.final_chunks = ['{"appointment_token":"appt_demo","cancellation":"confirmed"}']
+def test_the_request_body_is_the_pinned_model_and_exactly_the_composed_messages() -> None:
+    """The whole body, asserted as a whole.
 
-    @dataclass
-    class FailingTool:
-        async def execute(self, plan: PlanningOutput) -> AuthoritativeToolResult:
-            del plan
-            return AuthoritativeToolResult(
-                public_summary=(
-                    "OpenEMR could not confirm that cancellation just now, so the "
-                    "appointment was not cancelled. Please try again."
-                )
-            )
+    Written as an equality rather than a set of `in` checks so that anything *extra*
+    appearing in an outbound body -- a new field, a folded-in context blob, a
+    reintroduced `scheduling_context` -- fails here rather than going quietly out to a
+    third party.
+    """
+    client, seen = answering(answer_body())
 
-    chunks = collect(GroqWorkflow(PrivacyGate.create(), client), payload(), FailingTool())
+    run(client.complete(payload()))
 
-    assert chunks == [
-        "OpenEMR could not confirm that cancellation just now, so the "
-        "appointment was not cancelled. Please try again."
-    ]
-    assert "confirmed" not in "".join(chunks)
-    # `stream()` was never invoked -- only the one planning call happened.
-    assert len(client.calls) == 1
+    assert len(seen) == 1
+    assert seen[0].url == ENDPOINT
+    body = _json(seen[0])
+    assert body == {
+        "model": GROQ_MODEL,
+        "messages": [
+            {"role": "system", "content": GENERAL_KNOWLEDGE_SYSTEM_PROMPT},
+            {"role": "user", "content": QUESTION},
+        ],
+        "stream": False,
+    }
 
 
-def test_ticket_010_invalid_plan_never_calls_tool_or_streams() -> None:
-    client = CapturingGroqClient('{"intent":"invented","slot_token":"slot_demo"}')
-    tool = CapturingTool(calls=[])
+def test_the_wire_body_no_longer_carries_any_scheduling_context() -> None:
+    """D13: scheduling planning is local, so nothing outbound describes scheduling.
 
-    assert collect(GroqWorkflow(PrivacyGate.create(), client), payload(), tool) == [
-        PLANNING_FAILED_RESPONSE
-    ]
-    assert tool.calls == []
-    assert len(client.calls) == 1
+    TICK-039 folded `scheduling_context`/`scheduling_rules` into the system message text
+    because Groq 400s on unrecognised top-level keys. Both the keys and the fold are
+    gone; this asserts the *text* is clean too, since a fold would not show up as a
+    top-level key.
+    """
+    client, seen = answering(answer_body())
 
+    run(client.complete(payload()))
 
-def test_ticket_010_model_failure_makes_no_appointment_claim() -> None:
-    client = CapturingGroqClient(fail_planning=True)
-    tool = CapturingTool(calls=[])
-
-    assert collect(GroqWorkflow(PrivacyGate.create(), client), payload(), tool) == [
-        PLANNING_FAILED_RESPONSE
-    ]
-    assert tool.calls == []
+    serialised = seen[0].content.decode()
+    for vestige in ("scheduling_context", "scheduling_rules", "open_slots", "slot_token"):
+        assert vestige not in serialised
 
 
-@pytest.mark.parametrize(
-    "client",
-    [
-        pytest.param(CapturingGroqClient(fail_planning=True), id="groq_unavailable_error"),
-        pytest.param(CapturingGroqClient('{"intent":"invented"}'), id="validation_error"),
-        pytest.param(RaisingGroqClient(httpx.ConnectError("no route to Groq")), id="http_error"),
-    ],
-)
-def test_ticket_048_planning_failure_never_blames_scheduling(client: object) -> None:
-    """Every planning failure yields the neutral per-turn message, even when the turn
-    was not about scheduling at all (the reported case: an address change)."""
-    tool = CapturingTool(calls=[])
+def test_the_api_key_is_sent_as_a_bearer_token_and_nowhere_else() -> None:
+    client, seen = answering(answer_body())
 
-    chunks = collect(
-        GroqWorkflow(PrivacyGate.create(), client),  # type: ignore[arg-type]
-        payload("I need to change my address."),
-        tool,
-    )
+    run(client.complete(payload()))
 
-    assert chunks == [PLANNING_FAILED_RESPONSE]
-    assert tool.calls == []
+    assert seen[0].headers["authorization"] == "Bearer test-key"
+    assert "test-key" not in seen[0].content.decode()
 
 
-def test_ticket_048_planning_failure_message_is_neutral_and_actionable() -> None:
-    text = PLANNING_FAILED_RESPONSE.lower()
+def test_the_models_answer_is_returned_verbatim() -> None:
+    client, _ = answering(answer_body("Once a year, usually."))
 
-    # It never claims scheduling specifically, and never sends a patient portal user
-    # to OpenEMR's staff-only native scheduling screen.
-    assert "scheduling" not in text
-    assert "openemr" not in text
-    # It says the assistant could not handle the request, and what to do next.
-    assert "could not work out how to handle that request" in text
-    assert "contact the clinic" in text
+    assert run(client.complete(payload())) == "Once a year, usually."
 
 
-def test_ticket_010_privacy_rejection_never_calls_groq() -> None:
-    client = CapturingGroqClient()
-    tool = CapturingTool(calls=[])
-    rejected = OutboundPayload.model_validate(
-        {
-            **payload().model_dump(mode="json"),
-            "messages": [
-                payload().messages[0].model_dump(),
-                {"role": "user", "content": "My phone is 555-555-5555."},
-            ],
-        }
-    )
+# --- Unavailability ----------------------------------------------------------------
 
-    assert collect(GroqWorkflow(PrivacyGate.create(), client), rejected, tool) == [
-        "Please remove personal or health information and try again."
-    ]
-    assert client.calls == []
-    assert tool.calls == []
+
+def test_an_error_status_is_unavailable() -> None:
+    client, _ = answering(answer_body(), status=500)
+
+    with pytest.raises(GroqUnavailableError):
+        run(client.complete(payload()))
+
+
+def test_a_malformed_response_is_unavailable() -> None:
+    client, _ = answering({"choices": []})
+
+    with pytest.raises(GroqUnavailableError):
+        run(client.complete(payload()))
+
+
+def test_an_unreachable_endpoint_is_unavailable_rather_than_a_transport_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("nothing listening", request=request)
+
+    client = HttpGroqClient(settings(), httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+
+    with pytest.raises(GroqUnavailableError):
+        run(client.complete(payload()))
+
+
+def test_the_groq_client_cannot_be_a_turn_client() -> None:
+    """TICK-063's guard, restated now that Groq is wired into a turn's services.
+
+    `ModelTurnService` needs `tool_call()`; `HttpGroqClient` has never had one and must
+    not grow one. Groq backs a tool, and cannot become the front door that sees the
+    patient's typed turn (D3, FR-34).
+    """
+    assert not hasattr(HttpGroqClient, "tool_call")
+
+
+def _json(request: httpx.Request) -> object:
+    import json
+
+    return json.loads(request.content.decode())
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-q"]))

@@ -37,7 +37,6 @@ from ai_server.llm.tools import (
 )
 from ai_server.ocr.service import OcrService, OcrUploadStore
 from ai_server.openemr.adapter import Appointment
-from ai_server.privacy.gate import AnonymousAppointment, AnonymousSlot
 from ai_server.scheduling.appointments import AnonymousAppointmentStore, AppointmentTokenError
 from ai_server.scheduling.slots import AnonymousSlotStore, CandidateSlot, SlotTokenError
 
@@ -364,14 +363,12 @@ def test_the_only_references_on_the_surface_are_anonymous_tokens() -> None:
         assert arguments.model_json_schema()["properties"][field]["pattern"] == pattern
 
 
-def test_the_token_patterns_match_the_ones_already_on_the_wire() -> None:
-    """Guards the second copy of these regexes against drifting from `privacy/gate.py`."""
-    slot = AnonymousSlot.model_json_schema()["properties"]["slot_token"]["pattern"]
-    appointment = AnonymousAppointment.model_json_schema()["properties"]["appointment_token"][
-        "pattern"
-    ]
-    assert slot == SLOT_TOKEN_PATTERN
-    assert appointment == APPOINTMENT_TOKEN_PATTERN
+# `test_the_token_patterns_match_the_ones_already_on_the_wire` stood here. It guarded
+# this module's regexes against the second copy in `privacy/gate.py`'s `AnonymousSlot`/
+# `AnonymousAppointment`. TICK-064 deleted those with the rest of the outbound scheduling
+# context (D13), so there is no second copy left to drift from and nothing for the guard
+# to compare. The patterns are asserted against real issued tokens in
+# `test_slot_discovery.py` and `test_appointment_tokens.py` instead.
 
 
 def test_a_fabricated_appointment_token_cannot_reach_the_cancellation_service() -> None:

@@ -9,12 +9,15 @@ import pytest
 from pydantic import ValidationError
 
 from ai_server.fixtures.generator import generate
+from ai_server.llm.tools import AskGeneralKnowledgeCall
 from ai_server.privacy.gate import (
+    GENERAL_KNOWLEDGE_SYSTEM_PROMPT,
     LOCAL_CORRECTION,
     DispatchResult,
     OutboundDispatcher,
     OutboundPayload,
     PrivacyGate,
+    mint_restatement,
 )
 
 
@@ -32,30 +35,19 @@ def privacy_gate() -> PrivacyGate:
     return PrivacyGate.create()
 
 
-def approved_payload(prompt: str = "I am looking for scheduling help.") -> OutboundPayload:
-    return OutboundPayload.model_validate(
-        {
-            "model": "openai/gpt-oss-120b",
-            "messages": [
-                {"role": "system", "content": "Provide scheduling help."},
-                {"role": "user", "content": prompt},
-            ],
-            "scheduling_context": {
-                "current_datetime": "2026-08-18T14:30:00-05:00",
-                "timezone": "America/Chicago",
-                "office_hours": [],
-                "closures": [],
-                "open_slots": [],
-            },
-            "scheduling_rules": {
-                "minimum_booking_notice_minutes": 1440,
-                "booking_enabled": True,
-                "rescheduling_enabled": True,
-                "cancellation_enabled": True,
-            },
-            "response_format": {"type": "json_schema", "schema_version": "1"},
-        }
+def approved_payload(prompt: str = "What does a routine physical involve?") -> OutboundPayload:
+    """Build the payload under test the only way this codebase can build one.
+
+    TICK-064 removed `scheduling_context`/`scheduling_rules`/`response_format` (D13) and,
+    more to the point, removed the ability to hand `OutboundPayload` a user message at
+    all. `prompt` here is a *restatement* -- it can only arrive through the model's
+    published `ask_general_knowledge` argument, which is what makes "the patient's words
+    never egress" structural rather than a convention this helper happens to follow.
+    """
+    call = AskGeneralKnowledgeCall.model_validate(
+        {"tool": "ask_general_knowledge", "arguments": {"restatement": prompt}}
     )
+    return OutboundPayload.for_question(mint_restatement(call))
 
 
 @pytest.mark.parametrize(
@@ -104,10 +96,8 @@ def test_ticket_009_allows_only_the_approved_payload_shape(privacy_gate: Privacy
     with pytest.raises(ValidationError, match="system message followed by a user message"):
         OutboundPayload.model_validate(invalid_messages)
 
-    invalid_datetime = approved_payload().model_dump(mode="json")
-    invalid_datetime["scheduling_context"]["current_datetime"] = "2026-08-18T14:30:00"
-    with pytest.raises(ValidationError):
-        OutboundPayload.model_validate(invalid_datetime)
+    # The system message is this codebase's constant, not something a caller chose.
+    assert approved_payload().messages[0].content == GENERAL_KNOWLEDGE_SYSTEM_PROMPT
 
 
 def test_ticket_009_golden_corpus_rejects_every_seeded_sensitive_value(

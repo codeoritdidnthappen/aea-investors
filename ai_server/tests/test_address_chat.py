@@ -5,8 +5,12 @@ whole turn sequence end to end through `AddressChatService.stream_reply` against
 synthetic OpenEMR (`httpx.MockTransport`, the same discipline
 `test_onboarding_chat.py` uses): trigger -> prompt -> invalid address -> correction ->
 parsed echo-back -> non-confirmation re-shows the review -> confirmation writes exactly
-once. Finally, route-level tests prove the address never reaches Groq, by driving the
-real `ChatService`/`GroqWorkflow` with a client that captures every outbound payload.
+once.
+
+The route-level "the address never reaches Groq" test that used to close this file drove
+the real `ChatService`/`GroqWorkflow`. TICK-064 deleted both, and with them the only code
+that could ever have put a typed message in an outbound payload. The property is now
+proven where the outbound path actually lives: see `test_general_knowledge.py`.
 """
 
 from __future__ import annotations
@@ -37,13 +41,11 @@ from ai_server.app.address_chat import (
     unavailable_address_service,
 )
 from ai_server.app.auth import AuthSettings, OAuthTokens, SessionStore
-from ai_server.app.chat import CHAT_PAGE_HTML, ChatService, no_action_tool_factory
+from ai_server.app.chat import CHAT_PAGE_HTML
 from ai_server.app.main import create_app
-from ai_server.llm.groq import GroqWorkflow
 from ai_server.onboarding.draft_client import OpenEmrPortalSettings
 from ai_server.onboarding.triggers import SUPPORTIVE_CONTENT, Trigger
 from ai_server.openemr.demographics import OpenEmrDemographicsAdapter
-from ai_server.privacy.gate import OutboundPayload, PrivacyGate
 
 NOW = datetime(2026, 8, 22, 12, 0, tzinfo=timezone.utc)
 PORTAL_BASE_URL = "https://openemr.test/apis/default"
@@ -580,25 +582,6 @@ class _ScriptedSchedulingService:
         yield "scheduling-reply"
 
 
-class _CapturingGroqClient:
-    """Records every payload that would leave this process for Groq (mirrors
-    `test_groq.py`'s own capturing client -- this file stays self-contained)."""
-
-    def __init__(self) -> None:
-        self.calls: list[OutboundPayload] = []
-
-    async def complete(self, request: OutboundPayload) -> str:
-        self.calls.append(request)
-        return '{"intent":"information","slot_token":null}'
-
-    async def _stream(self, request: OutboundPayload) -> AsyncIterator[str]:
-        self.calls.append(request)
-        yield "scheduling-reply"
-
-    def stream(self, request: OutboundPayload) -> AsyncIterator[str]:
-        return self._stream(request)
-
-
 async def _post_chat(app, cookie: str, message: str) -> httpx.Response:
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(
@@ -697,49 +680,6 @@ def test_tick063_an_ordinary_turn_reaches_the_model_too(tmp_path: Path) -> None:
 
     assert response.text == "model-reply"
     assert model.calls == [(handle, "Can I book an appointment?")]
-
-
-def test_tick063_a_whole_address_conversation_builds_no_groq_payload(tmp_path: Path) -> None:
-    """AC6/FR-34, still proven by inspecting outbound payloads -- and now stronger.
-
-    The route is driven with the *real* Groq-backed `ChatService` still injected, whose
-    client records every payload that would leave this process. It is no longer on any
-    request path, so the whole conversation -- including the control turn that used to
-    reach Groq -- must produce not one payload. There is no message this app can be sent
-    that puts the patient's words into a Groq request, which is what "structural, not
-    classificatory" (D3) means.
-    """
-    configured = settings(tmp_path)
-    store = SessionStore(configured.database_path, configured.encryption_key)
-    store.initialize()
-    handle = _bound_session(store)
-    service, _ = _service(store)
-
-    groq_client = _CapturingGroqClient()
-    chat_service = ChatService(
-        workflow=GroqWorkflow(PrivacyGate.create(), groq_client),
-        tool_factory=no_action_tool_factory(),
-        clock=lambda: NOW,
-    )
-    app = create_app(
-        configured,
-        clock=lambda: NOW,
-        chat_service=chat_service,
-        address_service=service,
-        model_turn_service=_ScriptedTurnService(),
-    )
-
-    conversation = [
-        "I moved",
-        f"{STREET}, {CITY}, ZZ 1234",
-        FULL_ADDRESS,
-        "ok",
-        "confirm",
-        "Can I book an appointment?",
-    ]
-    asyncio.run(_post_all(app, handle, conversation))
-
-    assert groq_client.calls == []
 
 
 # --- Review findings 1-4: the flow must never trap the patient ----------------------

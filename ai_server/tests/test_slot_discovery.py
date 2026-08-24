@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from ai_server.llm.tools import SLOT_TOKEN_PATTERN, BookAppointmentArguments
 from ai_server.openemr.adapter import Appointment
-from ai_server.privacy.gate import AnonymousSlot, SchedulingContext
 from ai_server.scheduling.slots import (
     AnonymousSlotStore,
     AnonymousSlotToken,
@@ -132,7 +133,7 @@ def test_ac2_issued_tokens_are_unique_and_match_the_approved_slot_token_shape() 
 
     assert len(set(tokens)) == 50
     for token in tokens:
-        AnonymousSlot(slot_token=token, starts_at=NOW, ends_at=NOW + timedelta(minutes=1))
+        BookAppointmentArguments(slot_token=token)
 
 
 def test_ac2_a_token_expires_after_its_ttl() -> None:
@@ -173,22 +174,22 @@ def test_ac3_a_slot_token_carries_only_timing_fields_no_openemr_identifier() -> 
     assert fields == {"slot_token", "starts_at", "ends_at"}
 
 
-def test_ac3_open_slots_populate_only_the_approved_scheduling_context_shape() -> None:
+def test_ac3_every_issued_token_is_accepted_by_the_published_tool_argument() -> None:
+    """The shape check moved with the token (TICK-064).
+
+    It used to build a `SchedulingContext` -- the outbound Groq scheduling payload, which
+    D13 deleted along with scheduling egress. A slot token's only published destination
+    now is `book_appointment`'s argument, so that is what has to accept every token this
+    service issues.
+    """
     discovery, _, _ = service([candidate(1), candidate(2)], [])
     tokens = run(discovery.open_slots("token", NOW))
 
-    context = SchedulingContext(
-        current_datetime=NOW,
-        timezone="America/Chicago",
-        open_slots=[
-            AnonymousSlot(slot_token=t.slot_token, starts_at=t.starts_at, ends_at=t.ends_at)
-            for t in tokens
-        ],
-    )
-
-    dumped = context.model_dump(mode="json")
-    assert set(dumped["open_slots"][0]) == {"slot_token", "starts_at", "ends_at"}
-    assert all(slot["slot_token"].startswith("slot_") for slot in dumped["open_slots"])
+    assert tokens
+    for issued in tokens:
+        assert re.match(SLOT_TOKEN_PATTERN, issued.slot_token)
+        arguments = BookAppointmentArguments(slot_token=issued.slot_token)
+        assert arguments.model_dump() == {"slot_token": issued.slot_token}
 
 
 def test_ac4_an_unknown_token_cannot_resolve_to_a_genuine_slot() -> None:

@@ -6,12 +6,13 @@ cross-patient isolation (TICK-036), mirroring `test_slot_discovery.py`'s coverag
 from __future__ import annotations
 
 import asyncio
+import re
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from ai_server.llm.tools import APPOINTMENT_TOKEN_PATTERN, CancelAppointmentArguments
 from ai_server.openemr.adapter import Appointment
-from ai_server.privacy.gate import AnonymousAppointment, SchedulingContext
 from ai_server.scheduling.appointments import (
     AnonymousAppointmentStore,
     AnonymousAppointmentToken,
@@ -61,26 +62,24 @@ def test_ac1_discovery_issues_one_token_per_appointment_bound_to_the_caller_pati
     assert fields == {"appointment_token", "starts_at", "ends_at"}
 
 
-def test_ac1_current_appointments_populate_only_the_approved_scheduling_context_shape() -> None:
+def test_ac1_every_issued_token_is_accepted_by_the_published_tool_argument() -> None:
+    """The shape check moved with the token (TICK-064).
+
+    It used to build a `SchedulingContext` -- the outbound Groq scheduling payload, which
+    D13 deleted along with scheduling egress. An appointment token's only published
+    destination now is `cancel_appointment`'s argument, so that is what has to accept
+    every token this service issues.
+    """
     store = AnonymousAppointmentStore()
     source = FakeAppointmentSource([appointment(2), appointment(5, "appt-2")])
     discovery = AppointmentDiscoveryService(source, store)
     tokens = run(discovery.current_appointments("token", "patient-a", NOW))
 
-    context = SchedulingContext(
-        current_datetime=NOW,
-        timezone="America/Chicago",
-        current_appointments=[
-            AnonymousAppointment(
-                appointment_token=t.appointment_token, starts_at=t.starts_at, ends_at=t.ends_at
-            )
-            for t in tokens
-        ],
-    )
-
-    dumped = context.model_dump(mode="json")
-    assert set(dumped["current_appointments"][0]) == {"appointment_token", "starts_at", "ends_at"}
-    assert all(a["appointment_token"].startswith("appt_") for a in dumped["current_appointments"])
+    assert tokens
+    for issued in tokens:
+        assert re.match(APPOINTMENT_TOKEN_PATTERN, issued.appointment_token)
+        arguments = CancelAppointmentArguments(appointment_token=issued.appointment_token)
+        assert arguments.model_dump() == {"appointment_token": issued.appointment_token}
 
 
 def test_ac2_issued_tokens_are_unique_and_match_the_approved_appointment_token_shape() -> None:
@@ -92,9 +91,7 @@ def test_ac2_issued_tokens_are_unique_and_match_the_approved_appointment_token_s
 
     assert len(set(tokens)) == 50
     for token in tokens:
-        AnonymousAppointment(
-            appointment_token=token, starts_at=NOW, ends_at=NOW + timedelta(minutes=1)
-        )
+        CancelAppointmentArguments(appointment_token=token)
 
 
 # --- AC2: single-use resolve, expiry, and patient-bound (cross-session) isolation ---
