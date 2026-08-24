@@ -4,7 +4,7 @@
 
 | Component | Pinned selection | Purpose |
 |---|---|---|
-| External language model | Groq `openai/gpt-oss-120b` | Future approved prompt planning only; no patient or provider data may cross the local privacy gate. |
+| External language model | Groq `openai/gpt-oss-120b` | General-knowledge answers only, via the `ask_general_knowledge` tool (LOCAL_LLM_SPEC D13). It receives one canonical restatement the local model composed, never text the patient typed (D3, D14), and that restatement still passes the local privacy gate before egress (D4). It plans nothing, sees no record, and is on no path that writes. |
 | Local language model | Ollama `llama3.1:8b-instruct-q4_K_M` (8B, GGUF Q4_K_M), pinned `sha256:46e0c10c039e019119339687c3c1757cc81b9da49709a3b3924863ba87ca666e` | Runs in the local topology (`deploy/local`, TICK-059) and may see PHI, unlike the external model above. A ~7-8B quantised instruct model per LOCAL_LLM_SPEC D11, selected by TICK-062's acceptance corpus on the numbers below. Pinned by name and digest, verified on every start, because this model proposes values that reach a medical record (D6). |
 | OCR | Local Tesseract (`tesseract` binary), pinned `eng` trained data | Consented, transient synthetic identity-document extraction only (name, date of birth, address); never cloud OCR. |
 | Prompt contract | `ONBOARDING_CONTRACT.md` v1 | Defines deterministic onboarding fields and supportive-content text. |

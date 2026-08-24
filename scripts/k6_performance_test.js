@@ -72,7 +72,7 @@ export const options = {
   },
 };
 
-// NFR-13: chat/API, <3.0s p95. A scheduling-style message stays on ChatService's
+// NFR-13: chat/API, <3.0s p95. A scheduling-style message stays on the turn service's
 // path (never onboarding, which has no comparable performance target here).
 export function chatApi() {
   const res = http.post(

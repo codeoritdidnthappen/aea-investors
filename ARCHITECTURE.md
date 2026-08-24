@@ -259,21 +259,28 @@ LangGraph separates model reasoning from authoritative actions:
 
 ~~~mermaid
 flowchart LR
-    T["User turn"] --> P{"Privacy gate"}
-    P -->|"rejected"| R["Local correction response"]
-    P -->|"accepted"| I["Intent and preference extraction"]
-    I --> C["Load minimal OpenEMR context"]
-    C --> A["Anonymous scheduling payload"]
-    A --> M["External LLM"]
-    M --> V{"Schema validation"}
+    T["User turn"] --> L["Local LLM: one tool call"]
+    L --> V{"Schema and field validation"}
     V -->|"invalid"| F["Safe failure"]
     V -->|"valid"| X["Deterministic OpenEMR tool"]
     X --> O["Stream confirmed response"]
+    L -->|"ask_general_knowledge"| A["Payload composed from the model's restatement"]
+    A --> P{"Privacy gate"}
+    P -->|"rejected"| R["Withheld; reported to the patient"]
+    P -->|"accepted"| M["External LLM"]
+    M --> O
 ~~~
 
-The model can interpret preferences and select anonymous candidates. It cannot invent
-an appointment fact, select an OpenEMR identifier directly, or report a successful
-write before OpenEMR confirms it.
+Every turn goes to the *local* model first, which may see PHI, and its one tool call
+selects what happens (LOCAL_LLM_SPEC D9). The model can interpret preferences and
+select anonymous candidates. It cannot invent an appointment fact, select an OpenEMR
+identifier directly, or report a successful write before OpenEMR confirms it.
+
+The external model is reached from exactly one branch and receives only a canonical
+restatement the local model composed (D13, D14). The privacy gate is no longer the sole
+control on what leaves: the outbound payload cannot be constructed from a patient turn
+at all, and the gate screens the constructed payload as a second, independent check
+(D3, D4).
 
 Patient answers and assessment-draft changes are checkpointed to the logged-in
 patient's native OpenEMR record during the conversation. LangGraph keeps only
@@ -284,55 +291,29 @@ model does not need patient information to produce the final record shape.
 
 ### Approved external request shape
 
+Both strings below are composed by this codebase: the system message is a fixed
+constant in `ai_server/privacy/gate.py`, and the user message is the local model's
+schema'd restatement. Neither is anything the patient typed.
+
 ~~~json
 {
-  "model": "configured-model-id",
+  "model": "openai/gpt-oss-120b",
   "messages": [
     {
       "role": "system",
-      "content": "Scheduling assistant instructions"
+      "content": "General-knowledge instructions (a fixed local constant)"
     },
     {
       "role": "user",
-      "content": "Validated user prompt"
+      "content": "The local model's canonical restatement of the question"
     }
-  ],
-  "scheduling_context": {
-    "current_datetime": "2026-08-18T14:30:00-05:00",
-    "timezone": "America/Chicago",
-    "office_hours": [
-      {
-        "day_of_week": "monday",
-        "opens_at": "09:00",
-        "closes_at": "17:00"
-      }
-    ],
-    "closures": [
-      {
-        "starts_at": "2026-09-07T00:00:00-05:00",
-        "ends_at": "2026-09-08T00:00:00-05:00"
-      }
-    ],
-    "open_slots": [
-      {
-        "slot_token": "slot_A",
-        "starts_at": "2026-08-25T13:00:00-05:00",
-        "ends_at": "2026-08-25T13:30:00-05:00"
-      }
-    ]
-  },
-  "scheduling_rules": {
-    "minimum_booking_notice_minutes": 1440,
-    "booking_enabled": true,
-    "rescheduling_enabled": true,
-    "cancellation_enabled": true
-  },
-  "response_format": {
-    "type": "json_schema",
-    "schema_version": "1"
-  }
+  ]
 }
 ~~~
+
+`scheduling_context`, `scheduling_rules` and `response_format` were removed by TICK-064.
+Scheduling planning is local now (D13), so no outbound payload describes scheduling, and
+a general-knowledge answer is prose rather than a schema.
 
 Each request omits unused sections. Slot tokens are random, single-purpose,
 short-lived, and resolvable only inside the AI server.

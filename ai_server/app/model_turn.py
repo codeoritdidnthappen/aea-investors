@@ -7,12 +7,15 @@ them, and everything else went to Groq. That is inverted here. Every message now
 the local model first -- which is allowed to see patient data (D2) -- and the model's one
 tool call selects what happens.
 
-**The model's judgement selects an action; it never gates egress (D10).** Nothing in
-this module builds an outbound Groq payload, and the one tool that would
-(`ask_general_knowledge`) is not wired to one: TICK-064 owns the D14 restatement path,
-where this codebase composes the outbound text and Presidio screens it. So a wrong
-routing decision here picks the wrong action for the turn. It cannot place patient data
-into an outbound request, because there is no outbound request on this path at all.
+**The model's judgement selects an action; it never gates egress (D10).** One tool,
+`ask_general_knowledge`, does reach an external model as of TICK-064 -- but nothing in
+this module composes what is sent. It hands the parsed call to
+`ai_server.llm.general_knowledge`, which mints a `Restatement` from the model's own
+schema'd field, has `OutboundPayload.for_question()` compose both wire messages from
+that plus a constant, and has Presidio screen the result before it goes (D3, D4, D14).
+The patient's typed `message` is not a parameter to any of that and has no route into
+it. So a wrong routing decision here picks the wrong action for the turn; it still
+cannot place patient data into an outbound request.
 
 **Model proposes, code disposes (D6), through the existing doors.** The call is parsed
 by `ai_server.llm.tools.parse_tool_call`, every writing tool's fields go through
@@ -50,6 +53,7 @@ from typing import Any, AsyncIterator, Callable, Mapping, Protocol, Sequence
 
 from ai_server.app.chat import ASSISTANT_UNAVAILABLE_RESPONSE
 from ai_server.app.conversation import ConversationState, ConversationStore
+from ai_server.llm.general_knowledge import GeneralKnowledgeService
 from ai_server.llm.prompt import render_turn_messages
 from ai_server.llm.provider import LlmUnavailableError
 from ai_server.llm.tools import (
@@ -92,15 +96,33 @@ from ai_server.scheduling.slots import SlotDiscoveryService
 
 logger = logging.getLogger(__name__)
 
-# `ask_general_knowledge` is on the published surface (TICK-060) but its backing path is
-# TICK-064's: the model restates the question, this codebase builds the outbound payload
-# and Presidio screens it. Until that exists the tool is answered honestly rather than
-# wired to Groq with the patient's own words, which is the exact thing FR-34 forbids.
+# Groq is not configured, or did not answer. Only general knowledge is affected: every
+# other tool on the surface is backed by a local service and keeps working, so this says
+# what is unavailable rather than reporting a chat-wide outage (AC6).
 GENERAL_KNOWLEDGE_UNAVAILABLE_RESPONSE = (
-    "I can only help with your own appointments, your details, and your intake "
-    "questions here -- I can't answer general questions yet. Please contact the clinic "
-    "directly if you need something else."
+    "I could not look that one up just now, so I have no answer for you. Everything "
+    "else still works -- your appointments, your details, and your intake questions -- "
+    "or you can contact the clinic directly."
 )
+
+# Presidio flagged the restatement this codebase was about to send (ADR-5: reject, never
+# scrub). Nothing was sent, and this says so instead of answering anyway from a model
+# that was never asked -- an invented answer to a withheld question is the worse
+# failure. The restatement is quoted for the same reason `_ask_general_knowledge` quotes
+# an answered one: the patient can see what was withheld and rephrase it themselves.
+GENERAL_KNOWLEDGE_WITHHELD_RESPONSE = (
+    "I was going to look this up for you:\n\n{asked}\n\nI did not send it, because it "
+    "looked like it contained personal or health information and that must not leave "
+    "the clinic. Nothing was sent and I have no answer. Please ask again without any "
+    "personal details in it."
+)
+
+# What was asked on the patient's behalf, shown with the answer (AC4). The restatement
+# is composed by the model and is otherwise invisible, which LOCAL_LLM_SPEC records as
+# D14's standing risk: a restatement that drops or distorts the question yields a
+# correct-looking answer to something the patient did not ask. Showing it is what makes
+# that visible rather than silent, so the patient can tell that it was answered.
+GENERAL_KNOWLEDGE_ANSWER_TEMPLATE = 'I looked this up for you -- "{asked}":\n\n{answer}'
 
 NO_ACTION_RESPONSE = (
     "Sorry -- I could not reach your record just now, so nothing was done. Please try "
@@ -188,6 +210,10 @@ class TurnServices:
     `_build_onboarding_service`'s existing tolerance of missing OpenEMR configuration.
     """
 
+    # The one service here that is not local. Absent when Groq is unconfigured, which
+    # costs general-knowledge answers and nothing else -- every other field below backs
+    # a patient-specific capability that must keep working regardless (AC6).
+    general_knowledge: GeneralKnowledgeService | None = None
     slot_discovery: SlotDiscoveryService | None = None
     appointment_discovery: AppointmentDiscoveryService | None = None
     booking: BookingService | None = None
@@ -382,13 +408,39 @@ class ModelTurnService:
         if call.tool == "reply":
             return str(arguments["message"]), "replied"
         if call.tool == "ask_general_knowledge":
-            return GENERAL_KNOWLEDGE_UNAVAILABLE_RESPONSE, "general_knowledge_unavailable"
+            return await self._ask_general_knowledge(call)
         if call.tool == "find_slots":
             return await self._find_slots(state, access_token, now)
         if call.tool == "list_appointments":
             return await self._list_appointments(state, access_token, patient_id, now)
         # The only remaining read tool on the surface.
         return self._extract_document_fields(state, str(arguments["upload_id"]), now)
+
+    async def _ask_general_knowledge(self, call: Any) -> tuple[str, str]:
+        """Ask the external model the question the local model restated (D13, D14).
+
+        `call` is passed through untouched rather than unpacked into a string here. The
+        restatement is minted from the parsed call by `ai_server.privacy.gate`, and
+        keeping the call whole up to that point is what leaves this module with nothing
+        it could substitute the patient's turn for: there is no string parameter on this
+        path to put one in.
+        """
+        if self.services.general_knowledge is None:
+            return GENERAL_KNOWLEDGE_UNAVAILABLE_RESPONSE, "general_knowledge_unavailable"
+        result = await self.services.general_knowledge.ask(call)
+        if result.outcome == "withheld":
+            return (
+                GENERAL_KNOWLEDGE_WITHHELD_RESPONSE.format(asked=result.asked),
+                "general_knowledge_withheld",
+            )
+        # Falsy rather than `is None`: an empty answer is an unavailable one. Presenting
+        # "I looked this up for you" over nothing would read as a lookup that happened.
+        if not result.answer:
+            return GENERAL_KNOWLEDGE_UNAVAILABLE_RESPONSE, "general_knowledge_unavailable"
+        return (
+            GENERAL_KNOWLEDGE_ANSWER_TEMPLATE.format(asked=result.asked, answer=result.answer),
+            "general_knowledge_answered",
+        )
 
     async def _find_slots(
         self, state: ConversationState, access_token: str | None, now: datetime

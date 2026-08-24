@@ -17,7 +17,7 @@
 (async () => {
   const CONCURRENCY = 5;
   const DURATION_MS = 30000;
-  const MESSAGE = "What are my upcoming appointments?"; // stays on ChatService's
+  const MESSAGE = "What are my upcoming appointments?"; // stays on the turn service's
   // path, never onboarding's, which has no comparable NFR-13 target here.
 
   const start = performance.now();

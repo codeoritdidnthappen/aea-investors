@@ -1,31 +1,25 @@
-"""An OpenAI-compatible local model transport behind the same Protocol as Groq's.
+"""An OpenAI-compatible local model transport for the turn's routing inference.
 
 LOCAL_LLM_SPEC D7: "Ollama locally, vLLM deployed, selected by config from day one".
 Ollama serves the ordinary chat-completions shape at `/v1/chat/completions`, so the
-whole adapter is the request/response shaping plus its own settings -- `GroqClient` is
-a two-method Protocol and this class implements exactly those two methods.
+whole adapter is the request/response shaping plus its own settings.
 
-What is deliberately *not* shared with `HttpGroqClient` is `_strict_schema()`. That
-helper exists because Groq's strict structured-output mode rejects a schema whose
-`required` omits any property (confirmed live, see its docstring); LOCAL_LLM_SPEC's
-Risks section records that as a vendor quirk the adapters "must not assume generalises".
-This client therefore sends the plain Pydantic schema, with neither the rewritten
-`required` list nor `strict: true`.
+`tool_call()` is the entire surface since TICK-064. The `complete()`/`stream()` pair
+existed to mirror the old `GroqClient` Protocol for Groq scheduling planning; D13 moved
+planning to this model's own tool call and deleted that Protocol, so the two methods
+went with it rather than staying as an unused second way to talk to the same server.
 """
 
 from __future__ import annotations
 
-import json
 import os
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 import httpx
 
-from ai_server.llm.groq import PlanningOutput
 from ai_server.llm.provider import LlmUnavailableError
 from ai_server.llm.tools import TOOL_CALL_SCHEMA_NAME
-from ai_server.privacy.gate import OutboundPayload
 
 # Ollama's default listen address, and the value `.env.example` already documents for
 # `OLLAMA_HOST`. Only the fallback lives here; the address itself is configuration.
@@ -73,54 +67,35 @@ class LocalModelSettings:
 
 
 class HttpLocalModelClient:
-    """OpenAI-compatible local transport; implements the `GroqClient` Protocol.
+    """OpenAI-compatible local transport; satisfies `ModelTurnService.ToolCallClient`.
 
     Every failure to reach or parse the local server raises
-    `LocalModelUnavailableError`, which `GroqWorkflow.respond()` catches via
+    `LocalModelUnavailableError`, which `ModelTurnService.stream_reply()` catches via
     `LlmUnavailableError` -- so pointing `LLM_PROVIDER` at a server that is not running
-    surfaces as the chat's honest "could not handle that request" reply at the point of
-    use, not as an exception escaping the request handler.
+    surfaces as the chat's honest unavailable reply at the point of use, not as an
+    exception escaping the request handler.
     """
 
     def __init__(self, settings: LocalModelSettings, client: httpx.AsyncClient) -> None:
         self._settings = settings
         self._client = client
 
-    async def complete(self, payload: OutboundPayload) -> str:
-        """Request a JSON plan from the configured local model."""
-        try:
-            response = await self._client.post(
-                self._settings.endpoint,
-                headers=self._headers(),
-                json=self._request_body(payload, stream=False, structured=True),
-            )
-        except httpx.HTTPError as exc:
-            raise LocalModelUnavailableError("the local model is unavailable") from exc
-        if response.status_code != 200:
-            raise LocalModelUnavailableError("the local model is unavailable")
-        try:
-            return self._content(response.json())
-        except ValueError as exc:
-            raise LocalModelUnavailableError(
-                "the local model returned an invalid planning response"
-            ) from exc
-
     async def tool_call(
         self, messages: Sequence[Mapping[str, str]], *, schema: Mapping[str, Any]
     ) -> str:
         """Run one routing inference and return the model's raw text, unparsed.
 
-        A separate method rather than a second use of `complete()` because the two send
-        genuinely different requests. `OutboundPayload` is the *privacy gate's* type
-        (`ai_server/privacy/gate.py`): its model id is a `Literal`, it holds exactly a
-        system and a user message, and `complete()` pins the structured mode to
-        `PlanningOutput` -- all correct for the Groq scheduling payload it was built for,
-        and none of it able to carry a tool-call turn with a transcript.
+        `messages` is an arbitrary-length transcript addressed to a configured model id,
+        which is why it is not an `OutboundPayload`: that type is the privacy gate's,
+        it pins the model to Groq's, it holds exactly two messages, and it composes both
+        of them itself. The two describe different destinations and neither shape is
+        usable as the other.
 
         Nothing here decides what leaves the deployment. `messages` is built by
         `ai_server.llm.prompt.render_turn_messages` and is addressed to the *local*
-        model, which is allowed to see patient data (D2); the outbound boundary this
-        client is on the safe side of is Groq's, and this method never calls it.
+        model, which is allowed to see patient data (D2). The outbound boundary this
+        client is on the safe side of is Groq's, and this method never calls it -- the
+        one path that does is `ai_server.llm.general_knowledge`.
 
         `temperature` and `seed` match `scripts/evaluate_acceptance_corpus.run_case`, so
         a turn in production is the same request the corpus scored (D8).
@@ -152,68 +127,12 @@ class HttpLocalModelClient:
                 "the local model returned an invalid tool-call response"
             ) from exc
 
-    async def _stream(self, payload: OutboundPayload) -> AsyncIterator[str]:
-        """Yield SSE content chunks without buffering the final response."""
-        try:
-            async with self._client.stream(
-                "POST",
-                self._settings.endpoint,
-                headers=self._headers(),
-                json=self._request_body(payload, stream=True, structured=False),
-            ) as response:
-                if response.status_code != 200:
-                    raise LocalModelUnavailableError("the local model is unavailable")
-                async for line in response.aiter_lines():
-                    if not line.startswith("data: "):
-                        continue
-                    data = line.removeprefix("data: ")
-                    if data == "[DONE]":
-                        return
-                    try:
-                        chunk = self._stream_content(json.loads(data))
-                    except (TypeError, ValueError, KeyError) as exc:
-                        raise LocalModelUnavailableError(
-                            "the local model returned an invalid streamed response"
-                        ) from exc
-                    if chunk:
-                        yield chunk
-        except httpx.HTTPError as exc:
-            raise LocalModelUnavailableError("the local model is unavailable") from exc
-
-    def stream(self, payload: OutboundPayload) -> AsyncIterator[str]:
-        """Return the asynchronous final-response stream.
-
-        Not `async def`, matching `GroqClient.stream()`: callers `async for` over the
-        return value directly rather than awaiting it first.
-        """
-        return self._stream(payload)
-
     def _headers(self) -> dict[str, str]:
         """Return the request headers; the bearer token only when one is configured."""
         headers = {"Content-Type": "application/json"}
         if self._settings.api_key:
             headers["Authorization"] = f"Bearer {self._settings.api_key}"
         return headers
-
-    def _request_body(
-        self, payload: OutboundPayload, *, stream: bool, structured: bool
-    ) -> dict[str, object]:
-        body: dict[str, object] = {
-            "model": self._settings.model,
-            "messages": _wire_messages(payload),
-            "stream": stream,
-        }
-        if structured:
-            # No `strict: true` and no `_strict_schema()` rewrite: those are Groq's
-            # documented quirk, and this server has not been observed to need them.
-            body["response_format"] = {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "scheduling_plan",
-                    "schema": PlanningOutput.model_json_schema(),
-                },
-            }
-        return body
 
     @staticmethod
     def _content(response: object) -> str:
@@ -226,41 +145,3 @@ class HttpLocalModelClient:
         if not isinstance(message, dict) or not isinstance(message.get("content"), str):
             raise LocalModelUnavailableError("the local model returned an invalid response")
         return message["content"]
-
-    @staticmethod
-    def _stream_content(event: object) -> str:
-        if not isinstance(event, dict):
-            raise ValueError("stream event must be an object")
-        choices = event.get("choices")
-        if not isinstance(choices, list) or len(choices) != 1 or not isinstance(choices[0], dict):
-            raise ValueError("stream event has no choice")
-        delta = choices[0].get("delta")
-        if not isinstance(delta, dict):
-            raise ValueError("stream event has no delta")
-        content = delta.get("content", "")
-        if not isinstance(content, str):
-            raise ValueError("stream content must be text")
-        return content
-
-
-def _wire_messages(payload: OutboundPayload) -> list[dict[str, str]]:
-    """Fold `scheduling_context`/`scheduling_rules` into the system message text.
-
-    Same shaping as `HttpGroqClient._wire_messages` and for the same reason, restated
-    here rather than shared because request shaping belongs to the adapter: a
-    chat-completions endpoint only ever feeds `messages[].content` to the model, so a
-    sibling top-level key would not reach it whether or not the server rejects it (see
-    that method's docstring and evidence/TICK-039 for the live confirmation on Groq).
-    `OutboundPayload.messages` stays exactly the system+user pair the privacy gate
-    validates.
-    """
-    system_message, user_message = payload.messages
-    system_content = (
-        f"{system_message.content}\n\n"
-        f"scheduling_context: {payload.scheduling_context.model_dump_json()}\n\n"
-        f"scheduling_rules: {payload.scheduling_rules.model_dump_json()}"
-    )
-    return [
-        {"role": "system", "content": system_content},
-        {"role": "user", "content": user_message.content},
-    ]

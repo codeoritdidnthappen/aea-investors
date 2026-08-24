@@ -14,20 +14,13 @@ import httpx
 import pytest
 
 from ai_server.app.auth import AuthSettings, OAuthTokens, SessionStore
-from ai_server.app.chat import (
-    ASSISTANT_UNAVAILABLE_RESPONSE,
-    CHAT_PAGE_HTML,
-    ChatService,
-    NoActionTool,
-    no_action_tool_factory,
-    unavailable_chat_service,
-)
+from ai_server.app.chat import ASSISTANT_UNAVAILABLE_RESPONSE, CHAT_PAGE_HTML
 from ai_server.app.main import create_app
-from ai_server.llm.groq import PLANNING_FAILED_RESPONSE, GroqWorkflow
+from ai_server.app.model_turn import (
+    GENERAL_KNOWLEDGE_UNAVAILABLE_RESPONSE,
+    unavailable_model_turn_service,
+)
 from ai_server.ocr.service import MAX_UPLOAD_BYTES
-from ai_server.privacy.gate import OutboundPayload, PrivacyGate
-from ai_server.scheduling.appointments import AnonymousAppointmentToken
-from ai_server.scheduling.slots import AnonymousSlotToken
 
 NOW = datetime(2026, 8, 20, 12, 0, tzinfo=timezone.utc)
 
@@ -70,7 +63,7 @@ class ScriptedTurnService:
 
     Since TICK-063 the route hands every turn to the model-first turn service, so this
     is the shape the route calls: `(handle, message, image_base64, access_token,
-    patient_id)`. The Groq-backed `ChatService` is no longer on any request path.
+    patient_id)`. The Groq-backed `ChatService` was deleted outright by TICK-064.
     """
 
     chunks: list[str]
@@ -119,7 +112,7 @@ def test_tick_044_message_length_cap_is_unwidened_by_the_separate_image_field(
     every other chat turn (scheduling included) shares -- an oversized image belongs
     only in its own field, capped separately at ai_server.ocr.service.MAX_UPLOAD_BYTES'
     base64-inflated size."""
-    app = create_app(settings(tmp_path), clock=lambda: NOW, chat_service=unavailable_chat_service())
+    app = create_app(settings(tmp_path), clock=lambda: NOW)
 
     oversized_message = asyncio.run(_post_chat(app, cookie=None, message="x" * 4_001))
     assert oversized_message.status_code == 422
@@ -151,7 +144,7 @@ def test_ac1_chat_page_only_fetches_the_ai_servers_own_relative_endpoint() -> No
 
 
 def test_ac1_chat_turn_requires_an_active_ai_session_cookie(tmp_path: Path) -> None:
-    app = create_app(settings(tmp_path), clock=lambda: NOW, chat_service=unavailable_chat_service())
+    app = create_app(settings(tmp_path), clock=lambda: NOW)
 
     missing_cookie = asyncio.run(_post_chat(app, cookie=None))
     assert missing_cookie.status_code == 401
@@ -268,12 +261,14 @@ def test_ac2_status_region_is_a_live_region_with_understandable_phases() -> None
 # --- AC3: AI-server/LLM unavailability surfaces native-scheduler instructions ----
 
 
-def test_ac3_unavailable_chat_service_streams_the_fixed_fallback_text(
+def test_ac3_unavailable_turn_service_streams_the_fixed_fallback_text(
     tmp_path: Path,
 ) -> None:
     configured = settings(tmp_path)
     handle = active_session_cookie(configured)
-    app = create_app(configured, clock=lambda: NOW, chat_service=unavailable_chat_service())
+    app = create_app(
+        configured, clock=lambda: NOW, model_turn_service=unavailable_model_turn_service()
+    )
 
     response = asyncio.run(_post_chat(app, cookie=handle))
 
@@ -283,10 +278,19 @@ def test_ac3_unavailable_chat_service_streams_the_fixed_fallback_text(
     assert "OpenEMR portal menu" in ASSISTANT_UNAVAILABLE_RESPONSE
 
 
-def test_ticket_048_unconfigured_groq_message_is_distinct_and_not_misleading() -> None:
-    """`chat.py`'s deployment fault and `groq.py`'s per-turn planning fault are two
-    different failures and now say two different things (TICK-048)."""
-    assert ASSISTANT_UNAVAILABLE_RESPONSE != PLANNING_FAILED_RESPONSE
+def test_ticket_048_unavailable_message_is_distinct_and_not_misleading() -> None:
+    """The whole-chat outage and the one-tool outage are two different failures and say
+    two different things.
+
+    TICK-048 made this point against `groq.py`'s `PLANNING_FAILED_RESPONSE`, which
+    TICK-064 deleted with the planner. The distinction it was protecting survives and
+    still matters: `GENERAL_KNOWLEDGE_UNAVAILABLE_RESPONSE` is now the per-capability
+    string, and it must not be mistakable for the deployment-wide one (AC6).
+    """
+    assert ASSISTANT_UNAVAILABLE_RESPONSE != GENERAL_KNOWLEDGE_UNAVAILABLE_RESPONSE
+    # The narrow one must not claim the assistant is down; the rest of the turn works.
+    assert "not available right now" not in GENERAL_KNOWLEDGE_UNAVAILABLE_RESPONSE
+    assert "Everything else still works" in GENERAL_KNOWLEDGE_UNAVAILABLE_RESPONSE
 
     # The turn may have been about anything, so this reports the *assistant* as
     # unavailable rather than claiming scheduling assistance specifically failed...
@@ -300,13 +304,15 @@ def test_ticket_048_unconfigured_groq_message_is_distinct_and_not_misleading() -
     assert "OpenEMR portal menu" in CHAT_PAGE_HTML
 
 
-def test_ticket_048_unconfigured_groq_answers_a_non_scheduling_turn_the_same_way() -> None:
-    """The reported turn -- an address change -- reaches the `workflow is None` call
-    site directly and gets the assistant-unavailable text, not a scheduling verdict."""
+def test_ticket_048_unconfigured_model_answers_a_non_scheduling_turn_the_same_way() -> None:
+    """The reported turn -- an address change -- reaches the `client is None` call site
+    directly and gets the assistant-unavailable text, not a scheduling verdict."""
 
     async def run() -> list[str]:
-        service = unavailable_chat_service()
-        return [chunk async for chunk in service.stream_reply("I need to change my address.")]
+        service = unavailable_model_turn_service()
+        return [
+            chunk async for chunk in service.stream_reply("handle", "I need to change my address.")
+        ]
 
     assert asyncio.run(run()) == [ASSISTANT_UNAVAILABLE_RESPONSE]
 
@@ -321,296 +327,17 @@ def test_ac3_page_ships_a_client_side_fallback_panel_with_openemr_instructions()
     assert "showFallback()" in scripts
 
 
-def test_ac3_no_action_tool_never_claims_a_scheduling_success() -> None:
-    async def run() -> str:
-        result = await NoActionTool().execute(plan=None)  # type: ignore[arg-type]
-        return result.public_summary
-
-    summary = asyncio.run(run())
-    assert "booked" not in summary.lower()
-    assert "confirmed" not in summary.lower()
-
-
-def test_ac3_chat_service_disables_booking_pending_it_being_offered_in_this_demo(
-    tmp_path: Path,
-) -> None:
-    """Booking's own `scheduling_rules` flag is unchanged by this ticket -- kept
-    disabled deliberately for this demo (TICK-039), unrelated to whether
-    `BookingService` itself works. Cancellation (TICK-036) and reschedule (TICK-020)
-    are both wired to real tools now, so neither is disabled here -- see
-    `test_tick036_cancellation_is_enabled_now_that_a_real_tool_exists` and
-    `test_tick020_reschedule_is_enabled_now_that_a_real_tool_exists` below."""
-    del tmp_path
-    captured: list[OutboundPayload] = []
-
-    class CapturingWorkflow(GroqWorkflow):
-        def __init__(self) -> None:
-            super().__init__(PrivacyGate.create(), client=None)  # type: ignore[arg-type]
-
-        async def respond(self, payload, tool):  # type: ignore[override]
-            captured.append(payload)
-            yield "ok"
-
-    service = ChatService(
-        workflow=CapturingWorkflow(), tool_factory=no_action_tool_factory(), clock=lambda: NOW
-    )
-
-    async def run() -> list[str]:
-        return [chunk async for chunk in service.stream_reply("Can you book me an appointment?")]
-
-    assert asyncio.run(run()) == ["ok"]
-    assert len(captured) == 1
-    rules = captured[0].scheduling_rules
-    assert rules.booking_enabled is False
-
-
-def test_tick020_reschedule_is_enabled_now_that_a_real_tool_exists() -> None:
-    captured: list[OutboundPayload] = []
-
-    class CapturingWorkflow(GroqWorkflow):
-        def __init__(self) -> None:
-            super().__init__(PrivacyGate.create(), client=None)  # type: ignore[arg-type]
-
-        async def respond(self, payload, tool):  # type: ignore[override]
-            captured.append(payload)
-            yield "ok"
-
-    service = ChatService(
-        workflow=CapturingWorkflow(), tool_factory=no_action_tool_factory(), clock=lambda: NOW
-    )
-
-    async def run() -> list[str]:
-        return [chunk async for chunk in service.stream_reply("Can you reschedule my appointment?")]
-
-    assert asyncio.run(run()) == ["ok"]
-    assert captured[0].scheduling_rules.rescheduling_enabled is True
-
-
-def test_tick036_cancellation_is_enabled_now_that_a_real_tool_exists() -> None:
-    captured: list[OutboundPayload] = []
-
-    class CapturingWorkflow(GroqWorkflow):
-        def __init__(self) -> None:
-            super().__init__(PrivacyGate.create(), client=None)  # type: ignore[arg-type]
-
-        async def respond(self, payload, tool):  # type: ignore[override]
-            captured.append(payload)
-            yield "ok"
-
-    service = ChatService(
-        workflow=CapturingWorkflow(), tool_factory=no_action_tool_factory(), clock=lambda: NOW
-    )
-
-    async def run() -> list[str]:
-        return [chunk async for chunk in service.stream_reply("Can you cancel my appointment?")]
-
-    assert asyncio.run(run()) == ["ok"]
-    assert captured[0].scheduling_rules.cancellation_enabled is True
-
-
-# --- TICK-034: real access token/patient id threading and open-slot wiring --------
-
-
-class FakeSlotDiscovery:
-    """A `SlotDiscoveryService`-shaped double recording every call it receives."""
-
-    def __init__(self, tokens: list[AnonymousSlotToken]) -> None:
-        self._tokens = tokens
-        self.calls: list[tuple[str, datetime]] = []
-
-    async def open_slots(self, access_token: str, now: datetime) -> list[AnonymousSlotToken]:
-        self.calls.append((access_token, now))
-        return self._tokens
-
-
-def test_tick034_payload_populates_open_slots_from_slot_discovery_for_the_logged_in_patient() -> (
-    None
-):
-    captured: list[OutboundPayload] = []
-
-    class CapturingWorkflow(GroqWorkflow):
-        def __init__(self) -> None:
-            super().__init__(PrivacyGate.create(), client=None)  # type: ignore[arg-type]
-
-        async def respond(self, payload, tool):  # type: ignore[override]
-            captured.append(payload)
-            yield "ok"
-
-    issued = AnonymousSlotToken(
-        slot_token="slot_" + "a" * 20,
-        starts_at=NOW + timedelta(hours=2),
-        ends_at=NOW + timedelta(hours=2, minutes=30),
-    )
-    discovery = FakeSlotDiscovery([issued])
-    service = ChatService(
-        workflow=CapturingWorkflow(),
-        tool_factory=no_action_tool_factory(),
-        slot_discovery=discovery,
-        clock=lambda: NOW,
-    )
-
-    async def run() -> list[str]:
-        return [
-            chunk
-            async for chunk in service.stream_reply(
-                "What times are open?", access_token="delegated-token", patient_id="patient-uuid"
-            )
-        ]
-
-    assert asyncio.run(run()) == ["ok"]
-    assert discovery.calls == [("delegated-token", NOW)]
-    open_slots = captured[0].scheduling_context.open_slots
-    assert len(open_slots) == 1
-    assert open_slots[0].slot_token == issued.slot_token
-    assert open_slots[0].starts_at == issued.starts_at
-    assert open_slots[0].ends_at == issued.ends_at
-
-
-def test_tick034_open_slots_stay_empty_and_discovery_is_never_called_with_no_access_token() -> None:
-    captured: list[OutboundPayload] = []
-
-    class CapturingWorkflow(GroqWorkflow):
-        def __init__(self) -> None:
-            super().__init__(PrivacyGate.create(), client=None)  # type: ignore[arg-type]
-
-        async def respond(self, payload, tool):  # type: ignore[override]
-            captured.append(payload)
-            yield "ok"
-
-    discovery = FakeSlotDiscovery([])
-    service = ChatService(
-        workflow=CapturingWorkflow(),
-        tool_factory=no_action_tool_factory(),
-        slot_discovery=discovery,
-        clock=lambda: NOW,
-    )
-
-    async def run() -> list[str]:
-        return [chunk async for chunk in service.stream_reply("Hello", access_token=None)]
-
-    assert asyncio.run(run()) == ["ok"]
-    assert discovery.calls == []
-    assert captured[0].scheduling_context.open_slots == []
-
-
-# --- TICK-036: current-appointment discovery wiring --------------------------------
-
-
-class FakeAppointmentDiscovery:
-    """An `AppointmentDiscoveryService`-shaped double recording every call it receives."""
-
-    def __init__(self, tokens: list[AnonymousAppointmentToken]) -> None:
-        self._tokens = tokens
-        self.calls: list[tuple[str, str, datetime]] = []
-
-    async def current_appointments(
-        self, access_token: str, patient_id: str, now: datetime
-    ) -> list[AnonymousAppointmentToken]:
-        self.calls.append((access_token, patient_id, now))
-        return self._tokens
-
-
-def test_tick036_payload_populates_current_appointments_from_appointment_discovery() -> None:
-    captured: list[OutboundPayload] = []
-
-    class CapturingWorkflow(GroqWorkflow):
-        def __init__(self) -> None:
-            super().__init__(PrivacyGate.create(), client=None)  # type: ignore[arg-type]
-
-        async def respond(self, payload, tool):  # type: ignore[override]
-            captured.append(payload)
-            yield "ok"
-
-    issued = AnonymousAppointmentToken(
-        appointment_token="appt_" + "a" * 20,
-        starts_at=NOW + timedelta(hours=2),
-        ends_at=NOW + timedelta(hours=2, minutes=30),
-    )
-    discovery = FakeAppointmentDiscovery([issued])
-    service = ChatService(
-        workflow=CapturingWorkflow(),
-        tool_factory=no_action_tool_factory(),
-        appointment_discovery=discovery,
-        clock=lambda: NOW,
-    )
-
-    async def run() -> list[str]:
-        return [
-            chunk
-            async for chunk in service.stream_reply(
-                "What appointments do I have?",
-                access_token="delegated-token",
-                patient_id="patient-uuid",
-            )
-        ]
-
-    assert asyncio.run(run()) == ["ok"]
-    assert discovery.calls == [("delegated-token", "patient-uuid", NOW)]
-    current_appointments = captured[0].scheduling_context.current_appointments
-    assert len(current_appointments) == 1
-    assert current_appointments[0].appointment_token == issued.appointment_token
-    assert current_appointments[0].starts_at == issued.starts_at
-    assert current_appointments[0].ends_at == issued.ends_at
-
-
-def test_tick036_current_appointments_stay_empty_without_a_bound_patient_id() -> None:
-    captured: list[OutboundPayload] = []
-
-    class CapturingWorkflow(GroqWorkflow):
-        def __init__(self) -> None:
-            super().__init__(PrivacyGate.create(), client=None)  # type: ignore[arg-type]
-
-        async def respond(self, payload, tool):  # type: ignore[override]
-            captured.append(payload)
-            yield "ok"
-
-    discovery = FakeAppointmentDiscovery([])
-    service = ChatService(
-        workflow=CapturingWorkflow(),
-        tool_factory=no_action_tool_factory(),
-        appointment_discovery=discovery,
-        clock=lambda: NOW,
-    )
-
-    async def run() -> list[str]:
-        return [
-            chunk
-            async for chunk in service.stream_reply(
-                "Hello", access_token="delegated-token", patient_id=None
-            )
-        ]
-
-    assert asyncio.run(run()) == ["ok"]
-    assert discovery.calls == []
-    assert captured[0].scheduling_context.current_appointments == []
-
-
-def test_tick034_tool_factory_receives_this_turns_access_token_and_patient_id() -> None:
-    received: list[tuple[str | None, str | None, datetime]] = []
-
-    class CapturingWorkflow(GroqWorkflow):
-        def __init__(self) -> None:
-            super().__init__(PrivacyGate.create(), client=None)  # type: ignore[arg-type]
-
-        async def respond(self, payload, tool):  # type: ignore[override]
-            yield "ok"
-
-    def factory(access_token, patient_id, now):
-        received.append((access_token, patient_id, now))
-        return NoActionTool()
-
-    service = ChatService(workflow=CapturingWorkflow(), tool_factory=factory, clock=lambda: NOW)
-
-    async def run() -> list[str]:
-        return [
-            chunk
-            async for chunk in service.stream_reply(
-                "Book me an appointment", access_token="delegated-token", patient_id="patient-uuid"
-            )
-        ]
-
-    assert asyncio.run(run()) == ["ok"]
-    assert received == [("delegated-token", "patient-uuid", NOW)]
+# Seven tests stood here, all of them about `ChatService`: that `NoActionTool` never
+# claimed a booking, that `_SCHEDULING_RULES` had booking disabled and reschedule and
+# cancellation enabled, that `_payload()` populated `scheduling_context.open_slots` and
+# `current_appointments`, and that the tool factory got the turn's credentials.
+#
+# TICK-064 deleted `ChatService`, `_payload()`, `SchedulingContext` and `SchedulingRules`
+# outright: D13 moves scheduling planning to the local model, so no outbound payload
+# carries scheduling context and there is no planner to disable a rule for. The
+# capabilities those tests were really about did not go anywhere -- slot discovery,
+# appointment discovery, booking and cancellation are all exercised through the tool
+# surface in `test_model_turn.py`, against the same services.
 
 
 def test_tick034_api_chat_route_passes_the_sessions_access_token_and_patient_id(
@@ -708,7 +435,7 @@ def test_ac4_declared_colour_pairs_meet_wcag_aa_contrast() -> None:
 
 
 def test_ac4_chat_page_is_served_without_requiring_a_session(tmp_path: Path) -> None:
-    app = create_app(settings(tmp_path), clock=lambda: NOW, chat_service=unavailable_chat_service())
+    app = create_app(settings(tmp_path), clock=lambda: NOW)
 
     async def scenario() -> httpx.Response:
         async with app.router.lifespan_context(app):
@@ -723,26 +450,10 @@ def test_ac4_chat_page_is_served_without_requiring_a_session(tmp_path: Path) -> 
     assert response.text == CHAT_PAGE_HTML
 
 
-def test_ticket_010_privacy_rejection_still_never_calls_the_model(tmp_path: Path) -> None:
-    """A sensitive turn is corrected locally end to end through the chat route."""
-    del tmp_path
-
-    class FailIfCalledClient:
-        async def complete(self, payload: OutboundPayload) -> str:  # pragma: no cover
-            raise AssertionError("Groq must not be called for a rejected turn")
-
-        def stream(self, payload: OutboundPayload):  # pragma: no cover
-            raise AssertionError("Groq must not be called for a rejected turn")
-
-    workflow = GroqWorkflow(PrivacyGate.create(), FailIfCalledClient())
-    service = ChatService(
-        workflow=workflow, tool_factory=no_action_tool_factory(), clock=lambda: NOW
-    )
-
-    async def run() -> list[str]:
-        return [chunk async for chunk in service.stream_reply("My phone is 555-555-5555.")]
-
-    assert asyncio.run(run()) == ["Please remove personal or health information and try again."]
+# `test_ticket_010_privacy_rejection_still_never_calls_the_model` stood here, driving
+# `ChatService` with a client that raised if called. Its property -- Presidio rejects
+# and the external model is never reached -- is unchanged and now proven against the one
+# path that actually egresses, in `test_general_knowledge.py`.
 
 
 if __name__ == "__main__":
