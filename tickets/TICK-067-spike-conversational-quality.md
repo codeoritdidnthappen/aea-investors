@@ -10,7 +10,7 @@ labels: [llm, discovery]
 source: [FR-33]
 status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/132
-builder_commit: fc88a2d
+builder_commit: ac120a4
 ---
 ## Context
 

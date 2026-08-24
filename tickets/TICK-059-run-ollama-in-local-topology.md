@@ -10,7 +10,7 @@ labels: [deploy, llm]
 source: [FR-33]
 status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/124
-builder_commit: a0399c2
+builder_commit: 22da225
 ---
 ## Context
 

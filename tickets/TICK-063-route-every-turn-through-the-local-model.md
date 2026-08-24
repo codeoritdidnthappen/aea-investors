@@ -10,7 +10,7 @@ labels: [llm, chat, backend]
 source: [FR-33, FR-35]
 status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/128
-builder_commit: ac37398
+builder_commit: 138a592
 ---
 ## Context
 
