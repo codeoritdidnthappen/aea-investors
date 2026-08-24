@@ -153,7 +153,7 @@ this document without CI failing.
 | TICK-027 | task | P1 | task(local): verify privacy and local-demo readiness |
 | TICK-057 | task | P1 | bug(deploy): the chat never renders -- the stack mounts a deleted build worktree and cannot be restarted |
 
-#### EPIC-09 — Replace hand-coded intent with a local model (10 tickets)
+#### EPIC-09 — Replace hand-coded intent with a local model (12 tickets)
 
 | Ticket | Type | Priority | Title |
 |---|---|---|---|
@@ -167,6 +167,8 @@ this document without CI failing.
 | TICK-065 | task | P1 | refactor(chat): delete the deterministic intent handlers and report honestly when the model is down |
 | TICK-066 | feature | P2 | feat(deploy): add the vLLM backend and prove it agrees with the development one |
 | TICK-067 | spike | P2 | spike(llm): establish how the model handles the turns no capability covers |
+| TICK-068 | task | P1 | bug(chat): a refused turn is recorded as the question just asked, so the next turn repeats it and ignores the patient |
+| TICK-069 | task | P1 | bug(privacy): the gate treats any Presidio entity as PHI, so ordinary questions are refused and the patient is told they sent personal information |
 <!-- generated:roster:end -->
 
 ## Requirement traceability
@@ -211,8 +213,8 @@ being silently dropped.
 | FR-30 | TICK-001, TICK-017, TICK-030, TICK-035 |
 | FR-31 | TICK-051 |
 | FR-32 | TICK-054 |
-| FR-33 | TICK-058, TICK-059, TICK-060, TICK-062, TICK-063, TICK-065, TICK-066, TICK-067 |
-| FR-34 | TICK-064 |
+| FR-33 | TICK-058, TICK-059, TICK-060, TICK-062, TICK-063, TICK-065, TICK-066, TICK-067, TICK-068 |
+| FR-34 | TICK-064, TICK-068, TICK-069 |
 | FR-35 | TICK-060, TICK-061, TICK-063 |
 | NFR-1 | TICK-006, TICK-027 |
 | NFR-2 | TICK-009, TICK-010, TICK-017, TICK-050 |
@@ -274,7 +276,7 @@ It is now a mechanical check: `scripts/verify_backlog_traceability.py` runs in C
 rather than reviewed once. Current state:
 
 <!-- generated:audit:begin -->
-- Tickets in `tickets/`: 67 across 9 epics; tickets tracing to no requirement: 1.
+- Tickets in `tickets/`: 69 across 9 epics; tickets tracing to no requirement: 1.
 - Requirements declared in `PRD.md`: 71; covered by at least one ticket: 71.
 - Requirements with no covering ticket: none.
 - Every ticket ID above is present because `scripts/verify_backlog_traceability.py` fails CI otherwise; the audit is continuous, not a one-off review.
