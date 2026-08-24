@@ -8,7 +8,6 @@ import httpx
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 
-from ai_server.app.address_chat import AddressChatService, unavailable_address_service
 from ai_server.app.auth import (
     AuthError,
     AuthorizationService,
@@ -33,10 +32,6 @@ from ai_server.app.model_turn import (
     ModelTurnService,
     TurnServices,
     unavailable_model_turn_service,
-)
-from ai_server.app.onboarding_chat import (
-    OnboardingChatService,
-    unavailable_onboarding_service,
 )
 from ai_server.llm.general_knowledge import GeneralKnowledgeService
 from ai_server.llm.groq import (
@@ -249,17 +244,21 @@ def create_app(
     authorization: AuthorizationService | None = None,
     clock: Callable[[], datetime] = utc_now,
     health_service: HealthService | None = None,
-    onboarding_service: OnboardingChatService | None = None,
-    address_service: AddressChatService | None = None,
     model_turn_service: ModelTurnService | None = None,
 ) -> FastAPI:
-    """Create the AI server without exposing delegated credentials to the browser."""
+    """Create the AI server without exposing delegated credentials to the browser.
+
+    There is no `onboarding_service`/`address_service` parameter, and there is no way to
+    inject one. TICK-065 deleted `OnboardingChatService` and `AddressChatService`
+    outright (D12): the model owns every turn, and a deterministic handler that no turn
+    reaches is a path that rots and then produces a bad parse in a chart at the worst
+    possible moment. The signature is the enforcement -- a later change cannot reinstate
+    a phrase-matched bypass of the model without adding a parameter back here.
+    """
 
     configured_settings = settings
     configured_authorization = authorization
     configured_health_service = health_service
-    configured_onboarding_service = onboarding_service
-    configured_address_service = address_service
     configured_model_turn_service = model_turn_service
     configured_session_store: SessionStore | None = None
     owned_http_clients: list[httpx.AsyncClient] = []
@@ -270,8 +269,6 @@ def create_app(
             configured_settings, \
             configured_authorization, \
             configured_health_service, \
-            configured_onboarding_service, \
-            configured_address_service, \
             configured_model_turn_service, \
             configured_session_store
         if configured_settings is None:
@@ -311,33 +308,18 @@ def create_app(
             # (OPENEMR_OAUTH_ISSUER), which resolves to OpenEMR the same way. The
             # external_llm probe sends a live Groq API key to the public internet, so
             # it needs its own, fully-verified client -- reusing the OpenEMR one here
-            # would silently disable TLS verification for that call too.
+            # would silently disable TLS verification for that call too. The model
+            # server gets that same verified client: it is an ordinary HTTP service on
+            # the app network, with no self-signed cert to accommodate.
             health_openemr_client = httpx.AsyncClient(timeout=2.0, verify=False)
-            health_groq_client = httpx.AsyncClient(timeout=2.0)
+            health_verified_client = httpx.AsyncClient(timeout=2.0)
             owned_http_clients.append(health_openemr_client)
-            owned_http_clients.append(health_groq_client)
+            owned_http_clients.append(health_verified_client)
             configured_health_service = default_health_service(
                 HealthSettings.from_environment(configured_settings.issuer),
                 health_openemr_client,
-                health_groq_client,
+                health_verified_client,
             )
-        if configured_onboarding_service is None:
-            # Same untrusted-self-signed-cert reason as chat_openemr_client above:
-            # OnboardingFlow's draft/demographics calls hit configured_settings.issuer's
-            # host directly (ai_server/onboarding/draft_client.py never calls an
-            # external model, only OpenEMR), and got missed when this client was added.
-            onboarding_http_client = httpx.AsyncClient(timeout=30.0, verify=False)
-            owned_http_clients.append(onboarding_http_client)
-            configured_onboarding_service = _build_onboarding_service(
-                onboarding_http_client, store, clock
-            )
-        if configured_address_service is None:
-            # Same untrusted-self-signed-cert reason as onboarding_http_client above:
-            # the address write hits configured_settings.issuer's host directly through
-            # the same Portal API route, and never calls an external model (TICK-050).
-            address_http_client = httpx.AsyncClient(timeout=30.0, verify=False)
-            owned_http_clients.append(address_http_client)
-            configured_address_service = _build_address_service(address_http_client, store, clock)
         if configured_model_turn_service is None:
             # Two clients, split the same way the services above are: the model server
             # is reached over an ordinary verified connection, while every OpenEMR call
@@ -410,13 +392,16 @@ def create_app(
             configured_settings.expiry_warning_window,
         )
         # Every turn goes to the local model, which decides what happens (TICK-063,
-        # LOCAL_LLM_SPEC D9). Nothing is inspected here first: the two `if`s that used
-        # to stand at this point -- `onboarding_mode(cursor, turn.message)` and
+        # LOCAL_LLM_SPEC D9). Nothing is inspected here first: the two `if`s that used to
+        # stand at this point -- `onboarding_mode(cursor, turn.message)` and
         # `address_update_mode(...)` -- matched the patient's words against phrasings and
-        # steered PHI-bearing turns away from the model. That mechanism is what this
-        # ticket removes, so the message reaches no pattern before the model sees it. The
-        # services behind those two functions are still in the tree and still built
-        # above; TICK-065 deletes them once this is proven.
+        # steered PHI-bearing turns away from the model. TICK-063 stopped consulting
+        # them; TICK-065 deleted the modules behind them, so there is no longer anything
+        # here for a later change to reinstate.
+        #
+        # The fallback is `unavailable_model_turn_service()`, not a deterministic
+        # handler, and that is the whole of D12: when the model server is unreachable the
+        # chat says so. It does not quietly downgrade to something that can still write.
         service = configured_model_turn_service or unavailable_model_turn_service()
         # Retrieved for this call only (TICK-034 AC1): never persisted, logged, or
         # cached beyond the stream_reply() call they are passed into.
@@ -455,17 +440,13 @@ def create_app(
             # step that actually ends the patient's exposure -- not the cookie clear
             # below, which a shared browser or a stale tab could survive.
             await asyncio.to_thread(configured_session_store.delete_session, handle)
-            # Both services keep the patient's own half-finished answers in this
-            # process's memory keyed by the handle (`_SessionState.identity`, a pending
-            # address update). Dropping the row while leaving those behind would keep
-            # patient data alive past the logout that was supposed to end it.
-            if configured_onboarding_service is not None:
-                configured_onboarding_service.discard(handle)
-            if configured_address_service is not None:
-                configured_address_service.discard(handle)
-            # And the model path's own conversation state, for the same reason: it holds
-            # the patient's words and any change that was read back but not yet saved
-            # (`ai_server/app/conversation.py`).
+            # And the turn path's conversation state: it holds the patient's own words
+            # and any change that was read back but not yet saved
+            # (`ai_server/app/conversation.py`). Dropping the row while leaving those
+            # behind would keep patient data alive past the logout that was supposed to
+            # end it. This is now the only such store -- the onboarding and address
+            # services kept their own (`_SessionState.identity`, a pending address
+            # update) and were discarded here too until TICK-065 deleted them.
             if configured_model_turn_service is not None:
                 configured_model_turn_service.discard(handle)
         response = Response(status_code=204)
@@ -578,10 +559,11 @@ def _build_model_turn_service(
     would leave `ask_general_knowledge` permanently unavailable on the only provider the
     chat can actually run on.
 
-    Each service below is optional and independently degradable, matching
-    `_build_onboarding_service`'s existing tolerance of absent OpenEMR configuration: a
-    demo missing the Portal API base URL loses the tools that need it and keeps the rest
-    of the turn.
+    Each service below is optional and independently degradable: a demo missing the
+    Portal API base URL loses the tools that need it and keeps the rest of the turn. Note
+    what is *not* degradable that way -- an absent `local_client` returns
+    `unavailable_model_turn_service()` above rather than a partial turn service, so no
+    tool, and in particular no writing tool, is reachable without the model (D12).
     """
     local_client: HttpLocalModelClient | None = None
     if selected_llm_provider() != GROQ:
@@ -664,55 +646,6 @@ def _build_general_knowledge_service(
     except GroqConfigurationError:
         return None
     return GeneralKnowledgeService(PrivacyGate.create(), HttpGroqClient(settings, client))
-
-
-def _build_onboarding_service(
-    client: httpx.AsyncClient, session_store: SessionStore, clock: Callable[[], datetime]
-) -> OnboardingChatService:
-    """Build the real OpenEMR-backed onboarding service, or a fixed-unavailable
-    fallback -- mirrors `_build_chat_service`'s tolerance of absent configuration, so a
-    demo missing the Portal API base URL degrades onboarding instead of failing
-    startup.
-    """
-    try:
-        portal_settings = OpenEmrPortalSettings.from_environment()
-    except OpenEmrConfigurationError:
-        return unavailable_onboarding_service(session_store, clock)
-    # Draft and demographics both go through module-added Portal routes (TICK-042),
-    # so they share the one portal_settings instance -- no separate Standard API
-    # demographics settings needed anymore.
-    flow = OnboardingFlow(
-        AssessmentDraftAdapter(portal_settings, client),
-        OpenEmrDemographicsAdapter(portal_settings, client),
-    )
-    # The pinned local Tesseract engine (TICK-014), never a network call; one shared,
-    # in-process OcrService is safe across concurrent sessions since every upload is
-    # keyed by its own random upload id (TICK-044 wires this previously-unreferenced
-    # service into the chat turn for the first time).
-    ocr = OcrService(SubprocessTesseractEngine())
-    return OnboardingChatService(flow=flow, session_store=session_store, ocr=ocr, clock=clock)
-
-
-def _build_address_service(
-    client: httpx.AsyncClient, session_store: SessionStore, clock: Callable[[], datetime]
-) -> AddressChatService:
-    """Build the real OpenEMR-backed address-update service, or a fixed-unavailable
-    fallback -- mirrors `_build_onboarding_service`'s tolerance of absent configuration,
-    so a demo missing the Portal API base URL degrades this flow instead of failing
-    startup.
-
-    Reuses the same `OpenEmrDemographicsAdapter` type onboarding writes through
-    (TICK-042/TICK-049), so there is one demographics write path, not two.
-    """
-    try:
-        portal_settings = OpenEmrPortalSettings.from_environment()
-    except OpenEmrConfigurationError:
-        return unavailable_address_service(session_store, clock)
-    return AddressChatService(
-        demographics=OpenEmrDemographicsAdapter(portal_settings, client),
-        session_store=session_store,
-        clock=clock,
-    )
 
 
 app = create_app()

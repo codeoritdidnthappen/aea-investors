@@ -42,16 +42,27 @@ class ChatTurnRequest(BaseModel):
 # chat's whole-outage message (D12); an unreachable *Groq* is not this, because it costs
 # only general-knowledge answers and `ModelTurnService` has its own string for that. It
 # reports that the assistant is unavailable rather than that scheduling failed, since
-# the turn may have been about anything. FR-19 still wants a route to OpenEMR's own
-# scheduling UI from this path, so one is offered -- but only for the appointment case
-# it actually covers, and named as the patient's own portal menu (the same place the
-# client-side fallback panel below points at), never the staff-only native scheduling
-# screen a portal user cannot open.
+# the turn may have been about anything.
+#
+# Every clause is constrained by TICK-065 AC3, which is why this reads the way it does:
+#
+# - "temporarily unavailable", because an outage that sounds permanent, or that sounds
+#   like a broken feature, is the failure D12 accepted a hard model dependency to avoid.
+# - It says the portal still works, in as many words. With no fallback path this is the
+#   only thing the patient can still do, so leaving them to infer it is not good enough.
+# - It names nothing internal. Not the model server, not the provider, not this service.
+#   "Your patient portal" is the thing the patient is looking at; a component name would
+#   tell them something they cannot act on.
+# - The one next step it offers is the portal's *own* scheduling screen, which FR-19
+#   requires and which is not a degraded path through this system -- no write reaches
+#   OpenEMR through anything that is currently down. It is named as the patient's own
+#   portal menu (the same place the client-side fallback panel below points at), never
+#   the staff-only native scheduling screen a portal user cannot open.
 ASSISTANT_UNAVAILABLE_RESPONSE = (
-    "The AI assistant is not available right now, so it could not handle your request. "
-    "Please try again later, or contact the clinic directly. To book or change an "
-    "appointment in the meantime, use the appointment scheduling option in your "
-    "OpenEMR portal menu."
+    "The AI assistant is temporarily unavailable, so it could not handle your request. "
+    "Your patient portal is still working normally. Please try again in a little while, "
+    "or contact the clinic directly. To book or change an appointment in the meantime, "
+    "use the appointment scheduling option in your OpenEMR portal menu."
 )
 
 

@@ -168,11 +168,19 @@ curl -k https://chat.localhost/health
 
 (`-k` skips curl's certificate trust check for Caddy's local development
 certificate — see step 8.) Returns non-sensitive dependency reachability for the
-AI server, OpenEMR API, OCR, and external LLM. `ocr` reports `ok` once the image's
-pinned Tesseract is reachable. `openemr_api` reuses `OPENEMR_OAUTH_ISSUER`, which
-now goes through Caddy's `emr.localhost` hostname (see `.env.example`), reachable
+AI server, model server, OpenEMR API, OCR, and external LLM. `ocr` reports `ok` once
+the image's pinned Tesseract is reachable. `openemr_api` reuses `OPENEMR_OAUTH_ISSUER`,
+which now goes through Caddy's `emr.localhost` hostname (see `.env.example`), reachable
 from both the browser and the AI-server container. `external_llm` is `unavailable`
 whenever `GROQ_API_KEY` is blank, which is the default, paid-service-free path.
+
+`model_server` is the one to watch. Since TICK-065 there is no deterministic fallback,
+so it is the dependency chat availability *is*: when it reports `unavailable`, every
+turn answers that the assistant is temporarily unavailable and no write can execute.
+It probes `${OLLAMA_HOST}/v1/models` — a GET, never an inference. Note that it reports
+`unavailable` on this stack's defaults, because `LLM_PROVIDER` defaults to `groq`, which
+may never be the chat's front door (D3). Set `LLM_PROVIDER=ollama` in `.env` and start
+the `ollama` service to get a working chat and an `ok` here.
 
 ## 7. Verify restart persistence
 

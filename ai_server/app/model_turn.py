@@ -5,7 +5,27 @@ steered PHI-bearing turns *away* from the model: `onboarding_mode()` and
 `address_update_mode()` matched the patient's words against phrasings and intercepted
 them, and everything else went to Groq. That is inverted here. Every message now goes to
 the local model first -- which is allowed to see patient data (D2) -- and the model's one
-tool call selects what happens.
+tool call selects what happens. TICK-065 then deleted `ai_server/app/onboarding_chat.py`
+and `ai_server/app/address_chat.py`, so this is not merely the preferred path, it is the
+only one.
+
+**What pattern matching survives in the turn path, and why (TICK-065 AC2).** Two things,
+both named here so neither is left to be discovered:
+
+- `_accept_upload` runs before the model. Its trigger is the request's `image_base64`
+  field being present -- a structural fact about the HTTP request, not a reading of what
+  the patient typed. It cannot fire on any wording.
+- `_consent_given` reads one boolean out of the chat page's own machine-generated action
+  envelope (`json.loads`, one key). FR-21 requires explicit consent before an image is
+  read from disk, and consent inferred from phrasing would not be consent.
+
+Neither decides what the turn is about; both are inputs the model is then told about.
+`ai_server/onboarding/triggers.py` is the deliberate third case: its `detect_distress`
+substring corpus is intent-shaped, and after TICK-065 no production code calls it at all,
+because its only two callers were the deleted modules. It is left in the tree rather than
+deleted because `evidence/TICK-067/FOLLOW_UP_TICKETS.md` owns re-wiring approved
+supportive content onto every turn, and it must survive to be re-wired. Until then it is
+not in the turn path.
 
 **The model's judgement selects an action; it never gates egress (D10).** One tool,
 `ask_general_knowledge`, does reach an external model as of TICK-064 -- but nothing in
@@ -206,8 +226,8 @@ class TurnServices:
 
     Every one of these already existed; the tool surface is a re-facing of them
     (LOCAL_LLM_SPEC "Tool surface"). An absent service degrades that one capability for
-    the turn rather than failing startup, matching `_build_scheduling_tool`'s and
-    `_build_onboarding_service`'s existing tolerance of missing OpenEMR configuration.
+    the turn rather than failing startup, matching `_build_model_turn_service`'s
+    tolerance of missing OpenEMR configuration.
     """
 
     # The one service here that is not local. Absent when Groq is unconfigured, which

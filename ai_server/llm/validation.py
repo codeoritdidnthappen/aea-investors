@@ -499,8 +499,8 @@ VALIDATED_WRITING_TOOLS: frozenset[str] = frozenset(_WRITE_VALIDATORS)
 #
 # Every renderer takes only validated values. None of them is given the tool call, so
 # none of them can echo a proposal even by accident, and each ends by saying plainly
-# that nothing has been saved yet -- the same discipline `address_chat._review_summary`
-# established for the flow this replaces.
+# that nothing has been saved yet -- the discipline the deleted
+# `address_chat._review_summary` established for the flow this replaced.
 
 _CONFIRM_INSTRUCTION = (
     "\n\nReply CONFIRM to save this, or tell me what to change. Nothing is saved until you confirm."

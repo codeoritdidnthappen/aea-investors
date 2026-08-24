@@ -7,6 +7,17 @@ fixed, approved strings, or nothing. This is the mechanism the outbound privacy
 policy relies on to keep any patient message local (`ai_server/privacy/gate.py`
 governs the separate, unrelated question of what may leave the process at all; this
 module never sends anything anywhere).
+
+**Not currently in the turn path, and named rather than left silent (TICK-065 AC2).**
+`detect_distress` is the last intent-shaped pattern match in this codebase, and after
+TICK-065 no production code calls it: its only two callers were
+`ai_server/app/onboarding_chat.py` and `ai_server/app/address_chat.py`, which D12
+deleted. It is deliberately kept rather than deleted with them, because the approved
+supportive content it selects has never reached a general turn and must:
+`evidence/TICK-067/FOLLOW_UP_TICKETS.md` owns running it on *every* turn, before the
+model, in a module that survives D12 -- which is this one. Until that ticket lands, the
+live callers are `scripts/probe_uncovered_turns.py` and this module's own tests, and a
+patient's turn reaches the model without passing through it.
 """
 
 from __future__ import annotations

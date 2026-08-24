@@ -12,14 +12,15 @@ context it reads rather than state it reconstructs.
 and no transcript may be persisted there. The onboarding position therefore stays where
 it already lives -- `SessionStore.save_cursor`, an opaque draft id, with the answers
 themselves in OpenEMR -- and everything here is held in this process's memory only, the
-same discipline `OnboardingChatService._sessions` and `AddressChatService._sessions`
-already follow. A restart loses a pending confirmation, which is correct: the patient is
-asked again and nothing was saved.
+same discipline the deleted `OnboardingChatService._sessions` and
+`AddressChatService._sessions` followed before TICK-065. A restart loses a pending
+confirmation, which is correct: the patient is asked again and nothing was saved.
 
 **Why it must be discarded on logout.** `pending` holds validated values the patient
 typed and `turns` holds their own words. Deleting the session row while leaving those in
-memory would keep patient data alive past the logout that was supposed to end it, which
-is the regression `/api/logout` already guards for the two deterministic services.
+memory would keep patient data alive past the logout that was supposed to end it. Since
+TICK-065 this is the only in-memory patient state `/api/logout` has to drop; it used to
+guard the two deterministic services' stores as well.
 """
 
 from __future__ import annotations
@@ -38,9 +39,9 @@ from ai_server.scheduling.slots import AnonymousSlotToken
 # asked -- is recorded in its own field precisely so that trimming this cannot lose it.
 MAX_TRANSCRIPT_MESSAGES = 12
 
-# An idle conversation's state is dropped rather than resumed, matching
-# `AddressChatService`'s own 10-minute pending-update TTL: a confirmation the patient
-# walked away from half an hour ago should not be waiting for a stray "yes".
+# An idle conversation's state is dropped rather than resumed, carrying over the
+# 10-minute pending-update TTL the deleted `AddressChatService` used: a confirmation the
+# patient walked away from half an hour ago should not be waiting for a stray "yes".
 DEFAULT_CONVERSATION_TTL = timedelta(minutes=10)
 
 

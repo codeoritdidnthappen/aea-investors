@@ -331,9 +331,17 @@ def test_ac1_a_phrase_that_used_to_start_the_address_flow_now_reaches_the_model(
 
 
 def test_ac1_the_route_consults_no_deterministic_handler_on_any_turn(tmp_path: Path) -> None:
-    """At the route itself: the onboarding and address services are still injectable and
-    still built, and neither is asked about any turn -- including the two messages and
-    the active cursor that used to guarantee they would be (TICK-050 AC8)."""
+    """At the route itself: every turn is answered by the model, including the two
+    messages and the active cursor that used to guarantee a deterministic handler would
+    take it (TICK-050 AC8).
+
+    This test used to inject `_ScriptedHandler` doubles as `onboarding_service=` and
+    `address_service=` and assert neither was called. TICK-065 deleted both services and
+    both parameters, so the double has nothing to stand in for; what is left to assert is
+    that the model answered all three turns. The stronger claim -- that no such handler
+    can be reintroduced without changing `create_app`'s signature -- is asserted directly
+    in `test_deterministic_handlers_deleted.py`.
+    """
     configured = settings(tmp_path)
     store = SessionStore(configured.database_path, configured.encryption_key)
     store.initialize()
@@ -342,27 +350,21 @@ def test_ac1_the_route_consults_no_deterministic_handler_on_any_turn(tmp_path: P
     # message went to onboarding regardless of its content.
     store.save_cursor(handle, "draft-1", NOW)
 
-    onboarding, address = _ScriptedHandler(), _ScriptedHandler()
-    service, _, _ = turn_service(
+    service, runtime, _ = turn_service(
         call("reply", message="one"),
         call("reply", message="two"),
         call("reply", message="three"),
     )
-    app = create_app(
-        configured,
-        clock=lambda: NOW,
-        onboarding_service=onboarding,
-        address_service=address,
-        model_turn_service=service,
-    )
+    app = create_app(configured, clock=lambda: NOW, model_turn_service=service)
 
-    replies = run(
-        _post_all(app, handle, ["start onboarding", "update my address", "what's the weather"])
-    )
+    messages = ["start onboarding", "update my address", "what's the weather"]
+    replies = run(_post_all(app, handle, messages))
 
     assert replies == ["one", "two", "three"]
-    assert onboarding.calls == []
-    assert address.calls == []
+    # Each turn reached the model, and reached it verbatim: three inferences, and the
+    # last user message of each carries exactly what the patient typed.
+    assert len(runtime.model_requests) == 3
+    assert [sent_messages(runtime, index)[-1]["content"] for index in (0, 1, 2)] == messages
 
 
 # --- AC2: the call executes through the TICK-060 surface and TICK-061's validation ---
@@ -1220,27 +1222,6 @@ def test_a_corpus_case_renders_exactly_the_two_messages_it_was_measured_with() -
 
 
 # --- Shared fixtures ----------------------------------------------------------------
-
-
-@dataclass
-class _ScriptedHandler:
-    """An onboarding/address-service-shaped double that records every turn it is given."""
-
-    calls: list[tuple[str, str]] = field(default_factory=list)
-
-    async def stream_reply(
-        self, handle: str, message: str, image_base64: str | None = None
-    ) -> AsyncIterator[str]:
-        del image_base64
-        self.calls.append((handle, message))
-        yield "deterministic-reply"
-
-    def discard(self, handle: str) -> None:
-        del handle
-
-    def has_pending_update(self, handle: str) -> bool:
-        del handle
-        return False
 
 
 class _ScriptedTesseract:

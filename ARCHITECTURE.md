@@ -29,7 +29,8 @@ flowchart LR
         subgraph AIS["AI VM"]
             UI["Embedded chat UI"]
             API["FastAPI"]
-            LG["LangGraph orchestration"]
+            MT["ModelTurnService<br/>one schema'd tool call per turn"]
+            LM["Local model server<br/>pinned instruct model"]
             PG["Local Presidio<br/>privacy gate"]
             TS["SQLite WAL<br/>encrypted token/session state"]
         end
@@ -43,22 +44,28 @@ flowchart LR
     OE --> DB
     OE -->|"OAuth/SMART code"| API
     UI -->|"AI-session cookie<br/>streamed HTTPS"| API
-    API --> LG
-    LG -->|"user-scoped REST/FHIR calls"| OE
+    API -->|"every turn"| MT
+    MT -->|"patient text; PHI permitted"| LM
+    LM -->|"one tool call"| MT
+    MT -->|"validated values,<br/>user-scoped REST/FHIR calls"| OE
     API --> TS
-    LG --> PG
+    MT -->|"model's restatement only"| PG
     PG -->|"approved fields only"| LLM
-    LLM -->|"structured chunks"| LG
+    LLM -->|"answer"| MT
 ~~~
 
 ### Trust boundaries
 
 1. **Browser:** holds the OpenEMR session and a separate secure AI-session cookie. It
    never holds an OpenEMR API bearer token.
-2. **OCI private network:** contains OpenEMR, MariaDB, the AI server, real OpenEMR
-   identifiers, user-delegated tokens, and all appointment reads and writes.
-3. **Groq:** receives only validated prompt text and approved scheduling context, with
-   Zero Data Retention enabled. Patient and provider information never crosses this boundary.
+2. **OCI private network:** contains OpenEMR, MariaDB, the AI server, the local model
+   server, real OpenEMR identifiers, user-delegated tokens, and all appointment reads
+   and writes. The patient's own words stay inside this boundary; the local model is
+   here precisely so that they can.
+3. **Groq:** receives only a canonical restatement of a general-knowledge question,
+   composed by this codebase from a schema'd field and scanned by the privacy gate, with
+   Zero Data Retention enabled. Patient and provider information never crosses this
+   boundary, and neither does anything the patient typed.
 
 ---
 
@@ -180,27 +187,52 @@ iframe. Collapsing them into one value — as `AI_SESSION_SUCCESS_REDIRECT_URI` 
 This flow is based on OpenEMR's documented
 [OAuth/OIDC and EHR launch support](https://github.com/openemr/openemr/blob/master/Documentation/api/AUTHENTICATION.md).
 
-### 2.2 Scheduling turn
+### 2.2 Chat turn
+
+Every turn takes this path. There is no second one: no mode detection, no phrase
+matching, and no deterministic handler that a turn can be routed to instead
+(LOCAL_LLM_SPEC D9, D12).
 
 1. The iframe sends the user turn only to FastAPI.
-2. The local privacy gate checks the prompt before any external request.
-3. If the prompt contains PHI or PII, FastAPI returns it locally with instructions to
-   remove the sensitive content. No external call occurs.
-4. For an accepted prompt, LangGraph loads only the scheduling data required for that
-   turn from existing OpenEMR endpoints.
-5. The AI server converts open slots to short-lived anonymous tokens.
-6. Groq receives the approved payload and returns structured output.
-7. The AI server resolves any selected token and performs the operation through
-   OpenEMR using the user's delegated token.
-8. Only OpenEMR's validated response can produce a booking, rescheduling, or
-   cancellation confirmation.
+2. FastAPI checks the session and the request `Origin`, and inspects nothing about what
+   the patient wrote.
+3. `ModelTurnService` sends the turn to the **local** model, which may see PHI, together
+   with the conversation state this session already recorded — the pending confirmation,
+   the anonymous tokens it was offered, and a bounded transcript.
+4. The model returns exactly one tool call under a strict schema.
+5. The AI server validates every field independently of the model, and reads validated
+   values back to the patient for confirmation before any write (D6).
+6. A confirmed write executes through the OpenEMR adapters using the user's delegated
+   token; open slots and existing appointments are exchanged for short-lived anonymous
+   tokens, and only a token the AI server itself issued resolves.
+7. Only OpenEMR's validated response can produce a booking or cancellation confirmation.
+8. A general-knowledge question is the one branch that leaves the deployment. The
+   outbound payload is composed by this codebase from the model's own canonical
+   restatement, never from the patient's words, and the privacy gate scans it before it
+   goes (D3, D4, D14).
 9. FastAPI streams response chunks to the iframe.
 
 ### 2.3 Dependency failure
 
-If the AI server or external LLM is unavailable, the iframe displays an unavailable
-message and instructions for reaching OpenEMR's native scheduling interface. There is
-no parallel non-AI scheduler.
+**Model-server availability is chat availability.** D12 deleted the deterministic
+handlers rather than keeping them as an outage fallback, because a path nobody exercises
+rots and then produces a bad parse in a medical record at the worst possible moment. The
+consequence is accepted and handled explicitly:
+
+- When the model server is unreachable or unconfigured, the chat replies that the
+  assistant is temporarily unavailable and that the patient's portal still works. It
+  names no internal component.
+- No degraded path runs. Because a turn cannot proceed past the routing inference, no
+  tool executes and **no write is attempted** — including a change that was already
+  validated and read back and is only awaiting a confirmation.
+- `/health` reports `model_server` alongside `openemr_api`, `ocr` and `external_llm`, so
+  the outage is visible to monitoring before a patient finds it. An unconfigured model
+  server reports `unavailable` too, since from the patient's side it is the same outage.
+- An unreachable *external* LLM is a different, much smaller failure: it costs
+  general-knowledge answers only, and has its own message.
+
+There is no parallel non-AI scheduler. The next step offered to the patient is OpenEMR's
+own patient-portal scheduling screen, which is unaffected by an AI-server outage.
 
 ---
 
@@ -212,10 +244,12 @@ no parallel non-AI scheduler.
 | OpenEMR | Login, OAuth/SMART authorization, appointment system of record, role visibility | Existing REST/FHIR APIs and MariaDB | FR-3, FR-9–FR-17 |
 | Chat UI | Render conversation, local error states, and streamed chunks | FastAPI only; AI-session cookie | FR-2, FR-4, FR-18–FR-19 |
 | FastAPI | OAuth launch and callback, position-resolved destination, AI-session boundary and logout, streaming API, dependency health | SQLite WAL session plumbing and encrypted delegated tokens | FR-1, FR-3–FR-4, FR-18–FR-19, FR-31; NFR-6–NFR-10, NFR-30–NFR-33 |
-| LangGraph | Model the conversation and deterministic scheduling-tool transitions | Calls privacy gate, OpenEMR adapter, and LLM adapter | FR-5, FR-8–FR-20 |
-| PrivacyGate | Run local Presidio, block unsafe prompts, and enforce outbound schema | Pinned local models and custom recognizers; no retained prompt data | NFR-2–NFR-5, NFR-8, NFR-27–NFR-28 |
+| Local model server | Serve the pinned instruct model over an OpenAI-compatible API. Ollama in development, vLLM when deployed | Model weights pinned by name and digest; reachable only on the internal network | FR-5, FR-33–FR-34 |
+| `ModelTurnService` | Own every turn: build the model's context, run one routing inference, validate and execute the single tool call it returns, and stream the reply | In-process, request-scoped conversation state keyed by AI-session handle; discarded on logout | FR-5, FR-8–FR-20, FR-33 |
+| Tool surface and write validation | Publish the schema-constrained tools the model may call, validate every proposed field independently of the model, and render the confirmation read-back | Validated values only; a tool executes with the validator's values, never the model's | FR-9–FR-17, FR-21–FR-23; NFR-36 |
+| PrivacyGate | Run local Presidio and enforce the outbound schema on the one payload that leaves | Pinned local models and custom recognizers; no retained prompt data | NFR-2–NFR-5, NFR-8, NFR-27–NFR-28 |
 | OpenEMR adapter | Translate scheduling tools into existing API calls | No database access and no appointment persistence | FR-9–FR-17 |
-| Groq adapter | Send approved payloads to `openai/gpt-oss-120b`, validate structured output, and stream final text | Groq connection only; API key remains server-side | FR-18, FR-20, FR-29; NFR-2–NFR-5, NFR-26 |
+| Groq adapter | Send the model's canonical restatement of a general-knowledge question to `openai/gpt-oss-120b` and return the answer | Groq connection only; API key remains server-side; never receives patient text | FR-18, FR-20, FR-29; NFR-2–NFR-5, NFR-26 |
 | Local OCR adapter | Enforce consent, validate uploads, extract synthetic identity fields with pinned local Tesseract, and purge source images | Request-duration image bytes and confirmed output | FR-6–FR-7, FR-21–FR-23, NFR-29 |
 | Caddy | Terminate TLS, automate Let's Encrypt, and route two sslip.io hostnames | Caddyfile, certificates, and routing configuration | NFR-9, NFR-16–NFR-17, NFR-34 |
 
@@ -255,7 +289,7 @@ Reference:
 
 ## 5. AI orchestration
 
-LangGraph separates model reasoning from authoritative actions:
+`ModelTurnService` separates model reasoning from authoritative actions:
 
 ~~~mermaid
 flowchart LR
@@ -283,10 +317,10 @@ at all, and the gate screens the constructed payload as a second, independent ch
 (D3, D4).
 
 Patient answers and assessment-draft changes are checkpointed to the logged-in
-patient's native OpenEMR record during the conversation. LangGraph keeps only
+patient's native OpenEMR record during the conversation. The AI server keeps only
 request-duration patient values in memory and stores a non-patient workflow cursor in
 SQLite. After restart it reloads the draft from OpenEMR. Sensitive field values are
-inserted by deterministic local graph nodes after model processing, so the external
+written by local code from validated values after model processing, so the external
 model does not need patient information to produce the final record shape.
 
 ### Approved external request shape
@@ -347,13 +381,13 @@ No separate appointment entity or scheduling database exists on the AI server.
 | Current stable OpenEMR | Deliberately demonstrates modern AI inside an older EHR UI and supplies authentication and scheduling |
 | Custom iframe module | Keeps the user inside OpenEMR while allowing a separately deployed chat application |
 | Python + FastAPI | Provides OAuth callbacks, typed APIs, async external calls, and streamed HTTP responses |
-| LangGraph | Makes privacy, model, tool, validation, and fallback transitions explicit |
+| Local model server + one schema'd tool call | Handles every phrasing without hand-coding it, while keeping PHI inside the deployment; the tool schema and field validators keep the model's output from reaching a record unchecked |
 | Existing OpenEMR REST/FHIR APIs | Preserves OpenEMR authorization and data ownership without database coupling |
 | OAuth/SMART authorization code | Delegates only the logged-in user's allowed scope |
 | Two OCI free VMs | Separates the EHR and AI server while meeting the zero-hosting-cost constraint |
 | sslip.io + reserved public IP | Supplies stable demo hostnames without purchasing a domain |
 | Caddy + Let's Encrypt | Combines hostname routing, browser-trusted TLS, and automatic certificate renewal without certificate cost |
-| Groq + `openai/gpt-oss-120b` | Provides the pinned free hosted model without operating inference on the Oracle AI VM |
+| Groq + `openai/gpt-oss-120b` | Answers general-knowledge questions, which carry no patient context, without operating a second inference workload |
 | Local Presidio Analyzer | Supplies free, extensible PII and medical detection within the Oracle AI VM |
 | Local Tesseract OCR | Supplies controlled synthetic-ID extraction without a cloud dependency |
 | SQLite WAL + AES-256-GCM | Persists session plumbing across restart without a separate database service |
@@ -431,8 +465,8 @@ One reserved OCI public IP serves both HTTPS hostnames:
   over the OCI private network.
 
 VM 1 runs Caddy, the pinned OpenEMR container, and MariaDB with persistent volumes.
-VM 2 runs the chat UI and Python/FastAPI/LangGraph service plus a persistent local volume
-for SQLite session state. Only the reverse
+VM 2 runs the chat UI, the Python/FastAPI service, and the local model server, plus a
+persistent local volume for SQLite session state. Only the reverse
 proxy accepts public application traffic. OCI network rules limit MariaDB and FastAPI
 origin ports to private-network callers. Let's Encrypt supplies individual certificates
 for both sslip.io hostnames.
