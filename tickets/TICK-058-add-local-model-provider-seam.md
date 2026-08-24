@@ -8,9 +8,9 @@ estimate: M
 depends_on: []
 labels: [llm, backend]
 source: [FR-33]
-status: todo
+status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/123
-builder_commit: null
+builder_commit: 518f208
 ---
 ## Context
 

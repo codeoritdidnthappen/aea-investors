@@ -8,9 +8,9 @@ estimate: M
 depends_on: [TICK-058]
 labels: [llm, chat, backend]
 source: [FR-33, FR-35]
-status: todo
+status: done
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/125
-builder_commit: null
+builder_commit: 436384b
 ---
 ## Context
 

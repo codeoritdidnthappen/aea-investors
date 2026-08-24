@@ -8,9 +8,10 @@ estimate: L
 depends_on: [TICK-062, TICK-063]
 labels: [deploy, llm, backend]
 source: [FR-33, NFR-36]
-status: todo
+status: blocked
 remote_url: https://github.com/codeoritdidnthappen/aea-investors/issues/131
 builder_commit: null
+blocked_reason: "No GPU capacity exists in the deployment tenancy (all 66 GPU limits are 0 across every PHX AD; Always Free is 2 OCPU/12 GB Ampere A1 only), so vLLM cannot be run \u2014 AC2's live corpus comparison, AC3's quantisation comparison, and AC4's latency-under-concurrency on the real shape are unmeasurable; AC1"
 ---
 ## Context
 
